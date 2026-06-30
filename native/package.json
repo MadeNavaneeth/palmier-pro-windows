@@ -1,0 +1,21 @@
+{
+  "name": "palmier-compositor",
+  "version": "0.1.0",
+  "description": "GPU-accelerated compositor native addon for Palmier Pro Windows",
+  "main": "index.node",
+  "scripts": {
+    "build": "napi build --release",
+    "build:debug": "napi build",
+    "artifacts": "napi artifacts"
+  },
+  "napi": {
+    "name": "palmier-compositor",
+    "triples": {
+      "defaults": true
+    }
+  },
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0-alpha.86"
+  }
+}
