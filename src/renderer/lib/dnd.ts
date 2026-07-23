@@ -7,6 +7,7 @@
  */
 
 import type { MediaAsset } from '../../shared/types/project';
+import { isMediaCompatibleWithTrack } from '../../shared/editor/placement';
 
 export const ASSET_DND_MIME = 'application/x-palmier-asset';
 
@@ -26,6 +27,18 @@ export function getDraggingAsset(): DraggingAsset | null {
 }
 
 /**
+ * Resolve an operating-system path from a dropped File. Electron 32+ exposes
+ * this through webUtils; the legacy property keeps older runtimes and tests
+ * compatible.
+ */
+export function getDroppedFilePath(
+  file: File,
+  resolvePath: (file: File) => string,
+): string {
+  return (file as File & { path?: string }).path || resolvePath(file);
+}
+
+/**
  * Which asset types may land on which track type.
  * Audio tracks take audio only; video tracks take visual media.
  */
@@ -33,6 +46,5 @@ export function isAssetCompatibleWithTrack(
   assetType: MediaAsset['type'],
   trackType: 'video' | 'audio',
 ): boolean {
-  if (trackType === 'audio') return assetType === 'audio';
-  return assetType === 'video' || assetType === 'image';
+  return isMediaCompatibleWithTrack(assetType, trackType);
 }

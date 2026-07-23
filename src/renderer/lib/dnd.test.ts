@@ -3,6 +3,7 @@ import {
   isAssetCompatibleWithTrack,
   setDraggingAsset,
   getDraggingAsset,
+  getDroppedFilePath,
   ASSET_DND_MIME,
 } from './dnd';
 
@@ -28,5 +29,15 @@ describe('media-bin drag-and-drop', () => {
 
   it('exposes a stable custom MIME type', () => {
     expect(ASSET_DND_MIME).toBe('application/x-palmier-asset');
+  });
+
+  it('resolves dropped operating-system file paths', () => {
+    const legacyFile = { path: 'C:\\media\\clip.mp4' } as File & { path: string };
+    expect(getDroppedFilePath(legacyFile, () => '')).toBe('C:\\media\\clip.mp4');
+
+    const modernFile = {} as File;
+    expect(getDroppedFilePath(modernFile, () => 'C:\\media\\photo.png'))
+      .toBe('C:\\media\\photo.png');
+    expect(getDroppedFilePath(modernFile, () => '')).toBe('');
   });
 });

@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
 import { EditorController } from '../../shared/editor/controller';
-import type { Clip, Track, Frame, Project } from '../../shared/types/project';
+import type { Clip, Track, Frame, Project, MediaAsset } from '../../shared/types/project';
 import type { BlendMode } from '../../shared/types/blend-mode';
 import type { ClipTransition } from '../../shared/editor/transition';
 import type { MediaProbeResult } from '../../main/ipc/media';
@@ -43,6 +43,29 @@ export interface TimelineViewport {
 export interface SnapPoint {
   frame: Frame;
   source: 'clip-start' | 'clip-end' | 'playhead' | 'marker';
+}
+
+function mediaAssetsFromProbeResults(
+  probeResults: MediaProbeResult[],
+  projectFps: number,
+): MediaAsset[] {
+  const addedAt = new Date().toISOString();
+  return probeResults.map((probe) => ({
+    id: nanoid(),
+    path: probe.path,
+    filename: probe.filename,
+    type: probe.type,
+    duration: Math.max(0, Math.round((probe.duration || 0) * projectFps)),
+    width: probe.width,
+    height: probe.height,
+    fps: probe.fps,
+    codec: probe.codec,
+    audioCodec: probe.audioCodec,
+    sampleRate: probe.sampleRate,
+    channels: probe.channels,
+    fileSize: probe.fileSize,
+    addedAt,
+  }));
 }
 
 export interface TimelineState {
@@ -85,6 +108,12 @@ export interface TimelineState {
 
   // Editing
   addClip: (assetId: string, trackId: string, startFrame: Frame, durationFrames?: Frame) => string;
+  placeAssets: (assetIds: string[], trackId: string, startFrame: Frame) => string[];
+  importAndPlaceAssets: (
+    probeResults: MediaProbeResult[],
+    trackId: string,
+    startFrame: Frame,
+  ) => { assetIds: string[]; clipIds: string[] };
   removeSelectedClips: () => void;
   moveClip: (clipId: string, newStartFrame: Frame, newTrackId?: string) => void;
   trimClipLeft: (clipId: string, newInPoint: Frame, newDuration: Frame) => void;
@@ -225,6 +254,19 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       return controller.addClip({ assetId, trackId, startFrame, durationFrames });
     },
 
+    placeAssets: (assetIds, trackId, startFrame) => {
+      return get().controller.placeMediaAssets(assetIds, trackId, startFrame).clipIds;
+    },
+
+    importAndPlaceAssets: (probeResults, trackId, startFrame) => {
+      const { controller } = get();
+      const assets = mediaAssetsFromProbeResults(
+        probeResults,
+        controller.getProject().settings.fps,
+      );
+      return controller.importAndPlaceMedia(assets, trackId, startFrame);
+    },
+
     removeSelectedClips: () => {
       const { selectedClipIds, controller } = get();
       for (const id of selectedClipIds) {
@@ -311,30 +353,11 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     // ─── Compositing / properties ──────────────────────────────────────────
     importAssets: (probeResults) => {
       const { controller } = get();
-      const fps = controller.getProject().settings.fps;
-      const ids: string[] = [];
-      for (const p of probeResults) {
-        const id = nanoid();
-        ids.push(id);
-        controller.addMedia({
-          id,
-          path: p.path,
-          filename: p.filename,
-          type: p.type,
-          // MediaProbeResult.duration is in seconds; the asset model is frame-based.
-          duration: Math.max(0, Math.round((p.duration || 0) * fps)),
-          width: p.width,
-          height: p.height,
-          fps: p.fps,
-          codec: p.codec,
-          audioCodec: p.audioCodec,
-          sampleRate: p.sampleRate,
-          channels: p.channels,
-          fileSize: p.fileSize,
-          addedAt: new Date().toISOString(),
-        });
-      }
-      return ids;
+      const assets = mediaAssetsFromProbeResults(
+        probeResults,
+        controller.getProject().settings.fps,
+      );
+      return controller.importMediaAssets(assets);
     },
 
     setClipBlendMode: (clipId, blendMode) => {

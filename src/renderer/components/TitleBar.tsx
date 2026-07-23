@@ -1,206 +1,110 @@
-/**
- * TitleBar — custom frameless title bar with drag region,
- * project name, edit menu (undo/redo), and quick actions.
- */
-
-import React, { useState, useRef, useEffect } from 'react';
+import React from 'react';
+import {
+  Bot,
+  ChevronDown,
+  PanelLeft,
+  PanelRight,
+  Save,
+  Share2,
+} from 'lucide-react';
 import { useProjectStore } from '../store/project';
-import { useTimelineStore } from '../store/timeline';
 
-export function TitleBar() {
-  const { name, hasUnsavedChanges, save } = useProjectStore();
-  const canUndo = useTimelineStore((s) => s.canUndo());
-  const canRedo = useTimelineStore((s) => s.canRedo());
-  const undo = useTimelineStore((s) => s.undo);
-  const redo = useTimelineStore((s) => s.redo);
+interface TitleBarProps {
+  mediaVisible?: boolean;
+  inspectorVisible?: boolean;
+  agentVisible?: boolean;
+  onToggleMedia?: () => void;
+  onToggleInspector?: () => void;
+  onToggleAgent?: () => void;
+  onExport?: () => void;
+}
+
+export function TitleBar({
+  mediaVisible = true,
+  inspectorVisible = true,
+  agentVisible = false,
+  onToggleMedia,
+  onToggleInspector,
+  onToggleAgent,
+  onExport,
+}: TitleBarProps) {
+  const { name, hasUnsavedChanges, isLoaded, save } = useProjectStore();
 
   return (
-    <header className="drag-region flex h-9 items-center justify-between border-b border-surface-3 bg-surface-1 px-4">
-      {/* Left: App name + menus */}
-      <div className="flex items-center gap-3">
-        <span className="text-2xs font-semibold uppercase tracking-wider text-accent">
-          Palmier Pro
-        </span>
+    <header className="drag-region relative flex h-11 shrink-0 items-center border-b border-white/10 bg-surface-1 px-3">
+      <div className="no-drag flex w-52 items-center gap-1">
+        {onToggleAgent && (
+          <button
+            className="icon-button"
+            data-active={agentVisible}
+            onClick={onToggleAgent}
+            title="Toggle Agent Panel"
+            aria-label="Toggle Agent Panel"
+          >
+            <Bot size={15} strokeWidth={1.7} />
+          </button>
+        )}
+        {onToggleMedia && (
+          <button
+            className="icon-button"
+            data-active={mediaVisible}
+            onClick={onToggleMedia}
+            title="Toggle Media Panel"
+            aria-label="Toggle Media Panel"
+          >
+            <PanelLeft size={15} strokeWidth={1.7} />
+          </button>
+        )}
+      </div>
 
-        {/* Edit menu */}
-        <div className="no-drag flex items-center gap-0.5">
-          <EditMenu canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
+      <button
+        className="no-drag absolute left-1/2 flex -translate-x-1/2 items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-white/[0.06] hover:text-text-primary"
+        title={hasUnsavedChanges ? 'Project has unsaved changes' : 'Project saved'}
+      >
+        <span className="max-w-72 truncate">{name}</span>
+        {hasUnsavedChanges && <span className="text-timecode">•</span>}
+        <ChevronDown size={12} strokeWidth={1.7} className="text-text-muted" />
+      </button>
+
+      <div className="no-drag ml-auto flex items-center gap-1.5">
+        {isLoaded && (
+          <button
+            onClick={() => save()}
+            className="icon-button"
+            title="Save project (Ctrl+S)"
+            aria-label="Save project"
+          >
+            <Save size={14} strokeWidth={1.7} />
+          </button>
+        )}
+        {onToggleInspector && (
+          <button
+            className="icon-button"
+            data-active={inspectorVisible}
+            onClick={onToggleInspector}
+            title="Toggle Inspector"
+            aria-label="Toggle Inspector"
+          >
+            <PanelRight size={15} strokeWidth={1.7} />
+          </button>
+        )}
+        {onExport && (
+          <button
+            onClick={onExport}
+            className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
+            title="Export"
+          >
+            <Share2 size={14} strokeWidth={1.7} />
+            Export
+          </button>
+        )}
+        <div
+          className="ml-1 flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-surface-3 text-[9px] font-semibold text-text-secondary"
+          title="Account"
+        >
+          P
         </div>
-
-        {/* Project name */}
-        <span className="text-xs text-text-secondary">
-          {name}
-          {hasUnsavedChanges && <span className="ml-1 text-text-muted">*</span>}
-        </span>
-      </div>
-
-      {/* Center: Undo/Redo quick buttons */}
-      <div className="no-drag flex items-center gap-1">
-        <button
-          onClick={undo}
-          disabled={!canUndo}
-          className={`rounded px-1.5 py-0.5 text-xs transition ${
-            canUndo ? 'text-text-secondary hover:bg-surface-3 hover:text-text-primary' : 'text-text-muted/30 cursor-not-allowed'
-          }`}
-          title="Undo (Ctrl+Z)"
-        >
-          ↩
-        </button>
-        <button
-          onClick={redo}
-          disabled={!canRedo}
-          className={`rounded px-1.5 py-0.5 text-xs transition ${
-            canRedo ? 'text-text-secondary hover:bg-surface-3 hover:text-text-primary' : 'text-text-muted/30 cursor-not-allowed'
-          }`}
-          title="Redo (Ctrl+Y)"
-        >
-          ↪
-        </button>
-      </div>
-
-      {/* Right: Save */}
-      <div className="no-drag flex items-center gap-2">
-        <button
-          onClick={() => save()}
-          className="rounded px-2 py-0.5 text-xs text-text-secondary transition hover:bg-surface-3 hover:text-text-primary"
-          title="Save project (Ctrl+S)"
-        >
-          Save
-        </button>
       </div>
     </header>
   );
-}
-
-// ─── Edit Menu Dropdown ──────────────────────────────────────────────────────
-
-function EditMenu({
-  canUndo,
-  canRedo,
-  onUndo,
-  onRedo,
-}: {
-  canUndo: boolean;
-  canRedo: boolean;
-  onUndo: () => void;
-  onRedo: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const splitAtPlayhead = useTimelineStore((s) => s.splitAtPlayhead);
-  const removeSelectedClips = useTimelineStore((s) => s.removeSelectedClips);
-  const rippleDelete = useTimelineStore((s) => s.rippleDelete);
-  const selectedClipIds = useTimelineStore((s) => s.selectedClipIds);
-  const hasSelection = selectedClipIds.size > 0;
-
-  // Close on click outside
-  useEffect(() => {
-    if (!open) return;
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [open]);
-
-  return (
-    <div ref={menuRef} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className={`rounded px-2 py-0.5 text-xs transition ${
-          open ? 'bg-surface-3 text-text-primary' : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary'
-        }`}
-      >
-        Edit
-      </button>
-
-      {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 w-52 rounded-md border border-surface-3 bg-surface-2 py-1 shadow-xl animate-fade-in">
-          <MenuItem
-            label="Undo"
-            shortcut="Ctrl+Z"
-            disabled={!canUndo}
-            onClick={() => { onUndo(); setOpen(false); }}
-          />
-          <MenuItem
-            label="Redo"
-            shortcut="Ctrl+Y"
-            disabled={!canRedo}
-            onClick={() => { onRedo(); setOpen(false); }}
-          />
-          <MenuDivider />
-          <MenuItem
-            label="Split at Playhead"
-            shortcut="C"
-            onClick={() => { splitAtPlayhead(); setOpen(false); }}
-          />
-          <MenuItem
-            label="Delete"
-            shortcut="Del"
-            disabled={!hasSelection}
-            onClick={() => { removeSelectedClips(); setOpen(false); }}
-          />
-          <MenuItem
-            label="Ripple Delete"
-            shortcut="Shift+Del"
-            disabled={!hasSelection}
-            onClick={() => { rippleDelete(); setOpen(false); }}
-          />
-          <MenuDivider />
-          <MenuItem
-            label="Select All"
-            shortcut="Ctrl+A"
-            onClick={() => {
-              const clips = useTimelineStore.getState().getClips();
-              useTimelineStore.setState({ selectedClipIds: new Set(clips.map((c) => c.id)) });
-              setOpen(false);
-            }}
-          />
-          <MenuItem
-            label="Deselect All"
-            shortcut="Esc"
-            onClick={() => {
-              useTimelineStore.getState().deselectAll();
-              setOpen(false);
-            }}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MenuItem({
-  label,
-  shortcut,
-  disabled = false,
-  onClick,
-}: {
-  label: string;
-  shortcut?: string;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`flex w-full items-center justify-between px-3 py-1.5 text-xs transition ${
-        disabled
-          ? 'text-text-muted/40 cursor-not-allowed'
-          : 'text-text-primary hover:bg-surface-3'
-      }`}
-    >
-      <span>{label}</span>
-      {shortcut && (
-        <span className="text-2xs text-text-muted">{shortcut}</span>
-      )}
-    </button>
-  );
-}
-
-function MenuDivider() {
-  return <div className="mx-2 my-1 h-px bg-surface-3" />;
 }

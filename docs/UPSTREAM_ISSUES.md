@@ -1,5 +1,10 @@
 # Upstream Issue Audit
 
+> Historical detailed ledger. For the current machine-generated issue and PR
+> inventory, see [`UPSTREAM_SNAPSHOT.md`](./UPSTREAM_SNAPSHOT.md). For the
+> required workflow and current dispositions, see
+> [`UPSTREAM_PARITY.md`](./UPSTREAM_PARITY.md).
+
 This document tracks every relevant issue reported against the projects we derive
 from / compete with, and our status on each. The goal is that defects reported
 upstream are **resolved or structurally impossible** in this Windows port.
@@ -61,4 +66,4 @@ Not defects — capabilities Palmier Pro shipped that we should match over time:
 
 ---
 
-_Last audited: 2026-06-20. Re-run the audit against both trackers before each release._
+_Last reconciled with the current parity workflow: 2026-07-24._

@@ -7,7 +7,7 @@
 import { ipcMain, BrowserWindow, safeStorage } from 'electron';
 import Store from 'electron-store';
 import { PalmierAgent, type StreamCallbacks } from './agent';
-import { EditorController } from '../../shared/editor/controller';
+import type { EditorController } from '../../shared/editor/controller';
 
 // Persistent store for encrypted keys and preferences
 const store = new Store({

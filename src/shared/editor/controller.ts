@@ -12,12 +12,12 @@ import { clampFrame, asValidFrame } from '../utils/safe-number';
 import {
   CommandHistory,
   AddClipCommand,
+  AddMediaAndClipsCommand,
   RemoveClipCommand,
   MoveClipCommand,
   TrimClipCommand,
   SplitClipCommand,
   AddTrackCommand,
-  SetPlayheadCommand,
   SetBlendModeCommand,
   SetOpacityCommand,
   SetFadeCommand,
@@ -28,8 +28,14 @@ import type { Command } from './commands';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
 import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
+import { isMediaCompatibleWithTrack, placementDuration } from './placement';
 
 export type StateChangeListener = (project: Project) => void;
+
+export interface MediaPlacementResult {
+  assetIds: string[];
+  clipIds: string[];
+}
 
 export class EditorController {
   private project: Project;
@@ -196,7 +202,102 @@ export class EditorController {
   }
 
   setPlayhead(frame: Frame): void {
-    this.execute(new SetPlayheadCommand(clampFrame(frame)));
+    this.project = {
+      ...this.project,
+      timeline: {
+        ...this.project.timeline,
+        playheadFrame: clampFrame(frame),
+      },
+    };
+    this.notify();
+  }
+
+  importMediaAssets(assets: MediaAsset[]): string[] {
+    if (assets.length === 0) return [];
+    this.execute(new AddMediaAndClipsCommand(assets, [], 'Import media'));
+    return assets.map((asset) => asset.id);
+  }
+
+  placeMediaAssets(
+    assetIds: string[],
+    trackId: string,
+    startFrame: Frame,
+  ): MediaPlacementResult {
+    return this.addMediaAndClips([], assetIds, trackId, startFrame, 'Place media');
+  }
+
+  importAndPlaceMedia(
+    assets: MediaAsset[],
+    trackId: string,
+    startFrame: Frame,
+  ): MediaPlacementResult {
+    return this.addMediaAndClips(
+      assets,
+      assets.map((asset) => asset.id),
+      trackId,
+      startFrame,
+      'Import and place media',
+    );
+  }
+
+  private addMediaAndClips(
+    importedAssets: MediaAsset[],
+    assetIds: string[],
+    trackId: string,
+    startFrame: Frame,
+    label: string,
+  ): MediaPlacementResult {
+    const track = this.project.timeline.tracks.find((candidate) => candidate.id === trackId);
+    const importedById = new Map(importedAssets.map((asset) => [asset.id, asset]));
+    const allAssets = new Map(this.project.media.map((asset) => [asset.id, asset]));
+    for (const asset of importedAssets) allAssets.set(asset.id, asset);
+
+    const clips: Clip[] = [];
+    let cursor = clampFrame(startFrame);
+
+    if (track && !track.locked) {
+      for (const assetId of assetIds) {
+        const asset = allAssets.get(assetId);
+        if (!asset || !isMediaCompatibleWithTrack(asset.type, track.type)) continue;
+
+        const duration = placementDuration(asset, this.project.settings.fps);
+        clips.push({
+          id: nanoid(),
+          assetId: asset.id,
+          type: asset.type,
+          trackId: track.id,
+          startFrame: cursor,
+          durationFrames: duration,
+          inPoint: 0,
+          outPoint: duration,
+          x: 0,
+          y: 0,
+          width: this.project.settings.width,
+          height: this.project.settings.height,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          opacity: 1,
+          anchorX: 0,
+          anchorY: 0,
+          volume: 1,
+          muted: false,
+          label: asset.filename,
+        });
+        cursor = clampFrame(cursor + duration);
+      }
+    }
+
+    const media = importedAssets.filter((asset) => importedById.has(asset.id));
+    if (media.length === 0 && clips.length === 0) {
+      return { assetIds: [], clipIds: [] };
+    }
+
+    this.execute(new AddMediaAndClipsCommand(media, clips, label));
+    return {
+      assetIds: media.map((asset) => asset.id),
+      clipIds: clips.map((clip) => clip.id),
+    };
   }
 
   /**

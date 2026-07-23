@@ -1,10 +1,12 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "module": "CommonJS",
-    "moduleResolution": "node",
-    "outDir": "dist/main",
-    "rootDir": "src/main"
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src"
   },
-  "include": ["src/main/**/*", "src/shared/**/*"]
+  "include": ["src/main/**/*", "src/shared/**/*"],
+  "exclude": ["src/**/*.test.ts"]
 }

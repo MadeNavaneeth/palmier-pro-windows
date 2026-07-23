@@ -6,6 +6,7 @@ import { Preview } from './components/Preview';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { ChatPanel, SettingsPanel } from './components/ai';
 import { Inspector } from './components/Inspector';
+import { ExportDialog } from './components/ExportDialog';
 import { useProjectStore } from './store/project';
 import { initAiListeners } from './store/ai';
 import { useAutosave } from './hooks/useAutosave';
@@ -14,6 +15,10 @@ import { useEditorSync } from './hooks/useEditorSync';
 export function App() {
   const { isLoaded } = useProjectStore();
   const [systemReady, setSystemReady] = useState(false);
+  const [mediaVisible, setMediaVisible] = useState(true);
+  const [inspectorVisible, setInspectorVisible] = useState(true);
+  const [agentVisible, setAgentVisible] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
   // Debounced crash-recovery autosave (upstream #211).
   useAutosave();
@@ -63,28 +68,42 @@ export function App() {
 
   return (
     <div className="flex h-screen w-screen flex-col bg-surface-0">
-      <TitleBar />
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left panel: Media Bin */}
-        <aside className="flex w-72 flex-col border-r border-surface-3 bg-surface-1">
-          <MediaBin />
-        </aside>
+      <TitleBar
+        mediaVisible={mediaVisible}
+        inspectorVisible={inspectorVisible}
+        agentVisible={agentVisible}
+        onToggleMedia={() => setMediaVisible((value) => !value)}
+        onToggleInspector={() => setInspectorVisible((value) => !value)}
+        onToggleAgent={() => setAgentVisible((value) => !value)}
+        onExport={() => setExportOpen(true)}
+      />
+      <div className="flex min-h-0 flex-1 gap-[5px] overflow-hidden p-[5px] pt-0">
+        {agentVisible && (
+          <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden bg-surface-1">
+            <ChatPanel />
+          </aside>
+        )}
 
-        {/* Center: Preview + Timeline */}
-        <main className="flex flex-1 flex-col">
+        {mediaVisible && (
+          <aside className="flex w-[clamp(280px,30vw,500px)] shrink-0 flex-col overflow-hidden bg-surface-1">
+          <MediaBin />
+          </aside>
+        )}
+
+        <main className="flex min-h-0 min-w-[400px] flex-1 flex-col gap-[5px]">
           <Preview />
           <Timeline />
         </main>
 
-        {/* Right panel: Inspector + AI Chat */}
-        <aside className="flex w-80 flex-col border-l border-surface-3 bg-surface-1">
-          <Inspector />
-          <ChatPanel />
-        </aside>
+        {inspectorVisible && (
+          <aside className="flex w-[clamp(240px,20vw,340px)] shrink-0 flex-col overflow-hidden bg-surface-1">
+            <Inspector />
+          </aside>
+        )}
       </div>
 
-      {/* Modals */}
       <SettingsPanel />
+      <ExportDialog isOpen={exportOpen} onClose={() => setExportOpen(false)} />
     </div>
   );
 }

@@ -1,121 +1,180 @@
-/**
- * Preview — the main preview panel with canvas, transport controls,
- * and playback engine integration.
- */
-
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Gauge,
+  Pause,
+  Play,
+  SkipBack,
+  SkipForward,
+  ZoomIn,
+} from 'lucide-react';
 import { PreviewCanvas } from './PreviewCanvas';
 import { useTimelineStore } from '../store/timeline';
 import { getPlaybackEngine } from '../engine/PlaybackEngine';
 import { frameToTimecode } from '../../shared/utils/time';
 
+export const PLAYBACK_RATE_PRESETS = [0.5, 0.75, 1, 1.5, 2, 4, 10] as const;
+
 export function Preview() {
-  const isPlaying = useTimelineStore((s) => s.isPlaying);
-  const playhead = useTimelineStore((s) => s.project.timeline.playheadFrame);
-  const fps = useTimelineStore((s) => s.getProjectFps());
-  const togglePlayback = useTimelineStore((s) => s.togglePlayback);
-  const stepFrame = useTimelineStore((s) => s.stepFrame);
-  const width = useTimelineStore((s) => s.project.settings.width);
-  const height = useTimelineStore((s) => s.project.settings.height);
-  const playbackRate = useTimelineStore((s) => s.playbackRate);
+  const isPlaying = useTimelineStore((state) => state.isPlaying);
+  const playhead = useTimelineStore((state) => state.project.timeline.playheadFrame);
+  const fps = useTimelineStore((state) => state.getProjectFps());
+  const togglePlayback = useTimelineStore((state) => state.togglePlayback);
+  const stepFrame = useTimelineStore((state) => state.stepFrame);
+  const setPlayhead = useTimelineStore((state) => state.setPlayhead);
+  const width = useTimelineStore((state) => state.project.settings.width);
+  const height = useTimelineStore((state) => state.project.settings.height);
+  const playbackRate = useTimelineStore((state) => state.playbackRate);
+  const setPlaybackRate = useTimelineStore((state) => state.setPlaybackRate);
+  const durationFrames = useTimelineStore((state) =>
+    Math.max(
+      1,
+      ...state.project.timeline.clips.map(
+        (clip) => clip.startFrame + clip.durationFrames,
+      ),
+    ),
+  );
+  const hasVisualClipAtPlayhead = useTimelineStore((state) =>
+    state.project.timeline.clips.some(
+      (clip) =>
+        clip.type !== 'audio'
+        && playhead >= clip.startFrame
+        && playhead < clip.startFrame + clip.durationFrames,
+    ),
+  );
 
   const engine = useRef(getPlaybackEngine());
 
-  // Sync playback engine with store state
   useEffect(() => {
-    if (isPlaying) {
-      engine.current.start();
-    } else {
-      engine.current.stop();
-    }
+    if (isPlaying) engine.current.start();
+    else engine.current.stop();
   }, [isPlaying]);
 
-  // Request composite when playhead moves (for scrub/seek)
   useEffect(() => {
-    if (!isPlaying) {
-      engine.current.seek(playhead);
-    }
+    if (!isPlaying) engine.current.seek(playhead);
   }, [playhead, isPlaying]);
 
-  // Cleanup
-  useEffect(() => {
-    return () => engine.current.dispose();
-  }, []);
+  useEffect(() => () => engine.current.dispose(), []);
 
   const handleTogglePlay = useCallback(() => {
     togglePlayback();
   }, [togglePlayback]);
 
-  const timecode = frameToTimecode(playhead, fps);
-
   return (
-    <section className="flex flex-1 flex-col bg-surface-0">
-      {/* Preview canvas */}
-      <PreviewCanvas width={width} height={height} />
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface-1">
+      <div className="panel-header flex items-center px-2">
+        <div className="flex h-full items-center border-b border-white/80 px-2 text-[10px] font-medium text-text-primary">
+          Timeline
+        </div>
+      </div>
 
-      {/* Transport bar */}
-      <div className="flex items-center justify-between border-t border-surface-3 bg-surface-1 px-4 py-2">
-        {/* Left: Timecode */}
-        <div className="w-32">
-          <span className="font-mono text-xs text-text-primary tabular-nums">
-            {timecode}
+      <PreviewCanvas
+        width={width}
+        height={height}
+        emptyMessage={
+          hasVisualClipAtPlayhead
+            ? undefined
+            : 'Drop video or an image onto a video track to preview it'
+        }
+      />
+
+      <div className="flex h-5 shrink-0 items-center border-t border-white/10 px-3">
+        <input
+          type="range"
+          min={0}
+          max={durationFrames}
+          value={Math.min(playhead, durationFrames)}
+          onChange={(event) => setPlayhead(Number(event.target.value))}
+          aria-label="Preview playhead"
+          className="h-1 w-full accent-accent"
+        />
+      </div>
+
+      <div className="flex h-9 shrink-0 items-center justify-between px-3">
+        <div className="w-36 whitespace-nowrap max-[1200px]:w-24">
+          <span className="font-mono text-[11px] text-text-secondary tabular-nums">
+            {frameToTimecode(playhead, fps)}
+          </span>
+          <span className="ml-1 font-mono text-[10px] text-text-muted max-[1200px]:hidden">
+            / {frameToTimecode(durationFrames, fps)}
           </span>
         </div>
 
-        {/* Center: Transport buttons */}
-        <div className="flex items-center gap-3">
-          {/* Previous frame */}
-          <button
-            onClick={() => stepFrame(-1)}
-            className="flex h-7 w-7 items-center justify-center rounded text-text-secondary transition hover:bg-surface-3 hover:text-text-primary"
-            title="Previous frame (←)"
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-              <rect x="1" y="2" width="2" height="8" />
-              <polygon points="11,2 11,10 4,6" />
-            </svg>
-          </button>
-
-          {/* Play/Pause */}
+        <div className="flex items-center gap-1.5">
+          <TransportButton label="Go to beginning" onClick={() => setPlayhead(0)}>
+            <SkipBack size={13} fill="currentColor" />
+          </TransportButton>
+          <TransportButton label="Previous frame" onClick={() => stepFrame(-1)}>
+            <ChevronLeft size={15} strokeWidth={2} />
+          </TransportButton>
           <button
             onClick={handleTogglePlay}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-accent text-white transition hover:bg-accent-hover"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-text-primary hover:bg-white/[0.08]"
             title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
           >
-            {isPlaying ? (
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-                <rect x="2" y="1" width="3" height="10" />
-                <rect x="7" y="1" width="3" height="10" />
-              </svg>
-            ) : (
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-                <polygon points="2,0 12,6 2,12" />
-              </svg>
-            )}
+            {isPlaying
+              ? <Pause size={13} fill="currentColor" />
+              : <Play size={13} fill="currentColor" />}
           </button>
-
-          {/* Next frame */}
-          <button
-            onClick={() => stepFrame(1)}
-            className="flex h-7 w-7 items-center justify-center rounded text-text-secondary transition hover:bg-surface-3 hover:text-text-primary"
-            title="Next frame (→)"
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-              <polygon points="1,2 1,10 8,6" />
-              <rect x="9" y="2" width="2" height="8" />
-            </svg>
-          </button>
+          <TransportButton label="Next frame" onClick={() => stepFrame(1)}>
+            <ChevronRight size={15} strokeWidth={2} />
+          </TransportButton>
+          <TransportButton label="Go to end" onClick={() => setPlayhead(durationFrames)}>
+            <SkipForward size={13} fill="currentColor" />
+          </TransportButton>
         </div>
 
-        {/* Right: Playback rate indicator */}
-        <div className="w-32 text-right">
-          {playbackRate !== 1 && (
-            <span className="text-2xs text-accent tabular-nums">
-              {playbackRate > 0 ? '▶' : '◀'} {Math.abs(playbackRate)}x
-            </span>
-          )}
+        <div className="flex w-36 items-center justify-end gap-1 max-[1200px]:w-24">
+          <label
+            className="flex h-7 items-center gap-1 px-1.5 text-[10px] text-text-muted max-[1200px]:hidden"
+            title="Playback speed"
+          >
+            <Gauge size={13} />
+            <select
+              aria-label="Playback speed"
+              value={String(Math.abs(playbackRate))}
+              onChange={(event) => setPlaybackRate(Number(event.target.value))}
+              className="cursor-pointer bg-transparent text-[10px] text-text-muted outline-none hover:text-text-primary"
+            >
+              {PLAYBACK_RATE_PRESETS.map((rate) => (
+                <option key={rate} value={rate} className="bg-surface-2 text-text-primary">
+                  {rate}x
+                </option>
+              ))}
+            </select>
+          </label>
+          <div
+            className="flex h-7 items-center gap-1 px-1.5 text-[10px] text-text-muted"
+            title="Canvas zoom"
+          >
+            <ZoomIn size={13} />
+            Fit
+          </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function TransportButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
+      title={label}
+      aria-label={label}
+    >
+      {children}
+    </button>
   );
 }

@@ -1,56 +1,32 @@
-/**
- * TrackHeader — the label/controls sidebar for each track.
- * Shows track name, type icon, lock/mute toggles.
- */
-
 import React from 'react';
+import { Eye, EyeOff, LockKeyhole, Volume2, VolumeX } from 'lucide-react';
 import type { Track } from '../../../shared/types/project';
 
 interface TrackHeaderProps {
   track: Track;
-  onToggleLock?: (trackId: string) => void;
-  onToggleVisible?: (trackId: string) => void;
 }
 
-export function TrackHeader({ track, onToggleLock, onToggleVisible }: TrackHeaderProps) {
-  const typeIcon = track.type === 'video' ? '🎬' : '🔊';
+export function TrackHeader({ track }: TrackHeaderProps) {
+  const isAudio = track.type === 'audio';
+  const tint = isAudio ? '#2e7765' : '#1d5878';
 
   return (
-    <div className="flex h-12 items-center gap-1.5 border-b border-surface-3 px-2 bg-surface-2">
-      {/* Type icon */}
-      <span className="text-2xs flex-shrink-0">{typeIcon}</span>
-
-      {/* Track name */}
-      <span className="flex-1 truncate text-2xs font-medium text-text-secondary">
+    <div className="relative flex h-12 items-center gap-1.5 border-b border-white/10 px-2">
+      <span
+        className="absolute inset-y-1 left-0 w-0.5 rounded-r"
+        style={{ backgroundColor: tint }}
+      />
+      <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-text-secondary">
         {track.name}
       </span>
-
-      {/* Controls */}
-      <div className="flex items-center gap-0.5">
-        {/* Lock toggle */}
-        <button
-          onClick={() => onToggleLock?.(track.id)}
-          className={`rounded p-0.5 text-2xs transition ${
-            track.locked ? 'text-amber-400' : 'text-text-muted hover:text-text-secondary'
-          }`}
-          title={track.locked ? 'Unlock track' : 'Lock track'}
-        >
-          {track.locked ? '🔒' : '🔓'}
-        </button>
-
-        {/* Visible/Mute toggle */}
-        <button
-          onClick={() => onToggleVisible?.(track.id)}
-          className={`rounded p-0.5 text-2xs transition ${
-            !track.visible ? 'text-red-400' : 'text-text-muted hover:text-text-secondary'
-          }`}
-          title={track.visible ? (track.type === 'audio' ? 'Mute' : 'Hide') : (track.type === 'audio' ? 'Unmute' : 'Show')}
-        >
-          {track.type === 'audio'
-            ? (track.visible ? '🔊' : '🔇')
-            : (track.visible ? '👁' : '👁‍🗨')}
-        </button>
-      </div>
+      {track.locked && <LockKeyhole size={11} className="text-text-muted" />}
+      {isAudio
+        ? track.visible
+          ? <Volume2 size={12} className="text-text-muted" />
+          : <VolumeX size={12} className="text-text-muted" />
+        : track.visible
+          ? <Eye size={12} className="text-text-muted" />
+          : <EyeOff size={12} className="text-text-muted" />}
     </div>
   );
 }

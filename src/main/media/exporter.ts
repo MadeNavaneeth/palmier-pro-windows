@@ -9,7 +9,8 @@
  * Reports progress back to the renderer via IPC events.
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import { ipcMain, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';

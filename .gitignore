@@ -8,6 +8,7 @@ out/
 # Rust native addon
 native/target/
 native/*.node
+native/index.d.ts
 native/artifacts/
 
 # IDE

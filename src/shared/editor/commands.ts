@@ -6,7 +6,8 @@
  * This is the core design inherited from Palmier Pro.
  */
 
-import type { Project, Clip, Track, Frame } from '../types/project';
+import type { BlendMode } from '../types/blend-mode';
+import type { Project, Clip, Track, Frame, MediaAsset } from '../types/project';
 
 // ─── Command interface ───────────────────────────────────────────────────────
 
@@ -105,6 +106,55 @@ export class AddClipCommand implements Command {
 
   describe(): string {
     return `Add clip "${this.clip.label || this.clip.id}"`;
+  }
+}
+
+export class AddMediaAndClipsCommand implements Command {
+  readonly name = 'addMediaAndClips';
+  private readonly mediaIds: Set<string>;
+  private readonly clipIds: Set<string>;
+
+  constructor(
+    private media: MediaAsset[],
+    private clips: Clip[],
+    private label: string,
+  ) {
+    this.mediaIds = new Set(media.map((asset) => asset.id));
+    this.clipIds = new Set(clips.map((clip) => clip.id));
+  }
+
+  execute(project: Project): Project {
+    return {
+      ...project,
+      media: [
+        ...project.media.filter((asset) => !this.mediaIds.has(asset.id)),
+        ...this.media,
+      ],
+      timeline: {
+        ...project.timeline,
+        clips: [
+          ...project.timeline.clips.filter((clip) => !this.clipIds.has(clip.id)),
+          ...this.clips,
+        ],
+      },
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  undo(project: Project): Project {
+    return {
+      ...project,
+      media: project.media.filter((asset) => !this.mediaIds.has(asset.id)),
+      timeline: {
+        ...project.timeline,
+        clips: project.timeline.clips.filter((clip) => !this.clipIds.has(clip.id)),
+      },
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  describe(): string {
+    return this.label;
   }
 }
 
@@ -337,12 +387,12 @@ export class SetPlayheadCommand implements Command {
 
 export class SetBlendModeCommand implements Command {
   readonly name = 'setBlendMode';
-  private previousMode: import('../types/blend-mode').BlendMode | undefined;
+  private previousMode: BlendMode | undefined;
   private found = false;
 
   constructor(
     private clipId: string,
-    private blendMode: import('../types/blend-mode').BlendMode,
+    private blendMode: BlendMode,
   ) {}
 
   execute(project: Project): Project {

@@ -13,7 +13,8 @@
  * 5. Spawn ffmpeg, parse stderr for progress, emit percentage via IPC
  */
 
-import { execFile, ChildProcess } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import { execFile } from 'child_process';
 import { ipcMain, BrowserWindow } from 'electron';
 import path from 'path';
 import type { Project, Clip, Track, Frame, ProjectSettings } from '../../shared/types/project';

@@ -1,26 +1,12 @@
-/**
- * ChatPanel — the AI assistant chat interface.
- * Shows message history, streaming responses, tool call visualization,
- * and an input for sending messages.
- */
-
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Bot, Check, Send, Settings, Trash2, Wrench, X } from 'lucide-react';
 import { useAiStore, type ChatMessage, type ToolCallMessage } from '../../store/ai';
 
 export function ChatPanel() {
-  const {
-    messages,
-    isStreaming,
-    isConfigured,
-    sendMessage,
-    clearHistory,
-  } = useAiStore();
-
+  const { messages, isStreaming, isConfigured, sendMessage, clearHistory } = useAiStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -33,9 +19,9 @@ export function ChatPanel() {
   }, [input, isStreaming, sendMessage]);
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
+    (event: React.KeyboardEvent) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
         handleSend();
       }
     },
@@ -44,94 +30,74 @@ export function ChatPanel() {
 
   if (!isConfigured) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
-        <div className="text-3xl mb-3">🤖</div>
-        <h3 className="text-sm font-medium text-text-primary mb-1">AI Assistant</h3>
-        <p className="text-2xs text-text-muted mb-4 max-w-[200px]">
-          Set up your API key to use the AI agent. It can read and edit your timeline directly.
-        </p>
-        <button
-          onClick={() => useAiStore.setState({ showSettings: true })}
-          className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white transition hover:bg-accent-hover"
-        >
-          Configure API Key
-        </button>
+      <div className="flex flex-1 flex-col">
+        <PanelHeader onClear={clearHistory} />
+        <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
+          <Bot size={26} strokeWidth={1.4} className="mb-3 text-text-muted" />
+          <h3 className="mb-1 text-[12px] font-medium text-text-primary">Agent</h3>
+          <p className="mb-4 max-w-[210px] text-[10px] leading-4 text-text-muted">
+            Connect a provider to edit the active timeline with Palmier Agent.
+          </p>
+          <button
+            onClick={() => useAiStore.setState({ showSettings: true })}
+            className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-medium text-surface-0 hover:bg-accent-hover"
+          >
+            Configure Agent
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-1 flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-surface-3 px-3 py-2">
-        <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-          AI Agent
-        </h2>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={clearHistory}
-            className="rounded px-1.5 py-0.5 text-2xs text-text-muted transition hover:bg-surface-3 hover:text-text-primary"
-            title="Clear conversation"
-          >
-            Clear
-          </button>
-          <button
-            onClick={() => useAiStore.setState({ showSettings: true })}
-            className="rounded px-1.5 py-0.5 text-2xs text-text-muted transition hover:bg-surface-3 hover:text-text-primary"
-            title="Settings"
-          >
-            ⚙
-          </button>
-        </div>
-      </div>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <PanelHeader onClear={clearHistory} />
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         {messages.length === 0 && (
-          <div className="text-center py-8">
-            <p className="text-2xs text-text-muted">
-              Ask the AI to edit your timeline, add clips, trim, split, or generate media.
+          <div className="py-8 text-center">
+            <p className="text-[10px] leading-4 text-text-muted">
+              Ask the agent to inspect or edit the active timeline.
             </p>
           </div>
         )}
 
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+        {messages.map((message, index) => (
+          <MessageBubble key={index} message={message} />
         ))}
 
         {isStreaming && (
-          <div className="flex items-center gap-2 px-3 py-2">
+          <div className="flex items-center gap-2 px-2 py-2">
             <div className="flex gap-1">
-              <div className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
-              <div className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse [animation-delay:150ms]" />
-              <div className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse [animation-delay:300ms]" />
+              <div className="h-1 w-1 animate-pulse rounded-full bg-accent" />
+              <div className="h-1 w-1 animate-pulse rounded-full bg-accent [animation-delay:150ms]" />
+              <div className="h-1 w-1 animate-pulse rounded-full bg-accent [animation-delay:300ms]" />
             </div>
-            <span className="text-2xs text-text-muted">Thinking...</span>
+            <span className="text-[10px] text-text-muted">Thinking...</span>
           </div>
         )}
-
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <div className="border-t border-surface-3 p-3">
-        <div className="flex gap-2">
+      <div className="border-t border-white/10 p-2">
+        <div className="flex items-end gap-1.5 rounded-md border border-white/12 bg-surface-2 p-1.5 focus-within:border-white/30">
           <textarea
-            ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask the AI to edit your project..."
-            rows={1}
-            className="flex-1 resize-none rounded border border-surface-3 bg-surface-2 px-3 py-2 text-xs text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+            placeholder="Ask Palmier Agent..."
+            rows={2}
+            className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-[11px] leading-4 text-text-primary outline-none placeholder:text-text-muted"
             disabled={isStreaming}
           />
           <button
             onClick={handleSend}
             disabled={!input.trim() || isStreaming}
-            className="rounded bg-accent px-3 py-2 text-xs font-medium text-white transition hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-surface-0 hover:bg-accent-hover disabled:opacity-30"
+            title="Send"
+            aria-label="Send message"
           >
-            Send
+            <Send size={13} />
           </button>
         </div>
       </div>
@@ -139,47 +105,75 @@ export function ChatPanel() {
   );
 }
 
-// ─── Message Bubble ──────────────────────────────────────────────────────────
+function PanelHeader({ onClear }: { onClear: () => void }) {
+  return (
+    <div className="panel-header flex items-center justify-between px-2">
+      <span className="text-[11px] font-medium text-text-secondary">Agent</span>
+      <div className="flex items-center gap-0.5">
+        <button
+          onClick={onClear}
+          className="icon-button"
+          title="Clear conversation"
+          aria-label="Clear conversation"
+        >
+          <Trash2 size={13} />
+        </button>
+        <button
+          onClick={() => useAiStore.setState({ showSettings: true })}
+          className="icon-button"
+          title="Agent settings"
+          aria-label="Agent settings"
+        >
+          <Settings size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-lg bg-accent/20 border border-accent/30 px-3 py-2">
-          <p className="text-xs text-text-primary whitespace-pre-wrap">{message.content}</p>
+        <div className="max-w-[88%] rounded-md border border-white/12 bg-surface-3 px-2.5 py-2">
+          <p className="whitespace-pre-wrap text-[11px] leading-4 text-text-primary">
+            {message.content}
+          </p>
         </div>
       </div>
     );
   }
 
   if (message.role === 'tool') {
-    const toolMsg = message as ToolCallMessage;
+    const toolMessage = message as ToolCallMessage;
     return (
-      <div className="px-2">
-        <div className="rounded border border-surface-3 bg-surface-2/50 px-3 py-2">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-2xs font-mono text-amber-400">⚡ {toolMsg.toolName}</span>
-            {toolMsg.success !== undefined && (
-              <span className={`text-2xs ${toolMsg.success ? 'text-emerald-400' : 'text-red-400'}`}>
-                {toolMsg.success ? '✓' : '✗'}
-              </span>
-            )}
-          </div>
-          {toolMsg.content && (
-            <pre className="text-2xs text-text-muted font-mono whitespace-pre-wrap overflow-hidden max-h-24">
-              {toolMsg.content.length > 200 ? toolMsg.content.slice(0, 200) + '...' : toolMsg.content}
-            </pre>
+      <div className="rounded-md border border-white/10 bg-surface-2/70 px-2.5 py-2">
+        <div className="mb-1 flex items-center gap-1.5">
+          <Wrench size={11} className="text-timecode" />
+          <span className="font-mono text-[9px] text-timecode">{toolMessage.toolName}</span>
+          {toolMessage.success !== undefined && (
+            <span className={toolMessage.success ? 'text-emerald-400' : 'text-red-400'}>
+              {toolMessage.success ? <Check size={11} /> : <X size={11} />}
+            </span>
           )}
         </div>
+        {toolMessage.content && (
+          <pre className="max-h-24 overflow-hidden whitespace-pre-wrap font-mono text-[9px] leading-4 text-text-muted">
+            {toolMessage.content.length > 200
+              ? `${toolMessage.content.slice(0, 200)}...`
+              : toolMessage.content}
+          </pre>
+        )}
       </div>
     );
   }
 
-  // Assistant message
   return (
     <div className="flex justify-start">
-      <div className="max-w-[90%] rounded-lg bg-surface-2 border border-surface-3 px-3 py-2">
-        <p className="text-xs text-text-primary whitespace-pre-wrap">{message.content}</p>
+      <div className="max-w-[92%] px-1 py-1">
+        <p className="whitespace-pre-wrap text-[11px] leading-4 text-text-secondary">
+          {message.content}
+        </p>
       </div>
     </div>
   );

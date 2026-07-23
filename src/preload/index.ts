@@ -6,7 +6,7 @@
  * never gets access to Node, Electron internals, or the filesystem.
  */
 
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 // ─── Type-safe API exposed to the renderer as `window.palmier` ───────────────
 
@@ -26,6 +26,14 @@ const api = {
   // ── Media ────────────────────────────────────────────────────────────────────
   media: {
     import: () => ipcRenderer.invoke('media:import'),
+    importPaths: (filePaths: string[]) => ipcRenderer.invoke('media:import-paths', filePaths),
+    getPathForFile: (file: File) => {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch {
+        return '';
+      }
+    },
     probe: (filePath: string) => ipcRenderer.invoke('media:probe', filePath),
     thumbnail: (filePath: string, outputDir: string, timestamp?: number) =>
       ipcRenderer.invoke('media:thumbnail', filePath, outputDir, timestamp),

@@ -10,16 +10,16 @@
  */
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { useTimelineStore } from '../store/timeline';
 
 interface PreviewCanvasProps {
   /** Project canvas width in pixels */
   width: number;
   /** Project canvas height in pixels */
   height: number;
+  emptyMessage?: string;
 }
 
-export function PreviewCanvas({ width, height }: PreviewCanvasProps) {
+export function PreviewCanvas({ width, height, emptyMessage }: PreviewCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imageDataRef = useRef<ImageData | null>(null);
@@ -106,7 +106,7 @@ export function PreviewCanvas({ width, height }: PreviewCanvasProps) {
   return (
     <div
       ref={containerRef}
-      className="flex flex-1 items-center justify-center bg-black overflow-hidden"
+      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-black"
     >
       <canvas
         ref={canvasRef}
@@ -119,6 +119,11 @@ export function PreviewCanvas({ width, height }: PreviewCanvasProps) {
         }}
         className="block"
       />
+      {emptyMessage && (
+        <div className="pointer-events-none absolute text-center text-xs text-text-muted">
+          {emptyMessage}
+        </div>
+      )}
     </div>
   );
 }

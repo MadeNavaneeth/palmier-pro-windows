@@ -170,7 +170,7 @@ export function SettingsPanel() {
             <button
               onClick={handleSaveKey}
               disabled={!apiKey.trim() || testing}
-              className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover transition disabled:opacity-40"
+              className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-surface-0 hover:bg-accent-hover transition disabled:opacity-40"
             >
               {testing ? 'Saving...' : 'Save Key'}
             </button>

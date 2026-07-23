@@ -6,6 +6,7 @@
 
 import React, { useCallback, useState } from 'react';
 import { useTimelineStore } from '../store/timeline';
+import { useProjectStore } from '../store/project';
 import { BLEND_MODES, BLEND_MODE_LABELS, type BlendMode } from '../../shared/types/blend-mode';
 
 export function Inspector() {
@@ -19,6 +20,8 @@ export function Inspector() {
   const setClipTransition = useTimelineStore((s) => s.setClipTransition);
   const removeSilenceForClip = useTimelineStore((s) => s.removeSilenceForClip);
   const fps = useTimelineStore((s) => s.project.settings.fps);
+  const project = useTimelineStore((s) => s.project);
+  const projectName = useProjectStore((s) => s.name);
 
   const [silenceStatus, setSilenceStatus] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
@@ -85,28 +88,61 @@ export function Inspector() {
   if (!clip) {
     if (selectedClipIds.size > 1) {
       return (
-        <div className="border-b border-surface-3 px-3 py-3">
-          <p className="text-2xs text-text-muted">{selectedClipIds.size} clips selected</p>
+        <div className="flex flex-1 flex-col">
+          <div className="panel-header flex items-center px-3 text-[11px] font-medium text-text-secondary">
+            Inspector
+          </div>
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-[10px] text-text-muted">{selectedClipIds.size} clips selected</p>
+          </div>
         </div>
       );
     }
-    return null;
+    const totalFrames = project.timeline.clips.reduce(
+      (maximum, item) => Math.max(maximum, item.startFrame + item.durationFrames),
+      0,
+    );
+    return (
+      <div className="flex flex-1 flex-col overflow-y-auto">
+        <div className="panel-header flex items-center px-3 text-[11px] font-medium text-text-secondary">
+          Inspector
+        </div>
+        <InspectorSection title="Project">
+          <InspectorValue label="Name" value={projectName} />
+          <InspectorValue
+            label="Duration"
+            value={`${(totalFrames / project.settings.fps).toFixed(1)} s`}
+          />
+        </InspectorSection>
+        <InspectorSection title="Settings">
+          <InspectorValue
+            label="Resolution"
+            value={`${project.settings.width} x ${project.settings.height}`}
+          />
+          <InspectorValue label="Frame Rate" value={`${project.settings.fps} fps`} />
+          <InspectorValue
+            label="Aspect Ratio"
+            value={`${project.settings.width}:${project.settings.height}`}
+          />
+        </InspectorSection>
+      </div>
+    );
   }
 
   const isAudio = clip.type === 'audio';
   const opacityPct = Math.round(clip.opacity * 100);
 
   return (
-    <div className="border-b border-surface-3">
+    <div className="flex flex-1 flex-col overflow-y-auto">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-surface-3">
-        <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">
+      <div className="panel-header flex items-center justify-between px-3">
+        <h2 className="text-[11px] font-medium text-text-secondary">
           Inspector
         </h2>
-        <span className="text-2xs text-text-muted capitalize">{clip.type}</span>
+        <span className="text-[10px] text-text-muted capitalize">{clip.type}</span>
       </div>
 
-      <div className="px-3 py-3 space-y-3">
+      <div className="space-y-3 px-3 py-3">
         {/* Clip label */}
         <div className="truncate text-xs text-text-primary" title={clip.label || clip.id}>
           {clip.label || clip.id}
@@ -222,7 +258,7 @@ export function Inspector() {
 
         {/* Audio tools — available for audio and video clips (both can carry sound). */}
         {clip.type !== 'image' && clip.type !== 'title' && (
-          <div className="flex flex-col gap-1.5 pt-1 border-t border-surface-3">
+          <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1">
             <label className="text-2xs text-text-muted uppercase tracking-wide pt-1">Audio</label>
             <button
               onClick={handleRemoveSilence}
@@ -237,6 +273,32 @@ export function Inspector() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function InspectorSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="border-b border-white/10 px-3 py-3">
+      <h3 className="mb-2 text-[10px] font-semibold text-text-primary">{title}</h3>
+      <div className="space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function InspectorValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-3 text-[10px]">
+      <span className="text-text-muted">{label}</span>
+      <span className="ml-auto max-w-[190px] truncate text-right text-text-secondary">
+        {value}
+      </span>
     </div>
   );
 }

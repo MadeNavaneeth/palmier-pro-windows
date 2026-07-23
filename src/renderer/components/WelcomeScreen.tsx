@@ -21,7 +21,7 @@ export function WelcomeScreen() {
         <div className="flex flex-col gap-3 w-64">
           <button
             onClick={createNew}
-            className="flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-white transition hover:bg-accent-hover"
+            className="flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-surface-0 transition hover:bg-accent-hover"
           >
             New Project
           </button>
