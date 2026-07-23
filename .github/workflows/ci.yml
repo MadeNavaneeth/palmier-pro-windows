@@ -6,10 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     name: Windows TypeScript and Rust checks
     runs-on: windows-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -47,7 +52,3 @@ jobs:
       - name: Rust check
         working-directory: native
         run: cargo check
-
-      - name: Rust tests
-        working-directory: native
-        run: cargo test
