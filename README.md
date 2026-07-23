@@ -59,7 +59,7 @@ The project is being designed around a Rust + wgpu native compositor for GPU-acc
 ### Prerequisites
 
 - Windows 10/11
-- [Node.js](https://nodejs.org) 20+ (developed on v24)
+- [Node.js](https://nodejs.org) 22.12+ (developed on v24)
 - [FFmpeg](https://ffmpeg.org/) 6+ on your `PATH` (developed on 8.0.1)
 - [Rust](https://rustup.rs/) stable, for the native compositor addon
 

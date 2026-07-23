@@ -5,7 +5,7 @@ Thanks for helping improve Palmier Pro Windows. This project is early alpha, so 
 ## Development Prerequisites
 
 - Windows 10/11
-- Node.js 20 or newer
+- Node.js 22.12 or newer
 - npm
 - FFmpeg and ffprobe on your `PATH`
 - Rust stable toolchain
