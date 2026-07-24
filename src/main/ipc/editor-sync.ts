@@ -13,6 +13,7 @@
  */
 
 import { ipcMain, BrowserWindow } from 'electron';
+import { ToolExecutor } from '../ai/executor';
 import type { EditorController } from '../../shared/editor/controller';
 import type { Project } from '../../shared/types/project';
 
@@ -20,6 +21,26 @@ export function registerEditorSyncHandlers(
   controller: EditorController,
   onRendererSync?: (project: Project, win: BrowserWindow | null) => Promise<void> | void,
 ): void {
+  const executor = new ToolExecutor(controller);
+
+  ipcMain.handle(
+    'editor:execute',
+    async (_event, commandName: string, args: Record<string, unknown>) =>
+      executor.execute(commandName, args),
+  );
+  ipcMain.handle('editor:get-state', () => ({
+    success: true,
+    data: controller.getProject(),
+  }));
+  ipcMain.handle('editor:undo', () => ({
+    success: controller.undo(),
+    data: controller.getProject(),
+  }));
+  ipcMain.handle('editor:redo', () => ({
+    success: controller.redo(),
+    data: controller.getProject(),
+  }));
+
   // Renderer pushes its authoritative project to main (no history, no echo).
   ipcMain.handle('editor:sync-from-renderer', async (event, projectJson: string) => {
     try {

@@ -65,11 +65,22 @@ The project is being designed around a Rust + wgpu native compositor for GPU-acc
 
 ### Run
 
+Launch a production-style local build:
+
 ```bash
 npm install
 npm run build:rust
+npm start
+```
+
+For development with hot reload, use:
+
+```bash
 npm run dev
 ```
+
+Both commands launch the Electron window. `npm run dev:electron` is retained as
+an alias for `npm run dev`.
 
 Before nontrivial development, audit the current macOS upstream:
 

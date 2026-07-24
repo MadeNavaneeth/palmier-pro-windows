@@ -101,7 +101,7 @@ export interface TimelineState {
   // ─── Actions ───────────────────────────────────────────────────────────
 
   // Selection
-  selectClip: (clipId: string, additive?: boolean) => void;
+  selectClip: (clipId: string, additive?: boolean, includeLinked?: boolean) => void;
   deselectAll: () => void;
   selectClipsInRange: (startFrame: Frame, endFrame: Frame, trackId?: string) => void;
   setHoveredClip: (clipId: string | null) => void;
@@ -217,13 +217,17 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     canRedo: () => get().controller.canRedo(),
 
     // ─── Selection ─────────────────────────────────────────────────────────
-    selectClip: (clipId, additive = false) => {
+    selectClip: (clipId, additive = false, includeLinked = true) => {
       set((state) => {
+        const clipIds = includeLinked
+          ? state.controller.expandLinkedClipIds([clipId])
+          : [clipId];
         const next = new Set(additive ? state.selectedClipIds : []);
-        if (next.has(clipId)) {
-          next.delete(clipId);
+        const shouldDeselect = additive && clipIds.every((id) => next.has(id));
+        if (shouldDeselect) {
+          for (const id of clipIds) next.delete(id);
         } else {
-          next.add(clipId);
+          for (const id of clipIds) next.add(id);
         }
         return { selectedClipIds: next };
       });
@@ -243,7 +247,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
           return overlaps && trackMatch;
         })
         .map((c) => c.id);
-      set({ selectedClipIds: new Set(ids) });
+      set({ selectedClipIds: new Set(get().controller.expandLinkedClipIds(ids)) });
     },
 
     setHoveredClip: (clipId) => set({ hoveredClipId: clipId }),
@@ -269,9 +273,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     removeSelectedClips: () => {
       const { selectedClipIds, controller } = get();
-      for (const id of selectedClipIds) {
-        controller.removeClip(id);
-      }
+      controller.removeClips(selectedClipIds);
       set({ selectedClipIds: new Set() });
     },
 
@@ -397,9 +399,13 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     getSelectedClip: () => {
       const { selectedClipIds, project } = get();
-      if (selectedClipIds.size !== 1) return null;
-      const [id] = Array.from(selectedClipIds);
-      return project.timeline.clips.find((c) => c.id === id) || null;
+      const selected = project.timeline.clips.filter((clip) => selectedClipIds.has(clip.id));
+      if (selected.length === 1) return selected[0];
+      if (selected.length === 0) return null;
+
+      const linkGroupId = selected[0].linkGroupId;
+      if (!linkGroupId || selected.some((clip) => clip.linkGroupId !== linkGroupId)) return null;
+      return selected.find((clip) => clip.type !== 'audio') || selected[0];
     },
 
     // ─── Playback ──────────────────────────────────────────────────────────

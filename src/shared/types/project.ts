@@ -40,6 +40,12 @@ export interface Clip {
   assetId: string; // references MediaAsset.id
   type: ClipType;
   trackId: string;
+  /**
+   * Clips created from the same source placement share a link group so the
+   * editor can keep picture and embedded audio together. Optional for projects
+   * saved before linked placement existed.
+   */
+  linkGroupId?: string;
 
   // Position on timeline (frames)
   startFrame: Frame; // where clip begins on timeline

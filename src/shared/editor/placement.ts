@@ -1,5 +1,10 @@
 import type { MediaAsset, TrackType } from '../types/project';
 
+export function hasEmbeddedAudio(asset: MediaAsset): boolean {
+  return asset.type === 'video'
+    && Boolean(asset.audioCodec || asset.channels || asset.sampleRate);
+}
+
 export function isMediaCompatibleWithTrack(
   mediaType: MediaAsset['type'],
   trackType: TrackType,

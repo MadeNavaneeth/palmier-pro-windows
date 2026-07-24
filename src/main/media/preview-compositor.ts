@@ -200,7 +200,9 @@ export class PreviewCompositor {
     return project.timeline.clips
       .filter((clip) => {
         const clipEnd = clip.startFrame + clip.durationFrames;
-        return frameIndex >= clip.startFrame && frameIndex < clipEnd;
+        return clip.type !== 'audio'
+          && frameIndex >= clip.startFrame
+          && frameIndex < clipEnd;
       })
       .sort((a, b) => {
         // Sort by track order (video tracks with higher order render on top)

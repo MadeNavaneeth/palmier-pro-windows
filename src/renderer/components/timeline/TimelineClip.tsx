@@ -66,7 +66,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       } else {
         // Body — move or select
         if (!isSelected) {
-          selectClip(clip.id, e.ctrlKey || e.shiftKey);
+          selectClip(clip.id, e.ctrlKey || e.shiftKey, !e.altKey);
         }
         startDrag('move', clip.id, e.clientX, clip.startFrame);
       }
@@ -77,7 +77,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      selectClip(clip.id, e.ctrlKey || e.shiftKey);
+      selectClip(clip.id, e.ctrlKey || e.shiftKey, !e.altKey);
     },
     [clip.id, selectClip],
   );

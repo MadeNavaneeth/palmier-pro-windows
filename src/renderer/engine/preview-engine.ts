@@ -335,7 +335,7 @@ export class PreviewEngine {
     if (!this.project) return [];
     return this.project.timeline.clips.filter((clip) => {
       const clipEnd = clip.startFrame + clip.durationFrames;
-      return frame >= clip.startFrame && frame < clipEnd;
+      return clip.type !== 'audio' && frame >= clip.startFrame && frame < clipEnd;
     });
   }
 

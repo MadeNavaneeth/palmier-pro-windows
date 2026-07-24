@@ -113,14 +113,17 @@ export class AddMediaAndClipsCommand implements Command {
   readonly name = 'addMediaAndClips';
   private readonly mediaIds: Set<string>;
   private readonly clipIds: Set<string>;
+  private readonly trackIds: Set<string>;
 
   constructor(
     private media: MediaAsset[],
     private clips: Clip[],
     private label: string,
+    private tracks: Track[] = [],
   ) {
     this.mediaIds = new Set(media.map((asset) => asset.id));
     this.clipIds = new Set(clips.map((clip) => clip.id));
+    this.trackIds = new Set(tracks.map((track) => track.id));
   }
 
   execute(project: Project): Project {
@@ -132,6 +135,10 @@ export class AddMediaAndClipsCommand implements Command {
       ],
       timeline: {
         ...project.timeline,
+        tracks: [
+          ...project.timeline.tracks.filter((track) => !this.trackIds.has(track.id)),
+          ...this.tracks,
+        ],
         clips: [
           ...project.timeline.clips.filter((clip) => !this.clipIds.has(clip.id)),
           ...this.clips,
@@ -147,6 +154,7 @@ export class AddMediaAndClipsCommand implements Command {
       media: project.media.filter((asset) => !this.mediaIds.has(asset.id)),
       timeline: {
         ...project.timeline,
+        tracks: project.timeline.tracks.filter((track) => !this.trackIds.has(track.id)),
         clips: project.timeline.clips.filter((clip) => !this.clipIds.has(clip.id)),
       },
       updatedAt: new Date().toISOString(),

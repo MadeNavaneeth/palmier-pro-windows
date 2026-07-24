@@ -5,7 +5,7 @@ export function WelcomeScreen() {
   const { createNew, openExisting } = useProjectStore();
 
   return (
-    <div className="flex h-screen w-screen flex-col items-center justify-center bg-surface-0">
+    <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center bg-surface-0">
       <div className="flex flex-col items-center gap-8">
         {/* Logo area */}
         <div className="flex flex-col items-center gap-2">

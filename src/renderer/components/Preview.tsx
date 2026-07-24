@@ -19,6 +19,7 @@ export const PLAYBACK_RATE_PRESETS = [0.5, 0.75, 1, 1.5, 2, 4, 10] as const;
 export function Preview() {
   const isPlaying = useTimelineStore((state) => state.isPlaying);
   const playhead = useTimelineStore((state) => state.project.timeline.playheadFrame);
+  const projectUpdatedAt = useTimelineStore((state) => state.project.updatedAt);
   const fps = useTimelineStore((state) => state.getProjectFps());
   const togglePlayback = useTimelineStore((state) => state.togglePlayback);
   const stepFrame = useTimelineStore((state) => state.stepFrame);
@@ -53,7 +54,7 @@ export function Preview() {
 
   useEffect(() => {
     if (!isPlaying) engine.current.seek(playhead);
-  }, [playhead, isPlaying]);
+  }, [playhead, isPlaying, projectUpdatedAt]);
 
   useEffect(() => () => engine.current.dispose(), []);
 

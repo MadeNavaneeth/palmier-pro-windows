@@ -57,8 +57,8 @@ titles are discovery aids, not sufficient implementation specifications.
 | #211 | Crash recovery autosave | Implemented | `useAutosave`, atomic main-process recovery snapshot |
 | #174, PR #175 | Remove silence | Implemented | silence detector, undoable replacement, Inspector and Agent paths |
 | #98, PRs #203/#213 | Blend modes | Implemented | shared blend model, compositor, Inspector, Agent command |
-| PR #353 | Explorer/Finder files directly to timeline | Partial | Direct Explorer-to-timeline import and sequential compatible placement share one undo action; linked A/V placement remains |
-| PR #373 | Preview refresh after text insertion | Implemented | Renderer synchronization recomposites immediately; per-window generations prevent stale async frames from replacing newer output |
+| PR #353, PR #342 | Explorer/Finder files directly to timeline and linked audio placement | Implemented | Explorer and Media-panel drops share atomic sequential placement; video with probed embedded audio creates a linked audio clip on a free/unlocked lane (or an undoable new lane), and linked selection/move/trim/split/delete stay synchronized |
+| PR #373 | Preview refresh after text insertion or timeline mutation | Implemented | Project revisions at the current playhead request a fresh composite immediately; renderer synchronization recomposites and per-window generations prevent stale async frames from replacing newer output |
 | PR #397 | Multicam ripple synchronization | Planned | Multicam domain is not implemented |
 | PR #372 | Large caption workflow responsiveness | Planned | Caption workflow is not implemented |
 | PR #371, issue #212 | Preview playback speeds | Implemented | Preview toolbar exposes 0.5x, 0.75x, 1x, 1.5x, 2x, 4x, and 10x presets; transport consumes the selected transient rate |

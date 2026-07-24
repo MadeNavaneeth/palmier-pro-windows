@@ -13,10 +13,6 @@ import {
   CommandHistory,
   AddClipCommand,
   AddMediaAndClipsCommand,
-  RemoveClipCommand,
-  MoveClipCommand,
-  TrimClipCommand,
-  SplitClipCommand,
   AddTrackCommand,
   SetBlendModeCommand,
   SetOpacityCommand,
@@ -28,7 +24,7 @@ import type { Command } from './commands';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
 import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
-import { isMediaCompatibleWithTrack, placementDuration } from './placement';
+import { hasEmbeddedAudio, isMediaCompatibleWithTrack, placementDuration } from './placement';
 
 export type StateChangeListener = (project: Project) => void;
 
@@ -67,6 +63,22 @@ export class EditorController {
 
   getMedia(): MediaAsset[] {
     return this.project.media;
+  }
+
+  expandLinkedClipIds(clipIds: Iterable<string>): string[] {
+    const requested = new Set(clipIds);
+    const groupIds = new Set(
+      this.project.timeline.clips
+        .filter((clip) => requested.has(clip.id) && clip.linkGroupId)
+        .map((clip) => clip.linkGroupId!),
+    );
+
+    for (const clip of this.project.timeline.clips) {
+      if (clip.linkGroupId && groupIds.has(clip.linkGroupId)) {
+        requested.add(clip.id);
+      }
+    }
+    return [...requested];
   }
 
   getPlayhead(): Frame {
@@ -122,40 +134,88 @@ export class EditorController {
     // would otherwise corrupt timeline math or downstream loop bounds (#200).
     const startFrame = clampFrame(params.startFrame);
     const duration = clampFrame(params.durationFrames || asset?.duration || 150, 1); // default 5s at 30fps
+    const type = params.type || asset?.type || 'video';
+    const track = this.project.timeline.tracks.find((candidate) => candidate.id === params.trackId);
 
-    const clip: Clip = {
-      id: nanoid(),
-      assetId: params.assetId,
-      type: params.type || asset?.type || 'video',
-      trackId: params.trackId,
+    if (asset) {
+      const tracks: Track[] = [];
+      const linkGroupId = type === 'video'
+        && track?.type === 'video'
+        && hasEmbeddedAudio(asset)
+        ? nanoid()
+        : undefined;
+      const clip = this.createPlacedClip(
+        asset,
+        type,
+        params.trackId,
+        startFrame,
+        duration,
+        linkGroupId,
+      );
+      const clips = [clip];
+
+      if (linkGroupId) {
+        const audioTrack = this.resolveAudioPlacementTrack(startFrame, duration, clips, tracks);
+        clips.push(
+          this.createPlacedClip(asset, 'audio', audioTrack.id, startFrame, duration, linkGroupId),
+        );
+      }
+
+      this.execute(new AddMediaAndClipsCommand([], clips, 'Add clip', tracks));
+      return clip.id;
+    }
+
+    const clip = this.createPlacedClip(
+      {
+        id: params.assetId,
+        path: '',
+        filename: params.assetId,
+        type: type === 'audio' || type === 'image' ? type : 'video',
+        duration,
+        fileSize: 0,
+        addedAt: new Date().toISOString(),
+      },
+      type,
+      params.trackId,
       startFrame,
-      durationFrames: duration,
-      inPoint: 0,
-      outPoint: duration,
-      x: 0,
-      y: 0,
-      width: this.project.settings.width,
-      height: this.project.settings.height,
-      rotation: 0,
-      scaleX: 1,
-      scaleY: 1,
-      opacity: 1,
-      anchorX: 0,
-      anchorY: 0,
-      volume: 1,
-      muted: false,
-    };
-
+      duration,
+    );
     this.execute(new AddClipCommand(clip));
     return clip.id;
   }
 
   removeClip(clipId: string): void {
-    this.execute(new RemoveClipCommand(clipId));
+    this.removeClips([clipId]);
+  }
+
+  removeClips(clipIds: Iterable<string>, includeLinked = true): void {
+    const requested = [...clipIds];
+    const ids = new Set(includeLinked ? this.expandLinkedClipIds(requested) : requested);
+    if (!this.project.timeline.clips.some((clip) => ids.has(clip.id))) return;
+    this.execute(
+      new ReplaceClipsCommand(
+        this.project.timeline.clips.filter((clip) => !ids.has(clip.id)),
+        ids.size > 1 ? 'Remove linked clips' : 'Remove clip',
+      ),
+    );
   }
 
   moveClip(clipId: string, newStartFrame: Frame, newTrackId?: string): void {
-    this.execute(new MoveClipCommand(clipId, clampFrame(newStartFrame), newTrackId));
+    const clip = this.project.timeline.clips.find((candidate) => candidate.id === clipId);
+    if (!clip) return;
+
+    const targetFrame = clampFrame(newStartFrame);
+    const delta = targetFrame - clip.startFrame;
+    const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
+    const clips = this.project.timeline.clips.map((candidate) => {
+      if (!linkedIds.has(candidate.id)) return candidate;
+      return {
+        ...candidate,
+        startFrame: clampFrame(candidate.startFrame + delta),
+        trackId: candidate.id === clipId && newTrackId ? newTrackId : candidate.trackId,
+      };
+    });
+    this.execute(new ReplaceClipsCommand(clips, linkedIds.size > 1 ? 'Move linked clips' : 'Move clip'));
   }
 
   trimClip(clipId: string, newInPoint: Frame, newOutPoint: Frame): void {
@@ -163,7 +223,21 @@ export class EditorController {
     // outPoint is always strictly greater than inPoint.
     const inPoint = clampFrame(newInPoint);
     const outPoint = clampFrame(newOutPoint, inPoint + 1);
-    this.execute(new TrimClipCommand(clipId, inPoint, outPoint));
+    const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
+    if (!linkedIds.has(clipId) || !this.project.timeline.clips.some((clip) => clip.id === clipId)) {
+      return;
+    }
+    const clips = this.project.timeline.clips.map((clip) =>
+      linkedIds.has(clip.id)
+        ? {
+            ...clip,
+            inPoint,
+            outPoint,
+            durationFrames: outPoint - inPoint,
+          }
+        : clip,
+    );
+    this.execute(new ReplaceClipsCommand(clips, linkedIds.size > 1 ? 'Trim linked clips' : 'Trim clip'));
   }
 
   splitClip(clipId: string, atFrame: Frame): string | null {
@@ -177,13 +251,41 @@ export class EditorController {
     const relativeFrame = frame - clip.startFrame;
     if (relativeFrame <= 0 || relativeFrame >= clip.durationFrames) return null;
 
-    let newId = '';
-    const cmd = new SplitClipCommand(clipId, frame, () => {
-      newId = nanoid();
-      return newId;
+    const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
+    const splitTargets = this.project.timeline.clips.filter((candidate) =>
+      linkedIds.has(candidate.id)
+      && frame > candidate.startFrame
+      && frame < candidate.startFrame + candidate.durationFrames,
+    );
+    if (splitTargets.length === 0) return null;
+
+    const rightLinkGroupId = splitTargets.length > 1 ? nanoid() : undefined;
+    const rightIds = new Map<string, string>();
+    const clips = this.project.timeline.clips.flatMap((candidate) => {
+      if (!splitTargets.some((target) => target.id === candidate.id)) return [candidate];
+
+      const relativeFrame = frame - candidate.startFrame;
+      const rightId = nanoid();
+      rightIds.set(candidate.id, rightId);
+      return [
+        {
+          ...candidate,
+          durationFrames: relativeFrame,
+          outPoint: candidate.inPoint + relativeFrame,
+        },
+        {
+          ...candidate,
+          id: rightId,
+          linkGroupId: rightLinkGroupId,
+          startFrame: frame,
+          durationFrames: candidate.durationFrames - relativeFrame,
+          inPoint: candidate.inPoint + relativeFrame,
+        },
+      ];
     });
-    this.execute(cmd);
-    return newId;
+
+    this.execute(new ReplaceClipsCommand(clips, splitTargets.length > 1 ? 'Split linked clips' : 'Split clip'));
+    return rightIds.get(clipId) || null;
   }
 
   addTrack(type: 'video' | 'audio', name?: string): string {
@@ -253,6 +355,7 @@ export class EditorController {
     for (const asset of importedAssets) allAssets.set(asset.id, asset);
 
     const clips: Clip[] = [];
+    const tracks: Track[] = [];
     let cursor = clampFrame(startFrame);
 
     if (track && !track.locked) {
@@ -261,29 +364,17 @@ export class EditorController {
         if (!asset || !isMediaCompatibleWithTrack(asset.type, track.type)) continue;
 
         const duration = placementDuration(asset, this.project.settings.fps);
-        clips.push({
-          id: nanoid(),
-          assetId: asset.id,
-          type: asset.type,
-          trackId: track.id,
-          startFrame: cursor,
-          durationFrames: duration,
-          inPoint: 0,
-          outPoint: duration,
-          x: 0,
-          y: 0,
-          width: this.project.settings.width,
-          height: this.project.settings.height,
-          rotation: 0,
-          scaleX: 1,
-          scaleY: 1,
-          opacity: 1,
-          anchorX: 0,
-          anchorY: 0,
-          volume: 1,
-          muted: false,
-          label: asset.filename,
-        });
+        const linkGroupId = hasEmbeddedAudio(asset) && track.type === 'video'
+          ? nanoid()
+          : undefined;
+        clips.push(this.createPlacedClip(asset, asset.type, track.id, cursor, duration, linkGroupId));
+
+        if (linkGroupId) {
+          const audioTrack = this.resolveAudioPlacementTrack(cursor, duration, clips, tracks);
+          clips.push(
+            this.createPlacedClip(asset, 'audio', audioTrack.id, cursor, duration, linkGroupId),
+          );
+        }
         cursor = clampFrame(cursor + duration);
       }
     }
@@ -293,11 +384,83 @@ export class EditorController {
       return { assetIds: [], clipIds: [] };
     }
 
-    this.execute(new AddMediaAndClipsCommand(media, clips, label));
+    this.execute(new AddMediaAndClipsCommand(media, clips, label, tracks));
     return {
       assetIds: media.map((asset) => asset.id),
       clipIds: clips.map((clip) => clip.id),
     };
+  }
+
+  private createPlacedClip(
+    asset: MediaAsset,
+    type: ClipType,
+    trackId: string,
+    startFrame: Frame,
+    durationFrames: Frame,
+    linkGroupId?: string,
+  ): Clip {
+    return {
+      id: nanoid(),
+      assetId: asset.id,
+      type,
+      trackId,
+      linkGroupId,
+      startFrame,
+      durationFrames,
+      inPoint: 0,
+      outPoint: durationFrames,
+      x: 0,
+      y: 0,
+      width: this.project.settings.width,
+      height: this.project.settings.height,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      opacity: 1,
+      anchorX: 0,
+      anchorY: 0,
+      volume: 1,
+      muted: false,
+      label: asset.filename,
+    };
+  }
+
+  private resolveAudioPlacementTrack(
+    startFrame: Frame,
+    durationFrames: Frame,
+    plannedClips: Clip[],
+    plannedTracks: Track[],
+  ): Track {
+    const endFrame = startFrame + durationFrames;
+    const candidates = [...this.project.timeline.tracks, ...plannedTracks]
+      .filter((track) => track.type === 'audio' && !track.locked)
+      .sort((left, right) => left.order - right.order);
+    const allClips = [...this.project.timeline.clips, ...plannedClips];
+
+    const available = candidates.find((track) =>
+      allClips
+        .filter((clip) => clip.trackId === track.id)
+        .every((clip) => {
+          const clipEnd = clip.startFrame + clip.durationFrames;
+          return clipEnd <= startFrame || clip.startFrame >= endFrame;
+        }),
+    );
+    if (available) return available;
+
+    const track: Track = {
+      id: nanoid(),
+      name: `Audio ${
+        this.project.timeline.tracks.filter((candidate) => candidate.type === 'audio').length
+        + plannedTracks.filter((candidate) => candidate.type === 'audio').length
+        + 1
+      }`,
+      type: 'audio',
+      locked: false,
+      visible: true,
+      order: this.project.timeline.tracks.length + plannedTracks.length,
+    };
+    plannedTracks.push(track);
+    return track;
   }
 
   /**

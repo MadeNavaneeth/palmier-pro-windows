@@ -336,6 +336,28 @@ Roadmap numbers express dependency order, not fixed calendar dates. A train does
 not advance because its feature checklist is long; it advances when its exit
 gates pass.
 
+## Implementation Progress
+
+### 2026-07-25 - Linked A/V Placement
+
+- Explorer-to-timeline and Media-panel-to-timeline placement now create paired
+  audio clips for video assets with probed embedded audio.
+- Placement reuses a free, unlocked audio lane and atomically creates one when
+  necessary.
+- Linked pairs share selection and remain synchronized through move, trim,
+  split, delete, undo, and redo.
+- Audio clips are excluded from visual preview composition.
+- Preview refreshes immediately when a project edit changes at the current
+  playhead, including import, Agent/MCP edits, undo, and redo.
+- The preload editor command bridge now has matching execute, state, undo, and
+  redo handlers in the main process.
+- `npm start` produces and launches a production-style local build; named build
+  aliases no longer overwrite the runnable Vite main-process bundle.
+- Welcome and editor workspaces fit the 1600x1000 and 1024x680 window checks
+  without document scrolling.
+- Upstream reviewed: PR #353 direct timeline drops, PR #342 linked audio track
+  placement, and current `placeClip`/`addClips` linkage behavior.
+
 ## Definition Of Done For Every Feature
 
 1. Upstream issue, PR, source, and test review is recorded.
@@ -369,4 +391,3 @@ gates pass.
 - [libass](https://github.com/libass/libass)
 - [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet)
 - [FFmpeg legal guidance](https://www.ffmpeg.org/legal.html)
-

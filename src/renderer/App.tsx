@@ -59,10 +59,10 @@ export function App() {
 
   if (!isLoaded) {
     return (
-      <>
+      <div className="flex h-screen w-screen flex-col bg-surface-0">
         <TitleBar />
         <WelcomeScreen />
-      </>
+      </div>
     );
   }
 
