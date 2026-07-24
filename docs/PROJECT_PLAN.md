@@ -1,5 +1,9 @@
 # Project Plan - Palmier Pro Windows
 
+> This file tracks the original implementation phases. For the current
+> product-level feature order, UI constraints, open-source component strategy,
+> and release gates, see [`PRODUCT_ROADMAP.md`](./PRODUCT_ROADMAP.md).
+
 ## Status
 
 | Phase | Description | Status |
