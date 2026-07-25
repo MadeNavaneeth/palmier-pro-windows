@@ -83,7 +83,7 @@ export function Timeline() {
       {/* Tracks area */}
       <div className="flex flex-1 overflow-hidden" onWheel={handleWheel}>
         {/* Track headers (labels) */}
-        <div className="flex w-[100px] flex-shrink-0 flex-col border-r border-white/10 bg-surface-2">
+        <div className="flex w-[116px] flex-shrink-0 flex-col border-r border-white/10 bg-surface-2">
           {/* Ruler spacer */}
           <div className="h-6 border-b border-white/10" />
           {/* Track headers */}

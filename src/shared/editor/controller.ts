@@ -18,6 +18,7 @@ import {
   SetOpacityCommand,
   SetFadeCommand,
   ReplaceClipsCommand,
+  ReplaceTracksCommand,
   ReplaceProjectCommand,
 } from './commands';
 import type { Command } from './commands';
@@ -25,12 +26,18 @@ import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
 import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
 import { hasEmbeddedAudio, isMediaCompatibleWithTrack, placementDuration } from './placement';
+import { computeRippleShifts, type RippleRange } from './ripple';
 
 export type StateChangeListener = (project: Project) => void;
 
 export interface MediaPlacementResult {
   assetIds: string[];
   clipIds: string[];
+}
+
+export interface RippleDeleteReport {
+  removedClipIds: string[];
+  shiftedClipIds: string[];
 }
 
 export class EditorController {
@@ -79,6 +86,16 @@ export class EditorController {
       }
     }
     return [...requested];
+  }
+
+  private canEditClipIds(clipIds: Iterable<string>): boolean {
+    const ids = new Set(clipIds);
+    const lockedTrackIds = new Set(
+      this.project.timeline.tracks.filter((track) => track.locked).map((track) => track.id),
+    );
+    return this.project.timeline.clips
+      .filter((clip) => ids.has(clip.id))
+      .every((clip) => !lockedTrackIds.has(clip.trackId));
   }
 
   getPlayhead(): Frame {
@@ -184,20 +201,69 @@ export class EditorController {
     return clip.id;
   }
 
-  removeClip(clipId: string): void {
-    this.removeClips([clipId]);
+  removeClip(clipId: string): boolean {
+    return this.removeClips([clipId]);
   }
 
-  removeClips(clipIds: Iterable<string>, includeLinked = true): void {
+  removeClips(clipIds: Iterable<string>, includeLinked = true): boolean {
     const requested = [...clipIds];
     const ids = new Set(includeLinked ? this.expandLinkedClipIds(requested) : requested);
-    if (!this.project.timeline.clips.some((clip) => ids.has(clip.id))) return;
+    if (!this.project.timeline.clips.some((clip) => ids.has(clip.id))) return false;
+    if (!this.canEditClipIds(ids)) return false;
     this.execute(
       new ReplaceClipsCommand(
         this.project.timeline.clips.filter((clip) => !ids.has(clip.id)),
         ids.size > 1 ? 'Remove linked clips' : 'Remove clip',
       ),
     );
+    return true;
+  }
+
+  rippleDeleteClips(clipIds: Iterable<string>): RippleDeleteReport | null {
+    const ids = new Set(this.expandLinkedClipIds(clipIds));
+    const selected = this.project.timeline.clips.filter((clip) => ids.has(clip.id));
+    if (selected.length === 0 || !this.canEditClipIds(ids)) return null;
+
+    const globalRanges: RippleRange[] = selected.map((clip) => ({
+      start: clip.startFrame,
+      end: clip.startFrame + clip.durationFrames,
+    }));
+    const shifts = new Map<string, Frame>();
+
+    for (const track of this.project.timeline.tracks) {
+      if (track.locked) continue;
+
+      const removedOnTrack = selected.filter((clip) => clip.trackId === track.id);
+      const ranges = removedOnTrack.length > 0
+        ? removedOnTrack.map((clip) => ({
+            start: clip.startFrame,
+            end: clip.startFrame + clip.durationFrames,
+          }))
+        : track.syncLocked !== false
+          ? globalRanges
+          : [];
+      if (ranges.length === 0) continue;
+
+      const remaining = this.project.timeline.clips.filter(
+        (clip) => clip.trackId === track.id && !ids.has(clip.id),
+      );
+      for (const shift of computeRippleShifts(remaining, ranges)) {
+        shifts.set(shift.clipId, shift.startFrame);
+      }
+    }
+
+    const clips = this.project.timeline.clips
+      .filter((clip) => !ids.has(clip.id))
+      .map((clip) => {
+        const startFrame = shifts.get(clip.id);
+        return startFrame === undefined ? clip : { ...clip, startFrame };
+      });
+    this.execute(new ReplaceClipsCommand(clips, 'Ripple delete clips'));
+
+    return {
+      removedClipIds: selected.map((clip) => clip.id),
+      shiftedClipIds: [...shifts.keys()],
+    };
   }
 
   moveClip(clipId: string, newStartFrame: Frame, newTrackId?: string): void {
@@ -207,6 +273,10 @@ export class EditorController {
     const targetFrame = clampFrame(newStartFrame);
     const delta = targetFrame - clip.startFrame;
     const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
+    if (!this.canEditClipIds(linkedIds)) return;
+    if (newTrackId && this.project.timeline.tracks.find((track) => track.id === newTrackId)?.locked) {
+      return;
+    }
     const clips = this.project.timeline.clips.map((candidate) => {
       if (!linkedIds.has(candidate.id)) return candidate;
       return {
@@ -227,6 +297,7 @@ export class EditorController {
     if (!linkedIds.has(clipId) || !this.project.timeline.clips.some((clip) => clip.id === clipId)) {
       return;
     }
+    if (!this.canEditClipIds(linkedIds)) return;
     const clips = this.project.timeline.clips.map((clip) =>
       linkedIds.has(clip.id)
         ? {
@@ -258,6 +329,7 @@ export class EditorController {
       && frame < candidate.startFrame + candidate.durationFrames,
     );
     if (splitTargets.length === 0) return null;
+    if (!this.canEditClipIds(splitTargets.map((target) => target.id))) return null;
 
     const rightLinkGroupId = splitTargets.length > 1 ? nanoid() : undefined;
     const rightIds = new Map<string, string>();
@@ -297,10 +369,45 @@ export class EditorController {
       type,
       locked: false,
       visible: true,
+      syncLocked: true,
       order: this.project.timeline.tracks.length,
     };
     this.execute(new AddTrackCommand(track));
     return track.id;
+  }
+
+  setTrackLocked(trackId: string, locked: boolean): boolean {
+    return this.updateTrack(trackId, { locked }, locked ? 'Lock track' : 'Unlock track');
+  }
+
+  setTrackVisible(trackId: string, visible: boolean): boolean {
+    return this.updateTrack(
+      trackId,
+      { visible },
+      visible ? 'Show track' : 'Hide track',
+    );
+  }
+
+  setTrackSyncLocked(trackId: string, syncLocked: boolean): boolean {
+    return this.updateTrack(
+      trackId,
+      { syncLocked },
+      syncLocked ? 'Enable sync lock' : 'Disable sync lock',
+    );
+  }
+
+  private updateTrack(trackId: string, patch: Partial<Track>, label: string): boolean {
+    const track = this.project.timeline.tracks.find((candidate) => candidate.id === trackId);
+    if (!track) return false;
+    this.execute(
+      new ReplaceTracksCommand(
+        this.project.timeline.tracks.map((candidate) =>
+          candidate.id === trackId ? { ...candidate, ...patch } : candidate,
+        ),
+        label,
+      ),
+    );
+    return true;
   }
 
   setPlayhead(frame: Frame): void {
@@ -457,6 +564,7 @@ export class EditorController {
       type: 'audio',
       locked: false,
       visible: true,
+      syncLocked: true,
       order: this.project.timeline.tracks.length + plannedTracks.length,
     };
     plannedTracks.push(track);

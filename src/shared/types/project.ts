@@ -104,6 +104,11 @@ export interface Track {
   type: TrackType;
   locked: boolean;
   visible: boolean; // video: visibility, audio: mute
+  /**
+   * Participates in ripple edits initiated on another track. Optional so
+   * projects saved before sync lock support retain the professional default.
+   */
+  syncLocked?: boolean;
   order: number; // rendering order (higher = on top for video)
 }
 
@@ -154,8 +159,24 @@ export function createEmptyProject(name = 'Untitled Project'): Project {
     media: [],
     timeline: {
       tracks: [
-        { id: 'v1', name: 'Video 1', type: 'video', locked: false, visible: true, order: 1 },
-        { id: 'a1', name: 'Audio 1', type: 'audio', locked: false, visible: true, order: 0 },
+        {
+          id: 'v1',
+          name: 'Video 1',
+          type: 'video',
+          locked: false,
+          visible: true,
+          syncLocked: true,
+          order: 1,
+        },
+        {
+          id: 'a1',
+          name: 'Audio 1',
+          type: 'audio',
+          locked: false,
+          visible: true,
+          syncLocked: true,
+          order: 0,
+        },
       ],
       clips: [],
       playheadFrame: 0,

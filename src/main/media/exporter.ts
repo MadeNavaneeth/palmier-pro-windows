@@ -74,7 +74,9 @@ export class Exporter {
     const fps = options.fps || project.settings.fps;
 
     // Calculate total frames
-    const clips = project.timeline.clips;
+    const clips = project.timeline.clips.filter((clip) =>
+      project.timeline.tracks.find((track) => track.id === clip.trackId)?.visible !== false,
+    );
     const totalFrames = clips.length > 0
       ? Math.max(...clips.map((c) => c.startFrame + c.durationFrames))
       : 0;
@@ -183,7 +185,9 @@ export class Exporter {
     totalFrames: number,
   ): string[] {
     const { outputPath, format, quality } = options;
-    const clips = project.timeline.clips;
+    const clips = project.timeline.clips.filter((clip) =>
+      project.timeline.tracks.find((track) => track.id === clip.trackId)?.visible !== false,
+    );
     const duration = totalFrames / fps;
 
     // Sort clips by start frame for proper layering

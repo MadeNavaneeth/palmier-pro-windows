@@ -519,6 +519,46 @@ export class ReplaceClipsCommand implements Command {
   }
 }
 
+/**
+ * Replace the track array in one undoable step. Track header toggles use the
+ * same command history as timeline edits, so UI, Agent, and MCP state cannot
+ * diverge.
+ */
+export class ReplaceTracksCommand implements Command {
+  readonly name = 'replaceTracks';
+  private previousTracks: Track[] = [];
+  private captured = false;
+
+  constructor(
+    private nextTracks: Track[],
+    private label: string,
+  ) {}
+
+  execute(project: Project): Project {
+    if (!this.captured) {
+      this.previousTracks = project.timeline.tracks;
+      this.captured = true;
+    }
+    return {
+      ...project,
+      timeline: { ...project.timeline, tracks: this.nextTracks },
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  undo(project: Project): Project {
+    return {
+      ...project,
+      timeline: { ...project.timeline, tracks: this.previousTracks },
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  describe(): string {
+    return this.label;
+  }
+}
+
 
 /**
  * Replace the entire project in one undoable step. Used when the renderer

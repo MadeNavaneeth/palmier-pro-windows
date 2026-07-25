@@ -123,6 +123,9 @@ export interface TimelineState {
 
   // Tracks
   addTrack: (type: 'video' | 'audio', name?: string) => string;
+  setTrackLocked: (trackId: string, locked: boolean) => void;
+  setTrackVisible: (trackId: string, visible: boolean) => void;
+  setTrackSyncLocked: (trackId: string, syncLocked: boolean) => void;
 
   // Compositing / properties
   importAssets: (probeResults: MediaProbeResult[]) => string[];
@@ -273,8 +276,9 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     removeSelectedClips: () => {
       const { selectedClipIds, controller } = get();
-      controller.removeClips(selectedClipIds);
-      set({ selectedClipIds: new Set() });
+      if (controller.removeClips(selectedClipIds)) {
+        set({ selectedClipIds: new Set() });
+      }
     },
 
     moveClip: (clipId, newStartFrame, newTrackId) => {
@@ -316,41 +320,17 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     rippleDelete: () => {
       const { selectedClipIds, controller } = get();
       if (selectedClipIds.size === 0) return;
-
-      const clips = controller.getClips();
-      const selected = clips.filter((c) => selectedClipIds.has(c.id));
-      if (selected.length === 0) return;
-
-      // Group by track and find the gap to close
-      const trackGaps = new Map<string, { start: Frame; duration: Frame }>();
-      for (const clip of selected) {
-        const existing = trackGaps.get(clip.trackId);
-        if (!existing || clip.startFrame < existing.start) {
-          trackGaps.set(clip.trackId, { start: clip.startFrame, duration: clip.durationFrames });
-        }
+      if (controller.rippleDeleteClips(selectedClipIds)) {
+        set({ selectedClipIds: new Set() });
       }
-
-      // Remove selected clips
-      for (const id of selectedClipIds) {
-        controller.removeClip(id);
-      }
-
-      // Ripple: shift subsequent clips left to close the gap
-      for (const [trackId, gap] of trackGaps) {
-        const remaining = controller.getClips()
-          .filter((c) => c.trackId === trackId && c.startFrame >= gap.start)
-          .sort((a, b) => a.startFrame - b.startFrame);
-
-        for (const clip of remaining) {
-          controller.moveClip(clip.id, clip.startFrame - gap.duration);
-        }
-      }
-
-      set({ selectedClipIds: new Set() });
     },
 
     // ─── Tracks ────────────────────────────────────────────────────────────
     addTrack: (type, name) => get().controller.addTrack(type, name),
+    setTrackLocked: (trackId, locked) => get().controller.setTrackLocked(trackId, locked),
+    setTrackVisible: (trackId, visible) => get().controller.setTrackVisible(trackId, visible),
+    setTrackSyncLocked: (trackId, syncLocked) =>
+      get().controller.setTrackSyncLocked(trackId, syncLocked),
 
     // ─── Compositing / properties ──────────────────────────────────────────
     importAssets: (probeResults) => {

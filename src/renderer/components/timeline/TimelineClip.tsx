@@ -88,6 +88,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   return (
     <div
       ref={clipRef}
+      data-clip-id={clip.id}
       className={`
         absolute top-1 bottom-1 flex items-center overflow-hidden rounded-sm border
         cursor-grab active:cursor-grabbing select-none transition-shadow

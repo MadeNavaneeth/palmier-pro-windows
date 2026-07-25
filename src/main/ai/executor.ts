@@ -65,9 +65,19 @@ export class ToolExecutor {
         return { success: true, data: { clipId } };
       }
 
-      case 'remove_clip':
-        this.editor.removeClip(args.clipId);
-        return { success: true, data: { removed: args.clipId } };
+      case 'remove_clip': {
+        const removed = this.editor.removeClip(args.clipId);
+        return removed
+          ? { success: true, data: { removed: args.clipId } }
+          : { success: false, error: 'Clip not found or its track is locked.' };
+      }
+
+      case 'ripple_delete_clips': {
+        const report = this.editor.rippleDeleteClips(args.clipIds);
+        return report
+          ? { success: true, data: report }
+          : { success: false, error: 'No matching clips found or a selected track is locked.' };
+      }
 
       case 'move_clip':
         this.editor.moveClip(args.clipId, clampFrame(args.startFrame), args.trackId);

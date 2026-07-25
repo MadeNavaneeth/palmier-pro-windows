@@ -394,15 +394,17 @@ export class Exporter {
 
   private getSortedClips(project: Project): Clip[] {
     const tracks = project.timeline.tracks;
-    return [...project.timeline.clips].sort((a, b) => {
-      const trackA = tracks.find((t) => t.id === a.trackId);
-      const trackB = tracks.find((t) => t.id === b.trackId);
-      return (trackA?.order ?? 0) - (trackB?.order ?? 0);
-    });
+    return project.timeline.clips
+      .filter((clip) => tracks.find((track) => track.id === clip.trackId)?.visible !== false)
+      .sort((a, b) => {
+        const trackA = tracks.find((t) => t.id === a.trackId);
+        const trackB = tracks.find((t) => t.id === b.trackId);
+        return (trackA?.order ?? 0) - (trackB?.order ?? 0);
+      });
   }
 
   private getProjectDuration(project: Project): Frame {
-    const clips = project.timeline.clips;
+    const clips = this.getSortedClips(project);
     if (clips.length === 0) return 0;
     return Math.max(...clips.map((c) => c.startFrame + c.durationFrames));
   }

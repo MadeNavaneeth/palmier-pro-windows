@@ -335,7 +335,13 @@ export class PreviewEngine {
     if (!this.project) return [];
     return this.project.timeline.clips.filter((clip) => {
       const clipEnd = clip.startFrame + clip.durationFrames;
-      return clip.type !== 'audio' && frame >= clip.startFrame && frame < clipEnd;
+      const track = this.project?.timeline.tracks.find(
+        (candidate) => candidate.id === clip.trackId,
+      );
+      return clip.type !== 'audio'
+        && track?.visible !== false
+        && frame >= clip.startFrame
+        && frame < clipEnd;
     });
   }
 

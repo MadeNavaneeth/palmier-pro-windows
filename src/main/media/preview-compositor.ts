@@ -200,7 +200,9 @@ export class PreviewCompositor {
     return project.timeline.clips
       .filter((clip) => {
         const clipEnd = clip.startFrame + clip.durationFrames;
+        const track = project.timeline.tracks.find((candidate) => candidate.id === clip.trackId);
         return clip.type !== 'audio'
+          && track?.visible !== false
           && frameIndex >= clip.startFrame
           && frameIndex < clipEnd;
       })

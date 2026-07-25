@@ -358,6 +358,28 @@ gates pass.
 - Upstream reviewed: PR #353 direct timeline drops, PR #342 linked audio track
   placement, and current `placeClip`/`addClips` linkage behavior.
 
+### 2026-07-25 - Atomic Ripple Delete And Track Controls
+
+- `Shift+Delete` now removes selected and linked clips through one
+  `EditorController` transaction instead of issuing separate remove/move
+  commands.
+- Downstream clips shift once for merged removal ranges; linked A/V remains
+  aligned and one undo restores the full operation.
+- Sync lock is persisted per track and defaults on for existing and new
+  projects. Sync-locked tracks follow ripple edits; disabled tracks stay in
+  place.
+- Track headers now provide compact icon controls for sync lock, edit lock,
+  and video visibility/audio mute without adding another panel.
+- Locked tracks refuse delete, ripple, move, trim, and split mutations.
+- Hidden video tracks are excluded from both preview compositors, and
+  hidden/muted tracks are excluded consistently from both export paths.
+- Agent and MCP share the same validated `ripple_delete_clips` command and
+  receive a removed/shifted clip report.
+- Upstream reviewed: current `RippleEngine`,
+  `EditorViewModel+Ripple.rippleDeleteSelectedClips`, and ripple range tests.
+- Remaining upstream gaps: ripple range cutting, ripple gap delete, ripple
+  trim, and collision refusal diagnostics.
+
 ## Definition Of Done For Every Feature
 
 1. Upstream issue, PR, source, and test review is recorded.

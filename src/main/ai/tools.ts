@@ -75,6 +75,15 @@ export const tools = {
     }),
   },
 
+  rippleDeleteClips: {
+    name: 'ripple_delete_clips',
+    description:
+      'Remove timeline clips and close their gaps in one undoable edit. Linked clips and sync-locked tracks stay aligned.',
+    parameters: z.object({
+      clipIds: z.array(z.string()).min(1).describe('Clip IDs to remove. Linked partners are included automatically.'),
+    }),
+  },
+
   moveClip: {
     name: 'move_clip',
     description: 'Move a clip to a new position on the timeline.',
