@@ -48,4 +48,46 @@ describe('ripple delete tool', () => {
     expect(result.success).toBe(false);
     expect(controller.getClips()).toHaveLength(0);
   });
+
+  it('exposes ripple trim and gap delete through the same controller path', async () => {
+    const controller = new EditorController();
+    controller.addMedia({
+      id: 'asset',
+      path: 'C:\\media\\clip.mp4',
+      filename: 'clip.mp4',
+      type: 'video',
+      duration: 200,
+      fileSize: 100,
+      addedAt: '2026-07-25T00:00:00.000Z',
+    });
+    const first = controller.addClip({
+      assetId: 'asset',
+      trackId: 'v1',
+      startFrame: 0,
+      durationFrames: 50,
+    });
+    controller.addClip({
+      assetId: 'asset',
+      trackId: 'v1',
+      startFrame: 100,
+      durationFrames: 50,
+    });
+    const executor = new ToolExecutor(controller);
+
+    const trim = await executor.execute('ripple_trim_clip', {
+      clipId: first,
+      edge: 'right',
+      deltaFrames: 10,
+    });
+    expect(trim.success).toBe(true);
+    expect(controller.getClips()[1].startFrame).toBe(110);
+
+    const gap = await executor.execute('ripple_delete_gap', {
+      trackId: 'v1',
+      startFrame: 60,
+      endFrame: 110,
+    });
+    expect(gap.success).toBe(true);
+    expect(controller.getClips()[1].startFrame).toBe(60);
+  });
 });

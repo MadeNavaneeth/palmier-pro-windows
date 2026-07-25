@@ -40,6 +40,14 @@ export interface RippleDeleteReport {
   shiftedClipIds: string[];
 }
 
+export type TrimEdge = 'left' | 'right';
+
+export interface RippleTrimReport {
+  resizedClipIds: string[];
+  shiftedClipIds: string[];
+  durationDelta: Frame;
+}
+
 export class EditorController {
   private project: Project;
   private history: CommandHistory;
@@ -266,6 +274,45 @@ export class EditorController {
     };
   }
 
+  rippleDeleteGap(trackId: string, range: RippleRange): RippleDeleteReport | null {
+    const track = this.project.timeline.tracks.find((candidate) => candidate.id === trackId);
+    const start = asValidFrame(range.start);
+    const end = asValidFrame(range.end);
+    if (!track || track.locked || start === null || end === null || end <= start) return null;
+
+    const anchorClips = this.project.timeline.clips.filter((clip) => clip.trackId === trackId);
+    if (anchorClips.some((clip) =>
+      clip.startFrame < end && clip.startFrame + clip.durationFrames > start
+    )) {
+      return null;
+    }
+
+    const shifts = new Map<string, Frame>();
+    for (const candidate of this.project.timeline.tracks) {
+      if (candidate.locked || (candidate.id !== trackId && candidate.syncLocked === false)) continue;
+      const clips = this.project.timeline.clips.filter((clip) => clip.trackId === candidate.id);
+      const moving = clips.filter((clip) => clip.startFrame >= end);
+      if (moving.length === 0) continue;
+
+      const shift = end - start;
+      const stationaryEnd = clips
+        .filter((clip) => clip.startFrame < end)
+        .reduce((latest, clip) => Math.max(latest, clip.startFrame + clip.durationFrames), 0);
+      const firstMovingStart = Math.min(...moving.map((clip) => clip.startFrame));
+      if (firstMovingStart - shift < stationaryEnd) return null;
+
+      for (const clip of moving) shifts.set(clip.id, clip.startFrame - shift);
+    }
+
+    if (shifts.size === 0) return null;
+    const clips = this.project.timeline.clips.map((clip) => {
+      const startFrame = shifts.get(clip.id);
+      return startFrame === undefined ? clip : { ...clip, startFrame };
+    });
+    this.execute(new ReplaceClipsCommand(clips, 'Ripple delete gap'));
+    return { removedClipIds: [], shiftedClipIds: [...shifts.keys()] };
+  }
+
   moveClip(clipId: string, newStartFrame: Frame, newTrackId?: string): void {
     const clip = this.project.timeline.clips.find((candidate) => candidate.id === clipId);
     if (!clip) return;
@@ -309,6 +356,110 @@ export class EditorController {
         : clip,
     );
     this.execute(new ReplaceClipsCommand(clips, linkedIds.size > 1 ? 'Trim linked clips' : 'Trim clip'));
+  }
+
+  trimClipEdge(
+    clipId: string,
+    edge: TrimEdge,
+    deltaFrames: Frame,
+    ripple = false,
+  ): RippleTrimReport | null {
+    const lead = this.project.timeline.clips.find((clip) => clip.id === clipId);
+    const requestedDelta = Math.round(deltaFrames);
+    if (!lead || !Number.isFinite(requestedDelta) || requestedDelta === 0) return null;
+
+    const targetIds = new Set(this.expandLinkedClipIds([clipId]));
+    if (!this.canEditClipIds(targetIds)) return null;
+    const targets = this.project.timeline.clips.filter((clip) => targetIds.has(clip.id));
+    const durationDeltaRequested = edge === 'right' ? requestedDelta : -requestedDelta;
+
+    let minDurationDelta = Math.max(...targets.map((clip) => -(clip.durationFrames - 1)));
+    let maxDurationDelta = Math.min(...targets.map((clip) => {
+      if (edge === 'left') {
+        return ripple ? clip.inPoint : Math.min(clip.inPoint, clip.startFrame);
+      }
+      const asset = this.project.media.find((candidate) => candidate.id === clip.assetId);
+      return asset && asset.duration > 0
+        ? Math.max(0, asset.duration - clip.outPoint)
+        : Number.POSITIVE_INFINITY;
+    }));
+
+    const targetTrackIds = new Set(targets.map((clip) => clip.trackId));
+    const leadEnd = lead.startFrame + lead.durationFrames;
+    if (ripple && durationDeltaRequested < 0) {
+      for (const track of this.project.timeline.tracks) {
+        if (
+          track.locked
+          || targetTrackIds.has(track.id)
+          || track.syncLocked === false
+        ) {
+          continue;
+        }
+        const clips = this.project.timeline.clips.filter((clip) => clip.trackId === track.id);
+        const followers = clips.filter((clip) => clip.startFrame >= leadEnd);
+        if (followers.length === 0) continue;
+        const firstFollower = Math.min(...followers.map((clip) => clip.startFrame));
+        const stationaryEnd = clips
+          .filter((clip) => clip.startFrame < leadEnd)
+          .reduce((latest, clip) => Math.max(latest, clip.startFrame + clip.durationFrames), 0);
+        minDurationDelta = Math.max(minDurationDelta, -(firstFollower - stationaryEnd));
+      }
+    }
+
+    const durationDelta = Math.min(
+      maxDurationDelta,
+      Math.max(minDurationDelta, durationDeltaRequested),
+    );
+    if (!Number.isFinite(durationDelta) || durationDelta === 0) return null;
+
+    const shifts = new Map<string, Frame>();
+    if (ripple) {
+      for (const track of this.project.timeline.tracks) {
+        if (track.locked || (track.syncLocked === false && !targetTrackIds.has(track.id))) continue;
+        const trackTarget = targets.find((clip) => clip.trackId === track.id);
+        const shiftPoint = trackTarget
+          ? trackTarget.startFrame + trackTarget.durationFrames
+          : leadEnd;
+        for (const clip of this.project.timeline.clips) {
+          if (
+            clip.trackId === track.id
+            && !targetIds.has(clip.id)
+            && clip.startFrame >= shiftPoint
+          ) {
+            shifts.set(clip.id, Math.max(0, clip.startFrame + durationDelta));
+          }
+        }
+      }
+    }
+
+    const clips = this.project.timeline.clips.map((clip) => {
+      if (targetIds.has(clip.id)) {
+        if (edge === 'right') {
+          return {
+            ...clip,
+            durationFrames: clip.durationFrames + durationDelta,
+            outPoint: clip.outPoint + durationDelta,
+          };
+        }
+        return {
+          ...clip,
+          startFrame: ripple ? clip.startFrame : clip.startFrame - durationDelta,
+          durationFrames: clip.durationFrames + durationDelta,
+          inPoint: clip.inPoint - durationDelta,
+        };
+      }
+      const startFrame = shifts.get(clip.id);
+      return startFrame === undefined ? clip : { ...clip, startFrame };
+    });
+    this.execute(new ReplaceClipsCommand(
+      clips,
+      ripple ? 'Ripple trim clips' : targetIds.size > 1 ? 'Trim linked clips' : 'Trim clip',
+    ));
+    return {
+      resizedClipIds: targets.map((clip) => clip.id),
+      shiftedClipIds: [...shifts.keys()],
+      durationDelta,
+    };
   }
 
   splitClip(clipId: string, atFrame: Frame): string | null {

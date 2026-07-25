@@ -377,8 +377,33 @@ gates pass.
   receive a removed/shifted clip report.
 - Upstream reviewed: current `RippleEngine`,
   `EditorViewModel+Ripple.rippleDeleteSelectedClips`, and ripple range tests.
-- Remaining upstream gaps: ripple range cutting, ripple gap delete, ripple
-  trim, and collision refusal diagnostics.
+- Remaining upstream gaps: ripple range cutting and user-facing collision
+  diagnostics.
+
+### 2026-07-25 - Ripple Trim And Gap Editing
+
+- Regular left-edge trims now move the timeline edge while preserving the clip
+  end, matching professional source/timeline trim semantics.
+- Holding `Shift` while dragging either clip edge performs an atomic ripple
+  trim. Linked clips resize together and downstream clips on their own and
+  sync-locked tracks move by the same constrained duration delta.
+- Shrinking ripple trims clamp to the available room on sync-locked tracks
+  instead of creating overlaps; source headroom and the one-frame minimum are
+  enforced across the full linked set.
+- Drag previews replace their previous intermediate command, so a completed
+  move or trim remains one undo step.
+- Double-clicking a bounded empty timeline gap selects it. The timeline toolbar
+  or `Shift+Delete` closes that gap across the anchor and sync-locked tracks in
+  one undoable transaction.
+- Occupied, locked, unbounded, and collision-producing gap edits are refused
+  without partial movement.
+- Agent and MCP now expose `ripple_trim_clip` and `ripple_delete_gap` through
+  the same shared controller paths as manual editing.
+- Upstream reviewed: current `EditorViewModel+Ripple.planRippleTrim`,
+  `rippleTrimClip`, `rippleDelete(gap:)`, `RippleTrimTests`, and
+  `RippleGapDeleteTests`.
+- Remaining upstream gap: arbitrary timeline-range cutting that splits clips
+  and closes multiple removed ranges atomically.
 
 ## Definition Of Done For Every Feature
 

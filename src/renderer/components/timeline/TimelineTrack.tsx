@@ -29,6 +29,8 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
   const placeAssets = useTimelineStore((s) => s.placeAssets);
   const importAndPlaceAssets = useTimelineStore((s) => s.importAndPlaceAssets);
   const snapFrame = useTimelineStore((s) => s.snapFrame);
+  const selectedGap = useTimelineStore((s) => s.selectedGap);
+  const selectGap = useTimelineStore((s) => s.selectGap);
 
   // Frame where a dragged asset would land (null when not dragging over).
   const [dropFrame, setDropFrame] = useState<number | null>(null);
@@ -147,6 +149,15 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
     ],
   );
 
+  const handleTrackDoubleClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (e.target !== e.currentTarget) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      selectGap(track.id, frameFromClientX(e.clientX, rect));
+    },
+    [frameFromClientX, selectGap, track.id],
+  );
+
   const bgColor = track.type === 'video' ? 'bg-surface-0/50' : 'bg-surface-0/30';
   const lockOverlay = track.locked ? 'opacity-50 pointer-events-none' : '';
   const dropX =
@@ -157,11 +168,22 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
       className={`relative h-12 border-b border-surface-3 ${bgColor} ${lockOverlay} ${dropFrame !== null ? 'ring-1 ring-inset ring-accent/40' : ''}`}
       onClick={handleTrackClick}
       onMouseDown={handleTrackMouseDown}
+      onDoubleClick={handleTrackDoubleClick}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       data-track-id={track.id}
     >
+      {selectedGap?.trackId === track.id && (
+        <div
+          className="absolute inset-y-0 z-10 border-x border-amber-300/70 bg-amber-300/15 pointer-events-none"
+          style={{
+            left: `${(selectedGap.startFrame - viewport.scrollFrame) * viewport.pixelsPerFrame}px`,
+            width: `${(selectedGap.endFrame - selectedGap.startFrame) * viewport.pixelsPerFrame}px`,
+          }}
+          data-selected-gap
+        />
+      )}
       {/* Track grid lines (subtle) */}
       <div className="absolute inset-0 pointer-events-none opacity-10">
         <div className="h-full w-full" style={{

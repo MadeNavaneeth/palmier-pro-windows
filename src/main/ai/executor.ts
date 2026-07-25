@@ -79,6 +79,28 @@ export class ToolExecutor {
           : { success: false, error: 'No matching clips found or a selected track is locked.' };
       }
 
+      case 'ripple_delete_gap': {
+        const report = this.editor.rippleDeleteGap(args.trackId, {
+          start: clampFrame(args.startFrame),
+          end: clampFrame(args.endFrame, 1),
+        });
+        return report
+          ? { success: true, data: report }
+          : { success: false, error: 'Gap is invalid, occupied, blocked, or has no following clips.' };
+      }
+
+      case 'ripple_trim_clip': {
+        const report = this.editor.trimClipEdge(
+          args.clipId,
+          args.edge,
+          args.deltaFrames,
+          true,
+        );
+        return report
+          ? { success: true, data: report }
+          : { success: false, error: 'Ripple trim could not be applied.' };
+      }
+
       case 'move_clip':
         this.editor.moveClip(args.clipId, clampFrame(args.startFrame), args.trackId);
         return { success: true, data: { moved: args.clipId } };

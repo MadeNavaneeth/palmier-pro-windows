@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Magnet,
+  ListCollapse,
   MousePointer2,
   Redo2,
   Scissors,
@@ -18,7 +19,9 @@ export function TimelineToolbar() {
   const snapEnabled = useTimelineStore((state) => state.snapEnabled);
   const splitAtPlayhead = useTimelineStore((state) => state.splitAtPlayhead);
   const removeSelectedClips = useTimelineStore((state) => state.removeSelectedClips);
+  const rippleDelete = useTimelineStore((state) => state.rippleDelete);
   const selectedClipIds = useTimelineStore((state) => state.selectedClipIds);
+  const selectedGap = useTimelineStore((state) => state.selectedGap);
   const canUndo = useTimelineStore((state) => state.canUndo());
   const canRedo = useTimelineStore((state) => state.canRedo());
   const undo = useTimelineStore((state) => state.undo);
@@ -63,6 +66,13 @@ export function TimelineToolbar() {
         disabled={selectedClipIds.size === 0}
       >
         <Trash2 size={14} />
+      </ToolButton>
+      <ToolButton
+        label="Ripple delete selection (Shift+Delete)"
+        onClick={rippleDelete}
+        disabled={selectedClipIds.size === 0 && !selectedGap}
+      >
+        <ListCollapse size={14} />
       </ToolButton>
 
       <Divider />

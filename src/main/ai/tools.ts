@@ -84,6 +84,30 @@ export const tools = {
     }),
   },
 
+  rippleDeleteGap: {
+    name: 'ripple_delete_gap',
+    description:
+      'Close an empty timeline gap in one undoable edit, keeping sync-locked tracks aligned.',
+    parameters: z.object({
+      trackId: z.string().describe('Track containing the empty gap.'),
+      startFrame: frameSchema.describe('Inclusive start frame of the gap.'),
+      endFrame: durationSchema.describe('Exclusive end frame of the gap.'),
+    }),
+  },
+
+  rippleTrimClip: {
+    name: 'ripple_trim_clip',
+    description:
+      'Trim one edge of a clip and shift downstream clips atomically. Linked clips and sync-locked tracks stay aligned.',
+    parameters: z.object({
+      clipId: z.string().describe('Clip whose edge should be trimmed.'),
+      edge: z.enum(['left', 'right']).describe('Timeline edge to trim.'),
+      deltaFrames: z.number().int().describe(
+        'Edge movement in frames. Positive moves the edge right; negative moves it left.',
+      ),
+    }),
+  },
+
   moveClip: {
     name: 'move_clip',
     description: 'Move a clip to a new position on the timeline.',

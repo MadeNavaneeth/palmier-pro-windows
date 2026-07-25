@@ -27,6 +27,14 @@ export interface DragState {
   originalInPoint?: Frame;
   originalOutPoint?: Frame;
   originalDuration?: Frame;
+  ripple?: boolean;
+  hasAppliedEdit?: boolean;
+}
+
+export interface GapSelection {
+  trackId: string;
+  startFrame: Frame;
+  endFrame: Frame;
 }
 
 export interface TimelineViewport {
@@ -76,6 +84,7 @@ export interface TimelineState {
   // ─── Selection ───────────────────────────────────────────────────────────
   selectedClipIds: Set<string>;
   hoveredClipId: string | null;
+  selectedGap: GapSelection | null;
 
   // ─── Playback ──────────────────────────────────────────────────────────
   isPlaying: boolean;
@@ -120,6 +129,7 @@ export interface TimelineState {
   trimClipRight: (clipId: string, newOutPoint: Frame, newDuration: Frame) => void;
   splitAtPlayhead: () => void;
   rippleDelete: () => void;
+  selectGap: (trackId: string, atFrame: Frame) => void;
 
   // Tracks
   addTrack: (type: 'video' | 'audio', name?: string) => string;
@@ -154,7 +164,13 @@ export interface TimelineState {
   fitToWindow: (containerWidth: number) => void;
 
   // Drag operations
-  startDrag: (mode: DragMode, clipId: string | null, startX: number, startFrame: Frame) => void;
+  startDrag: (
+    mode: DragMode,
+    clipId: string | null,
+    startX: number,
+    startFrame: Frame,
+    ripple?: boolean,
+  ) => void;
   updateDrag: (currentX: number) => void;
   endDrag: () => void;
   cancelDrag: () => void;
@@ -185,6 +201,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     selectedClipIds: new Set(),
     hoveredClipId: null,
+    selectedGap: null,
 
     isPlaying: false,
     playbackRate: 1,
@@ -232,11 +249,11 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         } else {
           for (const id of clipIds) next.add(id);
         }
-        return { selectedClipIds: next };
+        return { selectedClipIds: next, selectedGap: null };
       });
     },
 
-    deselectAll: () => set({ selectedClipIds: new Set() }),
+    deselectAll: () => set({ selectedClipIds: new Set(), selectedGap: null }),
 
     selectClipsInRange: (startFrame, endFrame, trackId) => {
       const clips = get().getClips();
@@ -250,7 +267,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
           return overlaps && trackMatch;
         })
         .map((c) => c.id);
-      set({ selectedClipIds: new Set(get().controller.expandLinkedClipIds(ids)) });
+      set({
+        selectedClipIds: new Set(get().controller.expandLinkedClipIds(ids)),
+        selectedGap: null,
+      });
     },
 
     setHoveredClip: (clipId) => set({ hoveredClipId: clipId }),
@@ -318,11 +338,42 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     rippleDelete: () => {
-      const { selectedClipIds, controller } = get();
+      const { selectedClipIds, selectedGap, controller } = get();
+      if (selectedGap) {
+        if (controller.rippleDeleteGap(selectedGap.trackId, {
+          start: selectedGap.startFrame,
+          end: selectedGap.endFrame,
+        })) {
+          set({ selectedGap: null });
+        }
+        return;
+      }
       if (selectedClipIds.size === 0) return;
       if (controller.rippleDeleteClips(selectedClipIds)) {
         set({ selectedClipIds: new Set() });
       }
+    },
+
+    selectGap: (trackId, atFrame) => {
+      const clips = get().getClips()
+        .filter((clip) => clip.trackId === trackId)
+        .sort((a, b) => a.startFrame - b.startFrame);
+      if (clips.some((clip) =>
+        atFrame >= clip.startFrame && atFrame < clip.startFrame + clip.durationFrames
+      )) {
+        set({ selectedGap: null });
+        return;
+      }
+      const startFrame = clips
+        .filter((clip) => clip.startFrame + clip.durationFrames <= atFrame)
+        .reduce((latest, clip) => Math.max(latest, clip.startFrame + clip.durationFrames), 0);
+      const next = clips.find((clip) => clip.startFrame > atFrame);
+      set({
+        selectedGap: next && next.startFrame > startFrame
+          ? { trackId, startFrame, endFrame: next.startFrame }
+          : null,
+        selectedClipIds: new Set(),
+      });
     },
 
     // ─── Tracks ────────────────────────────────────────────────────────────
@@ -448,7 +499,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     // ─── Drag Operations ───────────────────────────────────────────────────
-    startDrag: (mode, clipId, startX, startFrame) => {
+    startDrag: (mode, clipId, startX, startFrame, ripple = false) => {
       const clip = clipId ? get().getClips().find((c) => c.id === clipId) : null;
       set({
         drag: {
@@ -460,6 +511,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
           originalInPoint: clip?.inPoint,
           originalOutPoint: clip?.outPoint,
           originalDuration: clip?.durationFrames,
+          ripple,
+          hasAppliedEdit: false,
         },
       });
     },
@@ -470,25 +523,28 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
       const deltaPixels = currentX - drag.startX;
       const deltaFrames = Math.round(deltaPixels / viewport.pixelsPerFrame);
+      if (drag.hasAppliedEdit) controller.undo();
+      if (deltaFrames === 0) {
+        set((state) => ({ drag: { ...state.drag, hasAppliedEdit: false } }));
+        return;
+      }
 
+      let applied = false;
       if (drag.mode === 'move') {
         const newStart = snapFrame(Math.max(0, drag.startFrame + deltaFrames), drag.clipId);
         controller.moveClip(drag.clipId, newStart);
+        applied = true;
       } else if (drag.mode === 'trim-left') {
-        const clip = controller.getClips().find((c) => c.id === drag.clipId);
-        if (!clip || drag.originalInPoint === undefined || drag.originalDuration === undefined) return;
-        const newIn = Math.max(0, drag.originalInPoint + deltaFrames);
-        const newDuration = drag.originalDuration - deltaFrames;
-        if (newDuration > 1) {
-          controller.trimClip(drag.clipId, newIn, newIn + newDuration);
-        }
+        applied = controller.trimClipEdge(drag.clipId, 'left', deltaFrames, drag.ripple) !== null;
       } else if (drag.mode === 'trim-right') {
-        const clip = controller.getClips().find((c) => c.id === drag.clipId);
-        if (!clip || drag.originalOutPoint === undefined || drag.originalDuration === undefined) return;
-        const newDuration = Math.max(1, drag.originalDuration + deltaFrames);
-        const newOut = (drag.originalInPoint || 0) + newDuration;
-        controller.trimClip(drag.clipId, drag.originalInPoint || 0, newOut);
+        applied = controller.trimClipEdge(drag.clipId, 'right', deltaFrames, drag.ripple) !== null;
       }
+      set((state) => ({
+        drag: {
+          ...state.drag,
+          hasAppliedEdit: applied,
+        },
+      }));
     },
 
     endDrag: () => {
@@ -498,13 +554,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     cancelDrag: () => {
       const { drag, controller } = get();
       // Restore original state
-      if (drag.clipId && drag.originalStartFrame !== undefined) {
-        if (drag.mode === 'move') {
-          controller.undo();
-        } else if (drag.mode === 'trim-left' || drag.mode === 'trim-right') {
-          controller.undo();
-        }
-      }
+      if (drag.hasAppliedEdit) controller.undo();
       set({ drag: { mode: 'none', clipId: null, startX: 0, startFrame: 0 } });
     },
 
@@ -545,12 +595,12 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     // ─── Project Lifecycle ─────────────────────────────────────────────────
     loadProject: (project) => {
       get().controller.loadProject(project);
-      set({ selectedClipIds: new Set(), isPlaying: false });
+      set({ selectedClipIds: new Set(), selectedGap: null, isPlaying: false });
     },
 
     resetProject: () => {
       get().controller.reset();
-      set({ selectedClipIds: new Set(), isPlaying: false });
+      set({ selectedClipIds: new Set(), selectedGap: null, isPlaying: false });
     },
 
     syncFromController: () => {

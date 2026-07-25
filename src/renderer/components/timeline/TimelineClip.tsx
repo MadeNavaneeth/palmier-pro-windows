@@ -59,10 +59,10 @@ export function TimelineClip({ clip }: TimelineClipProps) {
 
       if (localX <= TRIM_HANDLE_WIDTH) {
         // Left trim handle
-        startDrag('trim-left', clip.id, e.clientX, clip.startFrame);
+        startDrag('trim-left', clip.id, e.clientX, clip.startFrame, e.shiftKey);
       } else if (localX >= rect.width - TRIM_HANDLE_WIDTH) {
         // Right trim handle
-        startDrag('trim-right', clip.id, e.clientX, clip.startFrame);
+        startDrag('trim-right', clip.id, e.clientX, clip.startFrame, e.shiftKey);
       } else {
         // Body — move or select
         if (!isSelected) {
@@ -108,7 +108,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       {/* Left trim handle */}
       <div
         className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize bg-white/20 opacity-0 hover:opacity-100 transition-opacity"
-        title="Trim start"
+        title="Trim start (hold Shift to ripple)"
       />
 
       {/* Fade-in ramp */}
@@ -150,7 +150,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       {/* Right trim handle */}
       <div
         className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize bg-white/20 opacity-0 hover:opacity-100 transition-opacity"
-        title="Trim end"
+        title="Trim end (hold Shift to ripple)"
       />
     </div>
   );
