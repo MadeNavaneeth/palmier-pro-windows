@@ -1,210 +1,332 @@
 /**
- * SettingsPanel — BYOK API key management.
- * Provider selection, key input (masked), test connection button.
- * Keys are stored encrypted via Windows DPAPI (Electron safeStorage).
+ * SettingsPanel — BYOK provider configuration.
+ *
+ * Covers upstream #17 (configurable API base URL) and #140 (OpenAI-compatible
+ * providers): a preset list for the common endpoints, an editable base URL for
+ * anything else, a free-text model field, and the masked key input.
+ *
+ * Keys are stored encrypted via Windows DPAPI (Electron safeStorage). The base
+ * URL is validated here for immediate feedback and again in the main process,
+ * which is the boundary that actually matters.
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
+import { AlertTriangle, Check, Loader2 } from 'lucide-react';
 import { useAiStore } from '../../store/ai';
+import {
+  PROVIDER_PRESETS,
+  presetById,
+  validateBaseUrl,
+  validateProviderConfig,
+} from '../../../shared/ai/provider-config';
+
+interface ProviderInfo {
+  id: string;
+  name: string;
+  requiresApiKey: boolean;
+  hint?: string;
+  hasKey: boolean;
+  lastFour: string;
+  baseUrl: string;
+  model: string;
+}
+
+type SaveState =
+  | { status: 'idle' }
+  | { status: 'saving' }
+  | { status: 'saved' }
+  | { status: 'error'; message: string };
 
 export function SettingsPanel() {
-  const { showSettings, provider, model } = useAiStore();
-  const [apiKey, setApiKey] = useState('');
-  const [masked, setMasked] = useState('');
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<'success' | 'error' | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState(provider);
-  const [selectedModel, setSelectedModel] = useState(model);
+  const showSettings = useAiStore((state) => state.showSettings);
+  const providerId = useAiStore((state) => state.providerId);
 
-  // Check if key exists on mount
+  const [selectedId, setSelectedId] = useState(providerId);
+  const [baseUrl, setBaseUrl] = useState('');
+  const [model, setModel] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [storedKeySuffix, setStoredKeySuffix] = useState('');
+  const [replacingKey, setReplacingKey] = useState(false);
+  const [save, setSave] = useState<SaveState>({ status: 'idle' });
+
+  const preset = presetById(selectedId);
+
+  // Load the persisted configuration for the selected provider whenever the
+  // panel opens or the selection changes.
   useEffect(() => {
     if (!showSettings) return;
-    checkExistingKey();
-  }, [showSettings]);
+    let cancelled = false;
 
-  async function checkExistingKey() {
-    const providers = await window.palmier.ai.getProviders();
-    if (providers && Array.isArray(providers)) {
-      const current = providers.find((p: any) => p.id === selectedProvider);
-      if (current?.hasKey) {
-        setMasked('••••••••••••' + (current.lastFour || ''));
-        useAiStore.setState({ isConfigured: true });
+    void (async () => {
+      try {
+        const providers = (await window.palmier.ai.getProviders()) as ProviderInfo[] | undefined;
+        if (cancelled || !Array.isArray(providers)) return;
+        const current = providers.find((entry) => entry.id === selectedId);
+        setBaseUrl(current?.baseUrl ?? preset?.baseUrl ?? '');
+        setModel(current?.model ?? preset?.defaultModel ?? '');
+        setStoredKeySuffix(current?.hasKey ? current.lastFour : '');
+        setReplacingKey(false);
+        setApiKey('');
+        setSave({ status: 'idle' });
+      } catch (err) {
+        if (!cancelled) {
+          setSave({ status: 'error', message: 'Could not read the saved AI settings.' });
+          console.error('Failed to load AI providers:', err);
+        }
       }
-    }
-  }
+    })();
 
-  const handleSaveKey = useCallback(async () => {
-    if (!apiKey.trim()) return;
-    setTesting(true);
-    setTestResult(null);
+    return () => {
+      cancelled = true;
+    };
+  }, [showSettings, selectedId, preset?.baseUrl, preset?.defaultModel]);
+
+  const urlCheck = preset?.kind === 'openai-compatible' || baseUrl.trim().length > 0
+    ? validateBaseUrl(baseUrl)
+    : null;
+  const urlError = urlCheck && !urlCheck.ok ? urlCheck.reason : null;
+  const isLoopback = urlCheck?.ok ? urlCheck.isLoopback : false;
+  const needsKey = (preset?.requiresApiKey ?? true) && !storedKeySuffix && !apiKey.trim();
+
+  const handleSave = useCallback(async () => {
+    if (!preset) return;
+    setSave({ status: 'saving' });
+
+    const validated = validateProviderConfig({
+      kind: preset.kind,
+      baseUrl: baseUrl.trim() || undefined,
+      model,
+    });
+    if (!validated.ok) {
+      setSave({ status: 'error', message: validated.reason });
+      return;
+    }
 
     try {
-      await window.palmier.ai.setApiKey(selectedProvider, apiKey.trim());
+      const configResult = await window.palmier.ai.setProviderConfig(selectedId, {
+        kind: validated.config.kind,
+        baseUrl: validated.config.baseUrl,
+        model: validated.config.model,
+      });
+      if (configResult && configResult.success === false) {
+        setSave({ status: 'error', message: configResult.error || 'Could not save the endpoint.' });
+        return;
+      }
+
+      // Only touch the stored key when the user actually typed one; saving an
+      // endpoint change must not clear a working credential.
+      if (apiKey.trim()) {
+        const keyResult = await window.palmier.ai.setApiKey(selectedId, apiKey.trim());
+        if (keyResult && keyResult.success === false) {
+          setSave({ status: 'error', message: keyResult.error || 'Could not save the API key.' });
+          return;
+        }
+        setStoredKeySuffix(apiKey.trim().slice(-4));
+        setApiKey('');
+        setReplacingKey(false);
+      }
+
       useAiStore.setState({
         isConfigured: true,
-        provider: selectedProvider,
-        model: selectedModel,
+        providerId: selectedId,
+        model: validated.config.model,
       });
-      setMasked('••••••••••••' + apiKey.slice(-4));
-      setApiKey('');
-      setTestResult('success');
-    } catch {
-      setTestResult('error');
-    } finally {
-      setTesting(false);
+      setSave({ status: 'saved' });
+    } catch (err) {
+      setSave({
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Could not save AI settings.',
+      });
     }
-  }, [apiKey, selectedProvider, selectedModel]);
-
-  const handleClose = () => {
-    useAiStore.setState({ showSettings: false });
-  };
+  }, [preset, selectedId, baseUrl, model, apiKey]);
 
   if (!showSettings) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-[380px] rounded-lg border border-surface-3 bg-surface-1 p-5 shadow-2xl animate-fade-in">
-        <h2 className="text-sm font-medium text-text-primary mb-4">AI Settings</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ai-settings-title"
+        className="flex max-h-full w-[440px] flex-col overflow-hidden rounded-lg border border-surface-3 bg-surface-1 shadow-2xl"
+      >
+        <h2
+          id="ai-settings-title"
+          className="shrink-0 border-b border-white/10 px-5 py-3.5 text-sm font-medium text-text-primary"
+        >
+          AI Settings
+        </h2>
 
-        {/* Provider */}
-        <div className="mb-4">
-          <label className="block text-2xs text-text-secondary mb-1.5 uppercase tracking-wide">
-            Provider
-          </label>
-          <div className="flex gap-2">
-            <ProviderButton
-              label="Anthropic"
-              sublabel="Claude"
-              selected={selectedProvider === 'anthropic'}
-              onClick={() => {
-                setSelectedProvider('anthropic');
-                setSelectedModel('claude-sonnet-4-20250514');
-              }}
-            />
-            <ProviderButton
-              label="OpenAI"
-              sublabel="GPT-4"
-              selected={selectedProvider === 'openai'}
-              onClick={() => {
-                setSelectedProvider('openai');
-                setSelectedModel('gpt-4o');
-              }}
-            />
-          </div>
-        </div>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          <Field label="Provider" htmlFor="ai-provider">
+            <select
+              id="ai-provider"
+              value={selectedId}
+              onChange={(event) => setSelectedId(event.target.value)}
+              className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 text-xs text-text-primary focus:border-accent focus:outline-none"
+            >
+              {PROVIDER_PRESETS.map((entry) => (
+                <option key={entry.id} value={entry.id} className="bg-surface-2">
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+            {preset?.hint && <Hint>{preset.hint}</Hint>}
+          </Field>
 
-        {/* Model */}
-        <div className="mb-4">
-          <label className="block text-2xs text-text-secondary mb-1.5 uppercase tracking-wide">
-            Model
-          </label>
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 text-xs text-text-primary"
+          <Field
+            label={preset?.kind === 'anthropic' ? 'API base URL (optional)' : 'API base URL'}
+            htmlFor="ai-base-url"
           >
-            {selectedProvider === 'anthropic' ? (
-              <>
-                <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
-                <option value="claude-opus-4-20250514">Claude Opus 4</option>
-                <option value="claude-haiku-4-20250514">Claude Haiku 4</option>
-              </>
-            ) : (
-              <>
-                <option value="gpt-4o">GPT-4o</option>
-                <option value="gpt-4o-mini">GPT-4o mini</option>
-              </>
-            )}
-          </select>
-        </div>
-
-        {/* API Key */}
-        <div className="mb-4">
-          <label className="block text-2xs text-text-secondary mb-1.5 uppercase tracking-wide">
-            API Key
-          </label>
-          {masked && !apiKey ? (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-text-muted font-mono">{masked}</span>
-              <button
-                onClick={() => setMasked('')}
-                className="text-2xs text-accent hover:text-accent-hover"
-              >
-                Change
-              </button>
-            </div>
-          ) : (
             <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={selectedProvider === 'anthropic' ? 'sk-ant-...' : 'sk-...'}
-              className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 text-xs text-text-primary font-mono placeholder:text-text-muted focus:border-accent focus:outline-none"
+              id="ai-base-url"
+              type="url"
+              inputMode="url"
+              spellCheck={false}
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              placeholder={
+                preset?.kind === 'anthropic'
+                  ? 'Leave blank for the default Anthropic API'
+                  : 'https://host/v1'
+              }
+              aria-invalid={Boolean(urlError)}
+              aria-describedby={urlError ? 'ai-base-url-error' : undefined}
+              className={`w-full rounded border bg-surface-2 px-3 py-1.5 font-mono text-xs text-text-primary placeholder:text-text-muted focus:outline-none ${
+                urlError ? 'border-red-500/60' : 'border-surface-3 focus:border-accent'
+              }`}
             />
+            {urlError ? (
+              <p id="ai-base-url-error" className="mt-1 text-[10px] text-red-400">
+                {urlError}
+              </p>
+            ) : (
+              <Hint>
+                {isLoopback
+                  ? 'Local endpoint. Requests stay on this machine.'
+                  : 'Requests include your prompt and the project timeline structure.'}
+              </Hint>
+            )}
+          </Field>
+
+          <Field label="Model" htmlFor="ai-model">
+            <input
+              id="ai-model"
+              type="text"
+              spellCheck={false}
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              placeholder={preset?.defaultModel || 'model-name'}
+              className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 font-mono text-xs text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+            />
+            <Hint>Any model id the endpoint accepts.</Hint>
+          </Field>
+
+          <Field
+            label={preset?.requiresApiKey ? 'API key' : 'API key (optional)'}
+            htmlFor="ai-api-key"
+          >
+            {storedKeySuffix && !replacingKey ? (
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-text-muted">
+                  {'\u2022'.repeat(12)}
+                  {storedKeySuffix}
+                </span>
+                <button
+                  onClick={() => setReplacingKey(true)}
+                  className="text-[10px] text-accent hover:text-accent-hover"
+                >
+                  Change
+                </button>
+              </div>
+            ) : (
+              <input
+                id="ai-api-key"
+                type="password"
+                autoComplete="off"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+                placeholder={preset?.kind === 'anthropic' ? 'sk-ant-...' : 'sk-...'}
+                className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 font-mono text-xs text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+              />
+            )}
+            <Hint>
+              {preset?.requiresApiKey
+                ? 'Encrypted at rest via Windows DPAPI. Sent only to the endpoint above.'
+                : 'Local runtimes usually ignore this. Leave it blank unless yours needs one.'}
+            </Hint>
+          </Field>
+
+          {!isLoopback && !urlError && (
+            <div className="flex gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-300">
+              <AlertTriangle size={13} className="mt-px shrink-0" aria-hidden="true" />
+              <span>
+                This endpoint is on the internet. Your prompts and the project&apos;s timeline
+                structure are sent to it when you use the assistant.
+              </span>
+            </div>
           )}
-          <p className="mt-1 text-2xs text-text-muted">
-            Encrypted at rest via Windows DPAPI. Never leaves your machine.
-          </p>
+
+          {save.status === 'error' && (
+            <p role="alert" className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[10px] text-red-400">
+              {save.message}
+            </p>
+          )}
+          {save.status === 'saved' && (
+            <p className="flex items-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[10px] text-emerald-400">
+              <Check size={12} aria-hidden="true" />
+              Settings saved.
+            </p>
+          )}
         </div>
 
-        {/* Test result */}
-        {testResult && (
-          <div className={`mb-4 rounded px-3 py-2 text-2xs ${
-            testResult === 'success'
-              ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
-              : 'bg-red-500/10 border border-red-500/30 text-red-400'
-          }`}>
-            {testResult === 'success' ? 'Key saved and verified.' : 'Failed to save key. Check the key and try again.'}
-          </div>
-        )}
-
-        {/* Buttons */}
-        <div className="flex justify-end gap-3">
+        <div className="flex shrink-0 justify-end gap-3 border-t border-white/10 px-5 py-3">
           <button
-            onClick={handleClose}
-            className="rounded px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 transition"
+            onClick={() => useAiStore.setState({ showSettings: false })}
+            className="rounded px-3 py-1.5 text-xs text-text-secondary transition hover:bg-surface-3"
           >
             {useAiStore.getState().isConfigured ? 'Done' : 'Cancel'}
           </button>
-          {(!masked || apiKey) && (
-            <button
-              onClick={handleSaveKey}
-              disabled={!apiKey.trim() || testing}
-              className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-surface-0 hover:bg-accent-hover transition disabled:opacity-40"
-            >
-              {testing ? 'Saving...' : 'Save Key'}
-            </button>
-          )}
+          <button
+            onClick={() => void handleSave()}
+            disabled={
+              save.status === 'saving' || Boolean(urlError) || !model.trim() || needsKey
+            }
+            className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {save.status === 'saving' && (
+              <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+            )}
+            {save.status === 'saving' ? 'Saving...' : 'Save'}
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-function ProviderButton({
+function Field({
   label,
-  sublabel,
-  selected,
-  onClick,
+  htmlFor,
+  children,
 }: {
   label: string;
-  sublabel: string;
-  selected: boolean;
-  onClick: () => void;
+  htmlFor: string;
+  children: React.ReactNode;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={`flex-1 rounded border px-3 py-2 text-left transition ${
-        selected
-          ? 'border-accent bg-accent/10'
-          : 'border-surface-3 bg-surface-2 hover:border-surface-4'
-      }`}
-    >
-      <span className={`block text-xs font-medium ${selected ? 'text-accent' : 'text-text-primary'}`}>
+    <div>
+      <label
+        htmlFor={htmlFor}
+        className="mb-1.5 block text-[10px] uppercase tracking-wide text-text-secondary"
+      >
         {label}
-      </span>
-      <span className="block text-2xs text-text-muted">{sublabel}</span>
-    </button>
+      </label>
+      {children}
+    </div>
   );
+}
+
+function Hint({ children }: { children: React.ReactNode }) {
+  return <p className="mt-1 text-[10px] text-text-muted">{children}</p>;
 }
