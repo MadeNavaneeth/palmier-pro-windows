@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Check, Send, Settings, Trash2, Wrench, X } from 'lucide-react';
+import { Bot, Check, Send, Settings, Square, Trash2, Wrench, X } from 'lucide-react';
 import { useAiStore, type ChatMessage, type ToolCallMessage } from '../../store/ai';
 
 export function ChatPanel() {
-  const { messages, isStreaming, isConfigured, sendMessage, clearHistory } = useAiStore();
+  const { messages, isStreaming, isConfigured, sendMessage, cancelStream, clearHistory } =
+    useAiStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -90,15 +91,28 @@ export function ChatPanel() {
             className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-[11px] leading-4 text-text-primary outline-none placeholder:text-text-muted"
             disabled={isStreaming}
           />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isStreaming}
-            className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-surface-0 hover:bg-accent-hover disabled:opacity-30"
-            title="Send"
-            aria-label="Send message"
-          >
-            <Send size={13} />
-          </button>
+          {/* Send becomes Stop while a turn runs (#58), so the control the user
+              is already looking at is the one that interrupts it. */}
+          {isStreaming ? (
+            <button
+              onClick={cancelStream}
+              className="flex h-7 w-7 items-center justify-center rounded-md bg-surface-3 text-text-primary hover:bg-surface-4"
+              title="Stop"
+              aria-label="Stop generating"
+            >
+              <Square size={11} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!input.trim()}
+              className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-surface-0 hover:bg-accent-hover disabled:opacity-30"
+              title="Send"
+              aria-label="Send message"
+            >
+              <Send size={13} />
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -171,9 +185,17 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[92%] px-1 py-1">
-        <p className="whitespace-pre-wrap text-[11px] leading-4 text-text-secondary">
-          {message.content}
-        </p>
+        {message.content && (
+          <p className="whitespace-pre-wrap text-[11px] leading-4 text-text-secondary">
+            {message.content}
+          </p>
+        )}
+        {message.cancelled && (
+          <span className="mt-1 inline-flex items-center gap-1 text-2xs text-text-muted">
+            <Square size={8} fill="currentColor" />
+            Stopped
+          </span>
+        )}
       </div>
     </div>
   );
