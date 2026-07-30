@@ -21,6 +21,7 @@ export function Timeline() {
   const addTrack = useTimelineStore((s) => s.addTrack);
   const viewport = useTimelineStore((s) => s.viewport);
   const scrollTo = useTimelineStore((s) => s.scrollTo);
+  const setViewportWidth = useTimelineStore((s) => s.setViewportWidth);
 
   const tracksContainerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(800);
@@ -29,7 +30,8 @@ export function Timeline() {
   useDragHandler();
   useKeyboardShortcuts();
 
-  // Track container width for ruler
+  // Track container width for the ruler, and publish it so fit-to-window works
+  // from the toolbar and the keyboard, neither of which can see this element.
   useEffect(() => {
     const el = tracksContainerRef.current;
     if (!el) return;
@@ -37,11 +39,13 @@ export function Timeline() {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         setContainerWidth(entry.contentRect.width);
+        setViewportWidth(entry.contentRect.width);
       }
     });
     observer.observe(el);
+    setViewportWidth(el.clientWidth);
     return () => observer.disconnect();
-  }, []);
+  }, [setViewportWidth]);
 
   // Horizontal scroll handler
   const handleWheel = useCallback(

@@ -11,6 +11,9 @@ import type { Clip, Track, Frame, Project, MediaAsset } from '../../shared/types
 import type { BlendMode } from '../../shared/types/blend-mode';
 import type { ClipTransition } from '../../shared/editor/transition';
 import type { MediaProbeResult } from '../../main/ipc/media';
+import { normalizePlaybackRate } from '../../shared/editor/playback-rate';
+import type { SilenceConfig } from '../../shared/audio/silence-detector';
+import { nextEditPoint, previousEditPoint, timelineContentEnd } from '../../shared/editor/edit-points';
 import { createEmptyProject } from '../../shared/types/project';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -76,6 +79,23 @@ function mediaAssetsFromProbeResults(
   }));
 }
 
+/**
+ * Tracks that edit-point navigation should consider.
+ *
+ * A selection is a statement about which tracks the editor is working on, so
+ * up/down step through that track's cuts instead of every boundary in the
+ * project. With nothing selected there is no such statement, so all tracks
+ * contribute.
+ */
+function navigationTrackIds(state: TimelineState): Set<string> | undefined {
+  if (state.selectedClipIds.size === 0) return undefined;
+  const trackIds = new Set<string>();
+  for (const clip of state.project.timeline.clips) {
+    if (state.selectedClipIds.has(clip.id)) trackIds.add(clip.trackId);
+  }
+  return trackIds.size > 0 ? trackIds : undefined;
+}
+
 export interface TimelineState {
   // ─── Core ────────────────────────────────────────────────────────────────
   controller: EditorController;
@@ -92,6 +112,15 @@ export interface TimelineState {
 
   // ─── Viewport ──────────────────────────────────────────────────────────
   viewport: TimelineViewport;
+  /**
+   * Measured width of the timeline lane area in pixels.
+   *
+   * Published by the Timeline panel's ResizeObserver so "fit to window" is
+   * correct from a keyboard shortcut or the toolbar, neither of which can see
+   * the lane element. Guessing from `window.innerWidth` was off by the track
+   * header and every open side panel.
+   */
+  viewportWidth: number;
 
   // ─── Drag ──────────────────────────────────────────────────────────────
   drag: DragState;
@@ -111,6 +140,7 @@ export interface TimelineState {
 
   // Selection
   selectClip: (clipId: string, additive?: boolean, includeLinked?: boolean) => void;
+  selectAllClips: () => void;
   deselectAll: () => void;
   selectClipsInRange: (startFrame: Frame, endFrame: Frame, trackId?: string) => void;
   setHoveredClip: (clipId: string | null) => void;
@@ -130,6 +160,12 @@ export interface TimelineState {
   splitAtPlayhead: () => void;
   rippleDelete: () => void;
   selectGap: (trackId: string, atFrame: Frame) => void;
+  setInFrame: () => void;
+  setOutFrame: () => void;
+  clearMarkedRange: () => void;
+  extractMarkedRange: () => void;
+  /** Mark the span of the current selection as the in/out range (#164). */
+  markSelectedClip: () => void;
 
   // Tracks
   addTrack: (type: 'video' | 'audio', name?: string) => string;
@@ -139,11 +175,31 @@ export interface TimelineState {
 
   // Compositing / properties
   importAssets: (probeResults: MediaProbeResult[]) => string[];
+  /** Delete media assets and their dependent clips as one undoable edit (#409). */
+  removeMediaAssets: (
+    assetIds: Iterable<string>,
+  ) => { removedAssetIds: string[]; removedClipIds: string[] } | null;
   setClipBlendMode: (clipId: string, blendMode: BlendMode) => void;
   setClipOpacity: (clipId: string, opacity: number) => void;
   setClipFade: (clipId: string, fadeInFrames?: Frame, fadeOutFrames?: Frame) => void;
+  /** Apply a property to the whole selection as one undoable edit (#419). */
+  setSelectedClipsBlendMode: (blendMode: BlendMode) => void;
+  setSelectedClipsOpacity: (opacity: number) => void;
+  setSelectedClipsFade: (fadeInFrames?: Frame, fadeOutFrames?: Frame) => void;
+  /** Clips backing the current selection, in timeline order. */
+  getSelectedClips: () => Clip[];
   setClipTransition: (clipId: string, transition: ClipTransition | null) => void;
-  removeSilenceForClip: (clipId: string) => Promise<{ removed: number; error?: string }>;
+  /**
+   * Detect and ripple-remove silence in one clip.
+   *
+   * `overrides` apply to this call only. Omitting them uses the saved silence
+   * controls, which the main process owns so the Agent resolves the same way
+   * (upstream PR #426).
+   */
+  removeSilenceForClip: (
+    clipId: string,
+    overrides?: Partial<SilenceConfig>,
+  ) => Promise<{ removed: number; error?: string }>;
   getSelectedClip: () => Clip | null;
 
   // Playback
@@ -151,6 +207,18 @@ export interface TimelineState {
   togglePlayback: () => void;
   setPlaybackRate: (rate: number) => void;
   stepFrame: (delta: number) => void;
+  /** Jump the playhead to the start of the timeline. */
+  goToStart: () => void;
+  /** Jump the playhead to the end of the last clip, not into trailing padding. */
+  goToEnd: () => void;
+  /** Jump to the nearest clip boundary before the playhead (#164). */
+  goToPreviousEdit: () => void;
+  /** Jump to the nearest clip boundary after the playhead (#164). */
+  goToNextEdit: () => void;
+  /** Jump to the in mark, if one is set (#164). */
+  goToInPoint: () => void;
+  /** Jump to the out mark, if one is set (#164). */
+  goToOutPoint: () => void;
 
   // Undo/Redo
   undo: () => void;
@@ -162,6 +230,10 @@ export interface TimelineState {
   setZoom: (pxPerFrame: number) => void;
   scrollTo: (frame: Frame) => void;
   fitToWindow: (containerWidth: number) => void;
+  /** Publish the measured lane width so fit-to-window has a real number. */
+  setViewportWidth: (width: number) => void;
+  /** Fit using the last measured lane width. */
+  fitToViewport: () => void;
 
   // Drag operations
   startDrag: (
@@ -178,6 +250,10 @@ export interface TimelineState {
   // Snapping
   getSnapPoints: (excludeClipId?: string) => SnapPoint[];
   snapFrame: (frame: Frame, excludeClipId?: string) => Frame;
+  toggleSnap: () => void;
+
+  // Project settings
+  applyProjectSettings: (change: { fps?: number; width?: number; height?: number }) => void;
 
   // Project lifecycle
   loadProject: (project: Project) => void;
@@ -212,6 +288,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       minPxPerFrame: 0.5,
       maxPxPerFrame: 30,
     },
+    viewportWidth: 0,
 
     drag: {
       mode: 'none',
@@ -251,6 +328,11 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         }
         return { selectedClipIds: next, selectedGap: null };
       });
+    },
+
+    selectAllClips: () => {
+      const clips = get().getClips();
+      set({ selectedClipIds: new Set(clips.map((clip) => clip.id)), selectedGap: null });
     },
 
     deselectAll: () => set({ selectedClipIds: new Set(), selectedGap: null }),
@@ -338,7 +420,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     rippleDelete: () => {
-      const { selectedClipIds, selectedGap, controller } = get();
+      const { selectedClipIds, selectedGap, controller, project } = get();
       if (selectedGap) {
         if (controller.rippleDeleteGap(selectedGap.trackId, {
           start: selectedGap.startFrame,
@@ -348,9 +430,57 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         }
         return;
       }
+      const { inFrame, outFrame } = project.timeline;
+      if (inFrame !== undefined && outFrame !== undefined && outFrame > inFrame) {
+        get().extractMarkedRange();
+        return;
+      }
       if (selectedClipIds.size === 0) return;
       if (controller.rippleDeleteClips(selectedClipIds)) {
         set({ selectedClipIds: new Set() });
+      }
+    },
+
+    setInFrame: () => get().controller.setInFrame(),
+    setOutFrame: () => get().controller.setOutFrame(),
+    clearMarkedRange: () => get().controller.clearMarkedRange(),
+
+    // Marks the span the selection covers, so extract/ripple can act on the
+    // selected material without hunting for its exact boundaries by hand.
+    markSelectedClip: () => {
+      const selected = get().getSelectedClips();
+      if (selected.length === 0) return;
+      const start = Math.min(...selected.map((clip) => clip.startFrame));
+      const end = Math.max(...selected.map((clip) => clip.startFrame + clip.durationFrames));
+      if (end <= start) return;
+      get().controller.setMarkedRange(start, end);
+    },
+
+    extractMarkedRange: () => {
+      const { controller, project, selectedClipIds } = get();
+      const { inFrame, outFrame } = project.timeline;
+      if (inFrame === undefined || outFrame === undefined || outFrame <= inFrame) return;
+
+      const selected = project.timeline.clips.find((clip) => selectedClipIds.has(clip.id));
+      const overlappingTrackIds = new Set(
+        project.timeline.clips
+          .filter((clip) =>
+            clip.startFrame < outFrame && clip.startFrame + clip.durationFrames > inFrame
+          )
+          .map((clip) => clip.trackId),
+      );
+      const anchorTrack = selected
+        ? project.timeline.tracks.find((track) => track.id === selected.trackId)
+        : project.timeline.tracks.find((track) =>
+            track.type === 'video' && !track.locked && overlappingTrackIds.has(track.id)
+          )
+          || project.timeline.tracks.find((track) =>
+            !track.locked && overlappingTrackIds.has(track.id)
+          );
+      if (!anchorTrack) return;
+
+      if (controller.rippleDeleteRanges(anchorTrack.id, [{ start: inFrame, end: outFrame }])) {
+        set({ selectedClipIds: new Set(), selectedGap: null });
       }
     },
 
@@ -393,6 +523,20 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       return controller.importMediaAssets(assets);
     },
 
+    removeMediaAssets: (assetIds) => {
+      const { controller } = get();
+      const report = controller.removeMediaAssets(assetIds);
+      if (report && report.removedClipIds.length > 0) {
+        // Clips that just disappeared must not stay selected on the timeline.
+        set((state) => {
+          const next = new Set(state.selectedClipIds);
+          for (const clipId of report.removedClipIds) next.delete(clipId);
+          return { selectedClipIds: next, selectedGap: null };
+        });
+      }
+      return report;
+    },
+
     setClipBlendMode: (clipId, blendMode) => {
       get().controller.setClipBlendMode(clipId, blendMode);
     },
@@ -409,14 +553,36 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       get().controller.setClipTransition(clipId, transition);
     },
 
-    removeSilenceForClip: async (clipId) => {
+    // Selection-wide property edits go through the controller's batched path, so
+    // restyling twelve clips is one undo step and one timeline notification.
+    setSelectedClipsBlendMode: (blendMode) => {
+      const { controller, selectedClipIds } = get();
+      controller.setClipsBlendMode(selectedClipIds, blendMode);
+    },
+
+    setSelectedClipsOpacity: (opacity) => {
+      const { controller, selectedClipIds } = get();
+      controller.setClipsOpacity(selectedClipIds, opacity);
+    },
+
+    setSelectedClipsFade: (fadeInFrames, fadeOutFrames) => {
+      const { controller, selectedClipIds } = get();
+      controller.setClipsFade(selectedClipIds, fadeInFrames, fadeOutFrames);
+    },
+
+    getSelectedClips: () => {
+      const { selectedClipIds, project } = get();
+      return project.timeline.clips.filter((clip) => selectedClipIds.has(clip.id));
+    },
+
+    removeSilenceForClip: async (clipId, overrides) => {
       const clip = get().getClips().find((c) => c.id === clipId);
       if (!clip) return { removed: 0, error: 'Clip not found' };
       const asset = get().project.media.find((m) => m.id === clip.assetId);
       if (!asset) return { removed: 0, error: 'Source media not found' };
 
       try {
-        const result = await window.palmier.media.detectSilence(asset.path);
+        const result = await window.palmier.media.detectSilence(asset.path, overrides);
         if (!result.success) return { removed: 0, error: result.error };
         if (!result.ranges || result.ranges.length === 0) {
           return { removed: 0, error: 'No silence detected' };
@@ -446,11 +612,39 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     togglePlayback: () => set((s) => ({ isPlaying: !s.isPlaying })),
 
-    setPlaybackRate: (rate) => set({ playbackRate: rate }),
+    // Normalized at the boundary: a non-finite rate would poison the playback
+    // loop's frame accumulator and freeze preview for the session (#212).
+    setPlaybackRate: (rate) => set({ playbackRate: normalizePlaybackRate(rate) }),
 
     stepFrame: (delta) => {
       const current = get().getPlayhead();
       get().controller.setPlayhead(Math.max(0, current + delta));
+    },
+
+    goToStart: () => get().controller.setPlayhead(0),
+
+    // getProjectDuration() carries trailing padding so there is room to drop
+    // clips past the end; landing the playhead in that padding is not "the end".
+    goToEnd: () => get().controller.setPlayhead(timelineContentEnd(get().getClips())),
+
+    goToPreviousEdit: () => {
+      const point = previousEditPoint(get().getClips(), get().getPlayhead(), navigationTrackIds(get()));
+      if (point !== null) get().controller.setPlayhead(point);
+    },
+
+    goToNextEdit: () => {
+      const point = nextEditPoint(get().getClips(), get().getPlayhead(), navigationTrackIds(get()));
+      if (point !== null) get().controller.setPlayhead(point);
+    },
+
+    goToInPoint: () => {
+      const { inFrame } = get().project.timeline;
+      if (inFrame !== undefined) get().controller.setPlayhead(inFrame);
+    },
+
+    goToOutPoint: () => {
+      const { outFrame } = get().project.timeline;
+      if (outFrame !== undefined) get().controller.setPlayhead(outFrame);
     },
 
     // ─── Undo / Redo ───────────────────────────────────────────────────────
@@ -491,11 +685,30 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     fitToWindow: (containerWidth) => {
       const duration = get().getProjectDuration();
-      if (duration <= 0 || containerWidth <= 0) return;
+      if (!Number.isFinite(containerWidth) || duration <= 0 || containerWidth <= 0) return;
       const pxPerFrame = containerWidth / duration;
       set((state) => ({
-        viewport: { ...state.viewport, pixelsPerFrame: Math.max(state.viewport.minPxPerFrame, pxPerFrame), scrollFrame: 0 },
+        viewport: {
+          ...state.viewport,
+          pixelsPerFrame: Math.max(
+            state.viewport.minPxPerFrame,
+            Math.min(state.viewport.maxPxPerFrame, pxPerFrame),
+          ),
+          scrollFrame: 0,
+        },
       }));
+    },
+
+    setViewportWidth: (width) => {
+      if (!Number.isFinite(width) || width < 0) return;
+      if (get().viewportWidth === width) return;
+      set({ viewportWidth: width });
+    },
+
+    fitToViewport: () => {
+      const width = get().viewportWidth;
+      if (width <= 0) return;
+      get().fitToWindow(width);
     },
 
     // ─── Drag Operations ───────────────────────────────────────────────────
@@ -590,6 +803,13 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       }
 
       return closest;
+    },
+
+    toggleSnap: () => set((state) => ({ snapEnabled: !state.snapEnabled })),
+
+    // ─── Project Settings ──────────────────────────────────────────────────
+    applyProjectSettings: (change) => {
+      get().controller.applyProjectSettings(change);
     },
 
     // ─── Project Lifecycle ─────────────────────────────────────────────────
