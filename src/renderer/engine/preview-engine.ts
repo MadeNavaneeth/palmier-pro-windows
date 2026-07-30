@@ -93,6 +93,9 @@ export class PreviewEngine {
   private prefetchAhead = 30; // prefetch 1 second ahead
   private prefetchPending = new Set<string>();
 
+  /** Latch so a failing render reports once instead of once per animation frame. */
+  private hasReportedRenderFailure = false;
+
   constructor(config: PreviewEngineConfig) {
     this.config = config;
     this.canvas = config.canvas;
@@ -115,7 +118,7 @@ export class PreviewEngine {
   setPlayhead(frame: Frame): void {
     this.playheadFrame = Math.max(0, frame);
     if (this.state === 'idle') {
-      this.renderFrame(this.playheadFrame);
+      this.renderFrameDetached(this.playheadFrame);
     }
   }
 
@@ -140,15 +143,19 @@ export class PreviewEngine {
   stop(): void {
     this.pause();
     this.playheadFrame = this.playbackStartFrame;
-    this.renderFrame(this.playheadFrame);
+    this.renderFrameDetached(this.playheadFrame);
   }
 
   seek(frame: Frame): void {
     this.playheadFrame = Math.max(0, frame);
     this.state = 'seeking';
-    this.renderFrame(this.playheadFrame).then(() => {
-      if (this.state === 'seeking') this.state = 'idle';
-    });
+    // `finally`, not `then`: the state must leave 'seeking' even when the render
+    // fails, or the engine stops repainting for the rest of the session.
+    void this.renderFrame(this.playheadFrame)
+      .catch((err: unknown) => this.reportRenderFailure(err))
+      .finally(() => {
+        if (this.state === 'seeking') this.state = 'idle';
+      });
   }
 
   isPlaying(): boolean {
@@ -192,19 +199,19 @@ export class PreviewEngine {
       this.playheadFrame = duration;
       this.state = 'idle';
       this.config.onPlaybackEnd?.();
-      this.renderFrame(this.playheadFrame);
+      this.renderFrameDetached(this.playheadFrame);
       return;
     }
     if (this.playbackRate < 0 && this.playheadFrame <= 0) {
       this.playheadFrame = 0;
       this.state = 'idle';
       this.config.onPlaybackEnd?.();
-      this.renderFrame(this.playheadFrame);
+      this.renderFrameDetached(this.playheadFrame);
       return;
     }
 
     // Render current frame
-    this.renderFrame(this.playheadFrame);
+    this.renderFrameDetached(this.playheadFrame);
     this.config.onFrameRendered?.(this.playheadFrame);
 
     // Prefetch upcoming frames
@@ -212,6 +219,26 @@ export class PreviewEngine {
 
     // Schedule next
     this.scheduleNextFrame();
+  }
+
+  /**
+   * Start a render without waiting for it.
+   *
+   * The rAF loop and the seek/playhead setters cannot await a decode, so the
+   * promise is detached — but explicitly, with a rejection handler, so a broken
+   * render surfaces through `onError` instead of vanishing (#89).
+   */
+  private renderFrameDetached(frame: Frame): void {
+    void this.renderFrame(frame).catch((err: unknown) => this.reportRenderFailure(err));
+  }
+
+  /** Report a render failure once per outage, not once per frame. */
+  private reportRenderFailure(err: unknown): void {
+    if (this.hasReportedRenderFailure) return;
+    this.hasReportedRenderFailure = true;
+    const message = err instanceof Error ? err.message : String(err);
+    this.config.onError?.(`Preview render failed: ${message}`);
+    console.error('[PreviewEngine] Render failed:', err);
   }
 
   private async renderFrame(frame: Frame): Promise<void> {
@@ -373,9 +400,14 @@ export class PreviewEngine {
 
       if (!this.frameCache.has(cacheKey) && !this.prefetchPending.has(cacheKey)) {
         this.prefetchPending.add(cacheKey);
-        this.getFrameBitmap(clip, ts).finally(() => {
-          this.prefetchPending.delete(cacheKey);
-        });
+        // Detached and genuinely ignorable: a prefetch miss only costs the
+        // decode being redone when the frame is actually needed. The pending
+        // marker must be cleared either way or the key is never retried.
+        void this.getFrameBitmap(clip, ts)
+          .catch(() => null)
+          .finally(() => {
+            this.prefetchPending.delete(cacheKey);
+          });
       }
     }
   }

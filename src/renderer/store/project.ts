@@ -64,11 +64,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const projectData = JSON.stringify(project, null, 2);
 
     const result = await window.palmier.project.save(projectData, filePath || undefined);
-    if (result.success) {
-      set({ filePath: result.path, hasUnsavedChanges: false });
-      // A clean explicit save supersedes any crash-recovery snapshot (#211).
-      window.palmier.project.recoveryClear().catch(() => {});
+    if (!result.success) {
+      // The project stays dirty. Reject so the caller can tell the user, rather
+      // than returning normally and leaving a failed save looking like a clean
+      // one (upstream #89).
+      throw new Error(result.error || 'Could not write the project file.');
     }
+
+    set({ filePath: result.path, hasUnsavedChanges: false });
+    // A clean explicit save supersedes any crash-recovery snapshot (#211).
+    // Detached: the save itself already succeeded, so a stale snapshot is a
+    // nuisance rather than a failure, but it is worth knowing about.
+    void window.palmier.project.recoveryClear().catch((err: unknown) => {
+      console.warn('[project] Could not clear the crash-recovery snapshot:', err);
+    });
   },
 
   setName: (name) => set({ name, hasUnsavedChanges: true }),

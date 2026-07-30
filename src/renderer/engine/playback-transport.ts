@@ -87,7 +87,9 @@ class AudioClock {
   }
 
   destroy(): void {
-    this.ctx?.close();
+    // Detached on purpose: teardown must not wait on the audio device, and a
+    // close failure on an already-dead context is not actionable.
+    void this.ctx?.close().catch(() => {});
     this.ctx = null;
   }
 }
