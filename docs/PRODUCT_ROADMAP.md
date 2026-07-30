@@ -405,6 +405,32 @@ gates pass.
 - Remaining upstream gap: arbitrary timeline-range cutting that splits clips
   and closes multiple removed ranges atomically.
 
+### 2026-07-25 - Marked Range Extract
+
+- `I` and `O` now set persistent timeline In/Out marks at the playhead. The
+  ruler shows individual mark lines and the active range, with matching
+  low-contrast coverage across track lanes.
+- The timeline toolbar provides Mark In, Mark Out, Extract, and Clear controls
+  without adding another panel. `Shift+Delete` extracts a valid marked range
+  before falling back to selected-clip ripple deletion.
+- Range extraction merges overlapping project-frame ranges, splits every
+  intersected clip, preserves exact source In/Out offsets, and shifts later
+  fragments by the total removed time.
+- Linked video/audio fragments receive matching per-fragment link groups.
+  Sync-locked tracks are cut in the same transaction; opted-out tracks stay in
+  place unless they contain a linked partner touched by the edit.
+- New fragments retain fades and transitions only on their original outer
+  edges, avoiding repeated fade-ins or transition effects at internal cuts.
+- Locked anchor, sync-locked, or linked tracks refuse the whole edit before
+  mutation. One undo restores clips, linkage, source offsets, and In/Out marks.
+- Agent and MCP expose `ripple_delete_ranges` with explicit track IDs and
+  project-frame ranges through the same controller transaction.
+- Upstream reviewed: current `rippleDeleteRangesOnTrack`, `clearRegion`,
+  `OverwriteEngine`, `RippleDeleteRangesTests`, and the
+  `ripple_delete_ranges` Agent contract.
+- Remaining upstream gaps in this area: per-call sync-lock exemptions,
+  source-seconds range mapping, and user-facing refusal diagnostics.
+
 ## Definition Of Done For Every Feature
 
 1. Upstream issue, PR, source, and test review is recorded.

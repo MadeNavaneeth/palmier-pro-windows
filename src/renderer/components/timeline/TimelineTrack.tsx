@@ -31,6 +31,8 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
   const snapFrame = useTimelineStore((s) => s.snapFrame);
   const selectedGap = useTimelineStore((s) => s.selectedGap);
   const selectGap = useTimelineStore((s) => s.selectGap);
+  const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
+  const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
 
   // Frame where a dragged asset would land (null when not dragging over).
   const [dropFrame, setDropFrame] = useState<number | null>(null);
@@ -174,6 +176,15 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
       onDrop={handleDrop}
       data-track-id={track.id}
     >
+      {inFrame !== undefined && outFrame !== undefined && outFrame > inFrame && (
+        <div
+          className="absolute inset-y-0 border-x border-amber-300/30 bg-amber-300/[0.06] pointer-events-none"
+          style={{
+            left: `${(inFrame - viewport.scrollFrame) * viewport.pixelsPerFrame}px`,
+            width: `${(outFrame - inFrame) * viewport.pixelsPerFrame}px`,
+          }}
+        />
+      )}
       {selectedGap?.trackId === track.id && (
         <div
           className="absolute inset-y-0 z-10 border-x border-amber-300/70 bg-amber-300/15 pointer-events-none"

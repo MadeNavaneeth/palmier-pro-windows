@@ -16,6 +16,14 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
   const fps = useTimelineStore((s) => s.getProjectFps());
   const setPlayhead = useTimelineStore((s) => s.setPlayhead);
   const startDrag = useTimelineStore((s) => s.startDrag);
+  const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
+  const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
+  const rangeStart = inFrame !== undefined && outFrame !== undefined
+    ? Math.min(inFrame, outFrame)
+    : undefined;
+  const rangeEnd = inFrame !== undefined && outFrame !== undefined
+    ? Math.max(inFrame, outFrame)
+    : undefined;
 
   // Calculate tick interval based on zoom level
   const { majorInterval, minorInterval } = useMemo(() => {
@@ -71,6 +79,40 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
       onMouseDown={handleMouseDown}
     >
       <svg width={width} height={24} className="absolute inset-0">
+        {rangeStart !== undefined && rangeEnd !== undefined && rangeEnd > rangeStart && (
+          <rect
+            x={(rangeStart - viewport.scrollFrame) * viewport.pixelsPerFrame}
+            y={0}
+            width={(rangeEnd - rangeStart) * viewport.pixelsPerFrame}
+            height={24}
+            fill="rgba(252, 211, 77, 0.16)"
+            stroke="rgba(252, 211, 77, 0.75)"
+            strokeWidth={1}
+            data-marked-range
+          />
+        )}
+        {inFrame !== undefined && (
+          <line
+            x1={(inFrame - viewport.scrollFrame) * viewport.pixelsPerFrame}
+            y1={0}
+            x2={(inFrame - viewport.scrollFrame) * viewport.pixelsPerFrame}
+            y2={24}
+            stroke="rgba(252, 211, 77, 0.95)"
+            strokeWidth={2}
+            data-in-mark
+          />
+        )}
+        {outFrame !== undefined && (
+          <line
+            x1={(outFrame - viewport.scrollFrame) * viewport.pixelsPerFrame}
+            y1={0}
+            x2={(outFrame - viewport.scrollFrame) * viewport.pixelsPerFrame}
+            y2={24}
+            stroke="rgba(251, 146, 60, 0.95)"
+            strokeWidth={2}
+            data-out-mark
+          />
+        )}
         {ticks.map((tick, i) => (
           <g key={i}>
             <line

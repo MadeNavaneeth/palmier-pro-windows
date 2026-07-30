@@ -90,4 +90,42 @@ describe('ripple delete tool', () => {
     expect(gap.success).toBe(true);
     expect(controller.getClips()[1].startFrame).toBe(60);
   });
+
+  it('cuts multiple timeline ranges through one Agent transaction', async () => {
+    const controller = new EditorController();
+    controller.addMedia({
+      id: 'asset',
+      path: 'C:\\media\\clip.mp4',
+      filename: 'clip.mp4',
+      type: 'video',
+      duration: 200,
+      fileSize: 100,
+      addedAt: '2026-07-25T00:00:00.000Z',
+    });
+    controller.addClip({
+      assetId: 'asset',
+      trackId: 'v1',
+      startFrame: 0,
+      durationFrames: 100,
+    });
+    const executor = new ToolExecutor(controller);
+
+    const result = await executor.execute('ripple_delete_ranges', {
+      trackId: 'v1',
+      ranges: [[20, 30], [60, 70]],
+    });
+
+    expect(result.success).toBe(true);
+    expect(controller.getClips().map((item) => [
+      item.startFrame,
+      item.durationFrames,
+      item.inPoint,
+    ])).toEqual([
+      [0, 20, 0],
+      [20, 30, 30],
+      [50, 30, 70],
+    ]);
+    expect((await executor.execute('undo', {})).success).toBe(true);
+    expect(controller.getClips()).toHaveLength(1);
+  });
 });
