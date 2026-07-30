@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { MAX_FRAME } from '../../shared/utils/safe-number';
 import { BLEND_MODES } from '../../shared/types/blend-mode';
+import { MAX_CANVAS_EDGE, QUALITY_PRESETS } from '../../shared/project/aspect-ratio';
 
 // ─── Shared numeric schemas ──────────────────────────────────────────────────
 // Every frame-typed argument is bounded: finite, integer, non-negative, and
@@ -75,6 +76,54 @@ export const tools = {
     }),
   },
 
+  rippleDeleteClips: {
+    name: 'ripple_delete_clips',
+    description:
+      'Remove timeline clips and close their gaps in one undoable edit. Linked clips and sync-locked tracks stay aligned.',
+    parameters: z.object({
+      clipIds: z.array(z.string()).min(1).describe('Clip IDs to remove. Linked partners are included automatically.'),
+    }),
+  },
+
+  rippleDeleteGap: {
+    name: 'ripple_delete_gap',
+    description:
+      'Close an empty timeline gap in one undoable edit, keeping sync-locked tracks aligned.',
+    parameters: z.object({
+      trackId: z.string().describe('Track containing the empty gap.'),
+      startFrame: frameSchema.describe('Inclusive start frame of the gap.'),
+      endFrame: durationSchema.describe('Exclusive end frame of the gap.'),
+    }),
+  },
+
+  rippleDeleteRanges: {
+    name: 'ripple_delete_ranges',
+    description:
+      'Cut one or more project-frame ranges from a track and close them in one undoable edit. Overlapping ranges merge; linked and sync-locked tracks remain aligned.',
+    parameters: z.object({
+      trackId: z.string().describe('Anchor track ID whose timeline ranges should be cut.'),
+      ranges: z.array(
+        z.tuple([
+          frameSchema.describe('Inclusive project-frame start.'),
+          durationSchema.describe('Exclusive project-frame end.'),
+        ]),
+      ).min(1).describe('Project-frame ranges to remove.'),
+    }),
+  },
+
+  rippleTrimClip: {
+    name: 'ripple_trim_clip',
+    description:
+      'Trim one edge of a clip and shift downstream clips atomically. Linked clips and sync-locked tracks stay aligned.',
+    parameters: z.object({
+      clipId: z.string().describe('Clip whose edge should be trimmed.'),
+      edge: z.enum(['left', 'right']).describe('Timeline edge to trim.'),
+      deltaFrames: z.number().int().describe(
+        'Edge movement in frames. Positive moves the edge right; negative moves it left.',
+      ),
+    }),
+  },
+
   moveClip: {
     name: 'move_clip',
     description: 'Move a clip to a new position on the timeline.',
@@ -114,6 +163,55 @@ export const tools = {
     }),
   },
 
+  // ── Project settings ─────────────────────────────────────────────────────────
+  setProjectSettings: {
+    name: 'set_project_settings',
+    description:
+      "Change the project's frame rate, resolution, or aspect ratio. Pass fps, explicit width+height, aspectRatio, or quality. aspectRatio accepts a preset or a custom width:height value and preserves the current short-edge resolution unless quality is also supplied. Explicit width/height can't be combined with aspectRatio or quality. Existing clips are re-fitted automatically: clips that filled the old canvas fill the new one, and all frame positions/durations rescale when fps changes. Undoable.",
+    parameters: z.object({
+      fps: z
+        .number()
+        .finite()
+        .int()
+        .min(1)
+        .max(120)
+        .optional()
+        .describe('Frame rate in frames per second. Common values: 24, 25, 30, 48, 50, 60.'),
+      width: z
+        .number()
+        .finite()
+        .int()
+        .min(1)
+        .max(MAX_CANVAS_EDGE)
+        .optional()
+        .describe(
+          'Canvas width in pixels. Requires height for an exact resolution. Mutually exclusive with aspectRatio and quality.',
+        ),
+      height: z
+        .number()
+        .finite()
+        .int()
+        .min(1)
+        .max(MAX_CANVAS_EDGE)
+        .optional()
+        .describe(
+          'Canvas height in pixels. Requires width for an exact resolution. Mutually exclusive with aspectRatio and quality.',
+        ),
+      aspectRatio: z
+        .string()
+        .optional()
+        .describe(
+          "Canvas aspect ratio as width:height, such as '16:9', '3:2', or '2.39:1'. Preserves the current short edge, or uses quality when supplied. Mutually exclusive with width/height.",
+        ),
+      quality: z
+        .enum(QUALITY_PRESETS.map((preset) => preset.id) as unknown as [string, ...string[]])
+        .optional()
+        .describe(
+          'Resolution quality preset — scales the short edge to the target while preserving the current (or specified) aspect ratio.',
+        ),
+    }),
+  },
+
   // ── Playback / navigation ────────────────────────────────────────────────────
   setPlayhead: {
     name: 'set_playhead',
@@ -139,12 +237,14 @@ export const tools = {
   removeSilence: {
     name: 'remove_silence',
     description:
-      'Detect and remove silent gaps in a clip with audio, rippling the remaining clips left to close the gaps. Runs on-device (no transcription). Works on audio or video clips.',
+      'Detect and remove silent gaps in a clip with audio, rippling the remaining clips left to close the gaps. Runs on-device (no transcription). Works on audio or video clips. By default this uses the Minimum Pause, Speech Padding and Threshold controls shown in the Inspector; pass any of the optional values to override for this call only, without changing those controls.',
     parameters: z.object({
       clipId: z.string().describe('The clip to de-silence.'),
-      thresholdDb: z.number().finite().min(-120).max(0).optional().describe('Loudness below this (dBFS) counts as silence. Default -35.'),
-      minSilenceSeconds: z.number().finite().min(0.05).max(60).optional().describe('Ignore silent gaps shorter than this. Default 0.5.'),
-      edgePaddingSeconds: z.number().finite().min(0).max(5).optional().describe('Padding kept around speech so transients are not clipped. Default 0.1.'),
+      // Bounds mirror SILENCE_LIMITS so the tool and the detector agree
+      // (upstream PR #426).
+      thresholdDb: z.number().finite().min(-120).max(0).optional().describe('Loudness below this (dBFS) counts as silence. Omit to use the current Threshold control.'),
+      minSilenceSeconds: z.number().finite().min(0.25).max(3).optional().describe('Ignore silent gaps shorter than this. Range 0.25-3. Omit to use the current Minimum Pause control.'),
+      edgePaddingSeconds: z.number().finite().min(0).max(0.5).optional().describe('Padding kept around speech so transients are not clipped. Not applied where the silence reaches the start or end of the source. Range 0-0.5. Omit to use the current Speech Padding control.'),
     }),
   },
 

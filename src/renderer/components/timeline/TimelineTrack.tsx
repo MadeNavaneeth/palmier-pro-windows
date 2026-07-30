@@ -8,7 +8,12 @@ import React, { useCallback, useState } from 'react';
 import type { Track, Clip } from '../../../shared/types/project';
 import { useTimelineStore } from '../../store/timeline';
 import { TimelineClip } from './TimelineClip';
-import { ASSET_DND_MIME, getDraggingAsset, isAssetCompatibleWithTrack } from '../../lib/dnd';
+import {
+  ASSET_DND_MIME,
+  getDraggingAsset,
+  getDroppedFilePath,
+  isAssetCompatibleWithTrack,
+} from '../../lib/dnd';
 import { useProjectStore } from '../../store/project';
 
 interface TimelineTrackProps {
@@ -21,11 +26,17 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
   const setPlayhead = useTimelineStore((s) => s.setPlayhead);
   const deselectAll = useTimelineStore((s) => s.deselectAll);
   const startDrag = useTimelineStore((s) => s.startDrag);
-  const addClip = useTimelineStore((s) => s.addClip);
+  const placeAssets = useTimelineStore((s) => s.placeAssets);
+  const importAndPlaceAssets = useTimelineStore((s) => s.importAndPlaceAssets);
   const snapFrame = useTimelineStore((s) => s.snapFrame);
+  const selectedGap = useTimelineStore((s) => s.selectedGap);
+  const selectGap = useTimelineStore((s) => s.selectGap);
+  const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
+  const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
 
   // Frame where a dragged asset would land (null when not dragging over).
   const [dropFrame, setDropFrame] = useState<number | null>(null);
+  const [dropError, setDropError] = useState('');
 
   const frameFromClientX = useCallback(
     (clientX: number, rect: DOMRect) => {
@@ -59,8 +70,10 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
 
   const handleDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
+      const isFileDrop = e.dataTransfer.types.includes('Files');
       const asset = getDraggingAsset();
-      if (track.locked || !asset || !isAssetCompatibleWithTrack(asset.type, track.type)) {
+      const acceptsLibraryAsset = asset && isAssetCompatibleWithTrack(asset.type, track.type);
+      if (track.locked || (!isFileDrop && !acceptsLibraryAsset)) {
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
         return;
       }
@@ -73,24 +86,78 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
     [track.locked, track.type, frameFromClientX, snapFrame],
   );
 
-  const handleDragLeave = useCallback(() => setDropFrame(null), []);
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setDropFrame(null);
+    }
+  }, []);
 
   const handleDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
+    async (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault();
       setDropFrame(null);
+      setDropError('');
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const frame = snapFrame(frameFromClientX(e.clientX, rect));
+
+      if (e.dataTransfer.types.includes('Files')) {
+        const paths = Array.from(e.dataTransfer.files)
+          .map((file) => getDroppedFilePath(file, window.palmier.media.getPathForFile))
+          .filter((filePath): filePath is string => Boolean(filePath));
+
+        if (paths.length === 0) {
+          setDropError('Windows did not provide a readable file path.');
+          return;
+        }
+
+        const imported = await window.palmier.media.importPaths(paths);
+        if (imported.files.length === 0) {
+          setDropError(imported.errors?.[0] || 'No supported media files found.');
+          return;
+        }
+
+        const placed = importAndPlaceAssets(imported.files, track.id, frame);
+        if (placed.clipIds.length > 0) {
+          useTimelineStore.setState({ selectedClipIds: new Set(placed.clipIds) });
+          setPlayhead(frame);
+        }
+        if (imported.errors?.length) setDropError(imported.errors[0]);
+        useProjectStore.getState().markDirty();
+        return;
+      }
+
       const dragged = getDraggingAsset();
       const assetId = e.dataTransfer.getData(ASSET_DND_MIME) || dragged?.id;
       const assetType = dragged?.type;
       if (!assetId || track.locked) return;
       if (assetType && !isAssetCompatibleWithTrack(assetType, track.type)) return;
 
-      const rect = e.currentTarget.getBoundingClientRect();
-      const frame = snapFrame(frameFromClientX(e.clientX, rect));
-      addClip(assetId, track.id, frame);
+      const clipIds = placeAssets([assetId], track.id, frame);
+      if (clipIds.length === 0) return;
+      useTimelineStore.setState({ selectedClipIds: new Set(clipIds) });
+      setPlayhead(frame);
       useProjectStore.getState().markDirty();
     },
-    [track.id, track.locked, track.type, frameFromClientX, snapFrame, addClip],
+    [
+      track.id,
+      track.locked,
+      track.type,
+      frameFromClientX,
+      snapFrame,
+      placeAssets,
+      importAndPlaceAssets,
+      setPlayhead,
+    ],
+  );
+
+  const handleTrackDoubleClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (e.target !== e.currentTarget) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      selectGap(track.id, frameFromClientX(e.clientX, rect));
+    },
+    [frameFromClientX, selectGap, track.id],
   );
 
   const bgColor = track.type === 'video' ? 'bg-surface-0/50' : 'bg-surface-0/30';
@@ -103,11 +170,31 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
       className={`relative h-12 border-b border-surface-3 ${bgColor} ${lockOverlay} ${dropFrame !== null ? 'ring-1 ring-inset ring-accent/40' : ''}`}
       onClick={handleTrackClick}
       onMouseDown={handleTrackMouseDown}
+      onDoubleClick={handleTrackDoubleClick}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       data-track-id={track.id}
     >
+      {inFrame !== undefined && outFrame !== undefined && outFrame > inFrame && (
+        <div
+          className="absolute inset-y-0 border-x border-amber-300/30 bg-amber-300/[0.06] pointer-events-none"
+          style={{
+            left: `${(inFrame - viewport.scrollFrame) * viewport.pixelsPerFrame}px`,
+            width: `${(outFrame - inFrame) * viewport.pixelsPerFrame}px`,
+          }}
+        />
+      )}
+      {selectedGap?.trackId === track.id && (
+        <div
+          className="absolute inset-y-0 z-10 border-x border-amber-300/70 bg-amber-300/15 pointer-events-none"
+          style={{
+            left: `${(selectedGap.startFrame - viewport.scrollFrame) * viewport.pixelsPerFrame}px`,
+            width: `${(selectedGap.endFrame - selectedGap.startFrame) * viewport.pixelsPerFrame}px`,
+          }}
+          data-selected-gap
+        />
+      )}
       {/* Track grid lines (subtle) */}
       <div className="absolute inset-0 pointer-events-none opacity-10">
         <div className="h-full w-full" style={{
@@ -127,6 +214,17 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
           className="absolute top-0 bottom-0 z-20 w-0.5 bg-accent pointer-events-none"
           style={{ left: `${dropX}px` }}
         />
+      )}
+
+      {dropError && (
+        <button
+          type="button"
+          onClick={() => setDropError('')}
+          className="absolute bottom-1 right-2 z-30 max-w-72 truncate rounded border border-red-500/40 bg-red-950/90 px-2 py-1 text-[9px] text-red-200"
+          title="Dismiss import error"
+        >
+          {dropError}
+        </button>
       )}
 
       {/* Hidden indicator */}

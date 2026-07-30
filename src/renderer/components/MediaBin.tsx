@@ -1,101 +1,439 @@
-import React from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowDownUp,
+  AudioLines,
+  Film,
+  Folder,
+  Grid2X2,
+  Image as ImageIcon,
+  ListFilter,
+  MoreHorizontal,
+  Music2,
+  Plus,
+  Search,
+  Subtitles,
+  Upload,
+} from 'lucide-react';
 import { useProjectStore } from '../store/project';
 import { useTimelineStore } from '../store/timeline';
+import { useMediaPanelStore } from '../store/media-panel';
+import { selectionModeFromModifiers } from '../../shared/media-panel/selection';
 import type { MediaAsset } from '../../shared/types/project';
 import { formatDuration } from '../../shared/utils/time';
-import { ASSET_DND_MIME, setDraggingAsset } from '../lib/dnd';
+import { ASSET_DND_MIME, getDroppedFilePath, setDraggingAsset } from '../lib/dnd';
+
+/** Minimum tile width in the media grid; must match the grid template below. */
+const MEDIA_TILE_MIN_WIDTH = 112;
+const MEDIA_GRID_GAP = 8;
+
+/** Stable DOM id for a media tile, used for aria-activedescendant. */
+function mediaOptionId(assetId: string): string {
+  return `media-option-${assetId}`;
+}
+
+type PanelTab = 'media' | 'captions' | 'audio';
+
+const panelTabs = [
+  { id: 'media' as const, label: 'Media', Icon: Folder },
+  { id: 'captions' as const, label: 'Captions', Icon: Subtitles },
+  { id: 'audio' as const, label: 'Audio', Icon: AudioLines },
+];
 
 export function MediaBin() {
-  // Media lives in the timeline controller (single source of truth).
-  const project = useTimelineStore((s) => s.project);
-  const importAssets = useTimelineStore((s) => s.importAssets);
-  const mediaItems = project.media;
+  const project = useTimelineStore((state) => state.project);
+  const importAssets = useTimelineStore((state) => state.importAssets);
   const fps = project.settings.fps;
+  const [activeTab, setActiveTab] = useState<PanelTab>('media');
+  const [query, setQuery] = useState('');
+  const [isFileDragActive, setIsFileDragActive] = useState(false);
+  const [importError, setImportError] = useState('');
 
-  async function handleImport() {
-    const result = await window.palmier.media.import();
+  const mediaItems = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return project.media;
+    return project.media.filter((item) => item.filename.toLowerCase().includes(normalized));
+  }, [project.media, query]);
+
+  function addImportedFiles(result: {
+    success: boolean;
+    files: Parameters<typeof importAssets>[0];
+    errors?: string[];
+  }) {
     if (result.success && result.files.length > 0) {
       importAssets(result.files);
       useProjectStore.getState().markDirty();
     }
+    setImportError(result.errors?.[0] || (result.success ? '' : 'No supported media files found.'));
+  }
+
+  async function handleImport() {
+    addImportedFiles(await window.palmier.media.import());
+  }
+
+  async function handleFileDrop(event: React.DragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    setIsFileDragActive(false);
+
+    const paths = Array.from(event.dataTransfer.files)
+      .map((file) => getDroppedFilePath(file, window.palmier.media.getPathForFile))
+      .filter((filePath): filePath is string => Boolean(filePath));
+
+    if (paths.length === 0) {
+      setImportError('Windows did not provide a readable path for the dropped file.');
+      return;
+    }
+
+    addImportedFiles(await window.palmier.media.importPaths(paths));
   }
 
   return (
-    <div className="flex flex-1 flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-surface-3 px-3 py-2">
-        <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-          Media
-        </h2>
-        <button
-          onClick={handleImport}
-          className="rounded bg-surface-3 px-2 py-1 text-xs text-text-primary transition hover:bg-surface-4"
-        >
-          + Import
-        </button>
-      </div>
+    <div className="flex min-h-0 flex-1 bg-surface-1">
+      <nav className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-white/10 bg-surface-2 py-1.5">
+        {panelTabs.map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            className="icon-button relative"
+            data-active={activeTab === id}
+            onClick={() => setActiveTab(id)}
+            title={label}
+            aria-label={label}
+          >
+            {activeTab === id && <span className="absolute left-0 h-4 w-0.5 rounded-r bg-white/60" />}
+            <Icon size={15} strokeWidth={1.7} />
+          </button>
+        ))}
+      </nav>
 
-      {/* Media list */}
-      <div className="flex-1 overflow-y-auto p-2">
-        {mediaItems.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <div className="mb-3 text-3xl text-text-muted">🎬</div>
-            <p className="text-xs text-text-muted">No media imported yet.</p>
-            <p className="mt-1 text-2xs text-text-muted">
-              Click "+ Import" or drag files here.
-            </p>
+      {activeTab === 'media' ? (
+        <div
+          className="relative flex min-w-0 flex-1 flex-col"
+          onDragEnter={(event) => {
+            if (event.dataTransfer.types.includes('Files')) {
+              event.preventDefault();
+              setIsFileDragActive(true);
+            }
+          }}
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes('Files')) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'copy';
+            }
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setIsFileDragActive(false);
+            }
+          }}
+          onDrop={handleFileDrop}
+        >
+          <div className="flex h-9 shrink-0 items-center gap-1.5 px-2">
+            <button
+              onClick={handleImport}
+              className="flex h-7 items-center gap-1 rounded-md border border-white/15 px-2 text-[11px] font-medium text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
+            >
+              <Plus size={13} strokeWidth={1.8} />
+              Import
+            </button>
+            <button className="icon-button" title="More media actions" aria-label="More media actions">
+              <MoreHorizontal size={15} />
+            </button>
           </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-1.5">
-            {mediaItems.map((item) => (
-              <MediaCard key={item.id} item={item} fps={fps} />
-            ))}
+
+          <div className="flex h-9 shrink-0 items-center gap-1.5 px-2">
+            <label className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md border border-white/12 bg-surface-0 px-2 text-text-muted focus-within:border-white/30">
+              <Search size={13} strokeWidth={1.7} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search"
+                className="min-w-0 flex-1 bg-transparent text-[11px] text-text-primary outline-none placeholder:text-text-muted"
+              />
+            </label>
+            <button className="icon-button" title="Grid view" aria-label="Grid view">
+              <Grid2X2 size={14} />
+            </button>
+            <button className="icon-button" title="Sort media" aria-label="Sort media">
+              <ArrowDownUp size={14} />
+            </button>
+            <button className="icon-button" title="Filter media" aria-label="Filter media">
+              <ListFilter size={14} />
+            </button>
           </div>
-        )}
+
+          <div className="flex h-6 shrink-0 items-center border-b border-white/10 px-2 text-[10px]">
+            <span className="font-semibold text-text-primary">Library</span>
+            <MediaLibraryCount visibleCount={mediaItems.length} />
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            {importError && (
+              <div className="mb-2 border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-300">
+                {importError}
+              </div>
+            )}
+            {mediaItems.length === 0 ? (
+              <div className="flex h-full min-h-44 flex-col items-center justify-center px-5 text-center">
+                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-surface-2 text-text-muted">
+                  <Upload size={18} strokeWidth={1.5} />
+                </div>
+                <p className="text-[11px] font-medium text-text-secondary">
+                  {query ? 'No matching media' : 'Import media to begin'}
+                </p>
+                {!query && (
+                  <p className="mt-1 max-w-48 text-[10px] leading-4 text-text-muted">
+                    Drop video, audio, or images here
+                  </p>
+                )}
+              </div>
+            ) : (
+              <MediaGrid items={mediaItems} fps={fps} />
+            )}
+          </div>
+
+          {isFileDragActive && (
+            <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-md border border-dashed border-white/60 bg-surface-1/95 text-center shadow-2xl">
+              <div>
+                <Upload size={22} className="mx-auto mb-2 text-accent" />
+                <p className="text-[12px] font-medium text-text-primary">Drop media to import</p>
+                <p className="mt-1 text-[10px] text-text-muted">Video, audio, and image files</p>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <PanelPlaceholder tab={activeTab} />
+      )}
+    </div>
+  );
+}
+
+/** Item count plus the selection size, so bulk actions are legible (#409). */
+function MediaLibraryCount({ visibleCount }: { visibleCount: number }) {
+  const selectedCount = useMediaPanelStore((state) => state.selection.selectedIds.length);
+  return (
+    <span className="ml-auto text-text-muted">
+      {selectedCount > 1 && <span className="text-text-secondary">{selectedCount} selected · </span>}
+      {visibleCount} {visibleCount === 1 ? 'item' : 'items'}
+    </span>
+  );
+}
+
+/**
+ * Selectable, keyboard-navigable media grid (upstream PR #409).
+ *
+ * The grid publishes its visible order and column count so arrow keys move
+ * through what the user can actually see, and so a search or a delete prunes the
+ * selection instead of leaving stale ids behind.
+ */
+function MediaGrid({ items, fps }: { items: MediaAsset[]; fps: number }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const publishVisibleItems = useMediaPanelStore((state) => state.publishVisibleItems);
+  const moveSelection = useMediaPanelStore((state) => state.moveSelection);
+  const selectAll = useMediaPanelStore((state) => state.selectAll);
+  const clearSelection = useMediaPanelStore((state) => state.clearSelection);
+  const deleteSelection = useMediaPanelStore((state) => state.deleteSelection);
+  const consumeScrollTarget = useMediaPanelStore((state) => state.consumeScrollTarget);
+  const scrollTargetId = useMediaPanelStore((state) => state.selection.scrollTargetId);
+  const anchorId = useMediaPanelStore((state) => state.selection.anchorId);
+
+  const orderedIds = useMemo(() => items.map((item) => item.id), [items]);
+  const [columnCount, setColumnCount] = useState(1);
+
+  // Track the rendered column count: arrow up/down must step by a real row.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const measure = (containerWidth: number) => {
+      const columns = Math.max(
+        1,
+        Math.floor((containerWidth + MEDIA_GRID_GAP) / (MEDIA_TILE_MIN_WIDTH + MEDIA_GRID_GAP)),
+      );
+      setColumnCount(columns);
+    };
+    measure(container.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) measure(entry.contentRect.width);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    publishVisibleItems(orderedIds, columnCount);
+  }, [publishVisibleItems, orderedIds, columnCount]);
+
+  // Scroll a keyboard-selected tile into view.
+  useEffect(() => {
+    if (!scrollTargetId) return;
+    containerRef.current
+      ?.querySelector(`[data-asset-id="${CSS.escape(scrollTargetId)}"]`)
+      ?.scrollIntoView({ block: 'nearest' });
+    consumeScrollTarget();
+  }, [scrollTargetId, consumeScrollTarget]);
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      switch (event.key) {
+        case 'ArrowLeft':
+        case 'ArrowRight':
+        case 'ArrowUp':
+        case 'ArrowDown': {
+          event.preventDefault();
+          const direction = event.key.replace('Arrow', '').toLowerCase() as
+            | 'left'
+            | 'right'
+            | 'up'
+            | 'down';
+          moveSelection(direction);
+          return;
+        }
+        case 'a':
+        case 'A':
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            selectAll();
+          }
+          return;
+        case 'Escape':
+          clearSelection();
+          return;
+        case 'Delete':
+        case 'Backspace':
+          event.preventDefault();
+          deleteSelection();
+          return;
+        default:
+      }
+    },
+    [moveSelection, selectAll, clearSelection, deleteSelection],
+  );
+
+  return (
+    <div
+      ref={containerRef}
+      id="media-library-listbox"
+      role="listbox"
+      aria-label="Media library"
+      aria-multiselectable
+      aria-activedescendant={anchorId ? mediaOptionId(anchorId) : undefined}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      onClick={(event) => {
+        // A click on the empty area of the grid clears the selection.
+        if (event.target === event.currentTarget) clearSelection();
+      }}
+      className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-2 rounded outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+    >
+      {items.map((item) => (
+        <MediaCard key={item.id} item={item} fps={fps} />
+      ))}
+    </div>
+  );
+}
+
+function PanelPlaceholder({ tab }: { tab: Exclude<PanelTab, 'media'> }) {
+  const Icon = tab === 'captions' ? Subtitles : AudioLines;
+  const title = tab === 'captions' ? 'Captions' : 'Audio';
+  return (
+    <div className="flex min-w-0 flex-1 flex-col">
+      <div className="panel-header flex items-center px-3 text-[11px] font-medium text-text-secondary">
+        {title}
+      </div>
+      <div className="flex flex-1 flex-col items-center justify-center text-center">
+        <Icon size={20} strokeWidth={1.5} className="mb-3 text-text-muted" />
+        <p className="text-[11px] text-text-secondary">{title}</p>
       </div>
     </div>
   );
 }
 
 function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
-  const typeIcon = item.type === 'video' ? '🎥' : item.type === 'audio' ? '🎵' : '🖼️';
+  const TypeIcon = item.type === 'video' ? Film : item.type === 'audio' ? Music2 : ImageIcon;
+  const selectItem = useMediaPanelStore((state) => state.selectItem);
+  const deleteSelection = useMediaPanelStore((state) => state.deleteSelection);
+  const isSelected = useMediaPanelStore((state) => state.selection.selectedIds.includes(item.id));
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const selectedCount = useMediaPanelStore((state) => state.selection.selectedIds.length);
+  const deleteLabel =
+    isSelected && selectedCount > 1 ? `Delete ${selectedCount} items` : 'Delete';
 
   return (
     <div
       draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData(ASSET_DND_MIME, item.id);
-        e.dataTransfer.effectAllowed = 'copy';
+      data-asset-id={item.id}
+      id={mediaOptionId(item.id)}
+      role="option"
+      aria-selected={isSelected}
+      aria-label={item.filename}
+      onClick={(event) => selectItem(item.id, selectionModeFromModifiers(event))}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        // Right-clicking outside the selection retargets it, so the menu always
+        // acts on what the user pointed at.
+        if (!isSelected) selectItem(item.id, 'replacing');
+        setMenuOpen(true);
+      }}
+      onDragStart={(event) => {
+        event.dataTransfer.setData(ASSET_DND_MIME, item.id);
+        event.dataTransfer.effectAllowed = 'copy';
         setDraggingAsset({ id: item.id, type: item.type });
       }}
       onDragEnd={() => setDraggingAsset(null)}
-      title={`Drag onto the timeline to add — ${item.filename}`}
-      className="group relative flex cursor-grab flex-col overflow-hidden rounded border border-surface-3 bg-surface-2 transition hover:border-surface-4 active:cursor-grabbing"
+      title={`Drag onto the timeline to add - ${item.filename}`}
+      className="group relative min-w-0 cursor-grab active:cursor-grabbing"
     >
-      {/* Thumbnail area */}
-      <div className="flex h-16 items-center justify-center bg-surface-0 text-lg">
+      <div
+        data-selected={isSelected}
+        className="relative aspect-video overflow-hidden rounded-md border border-black bg-surface-2 outline outline-1 outline-white/10 transition group-hover:outline-white/30 data-[selected=true]:outline-2 data-[selected=true]:outline-accent"
+      >
         {item.thumbnailPath ? (
           <img
             src={`file://${item.thumbnailPath}`}
-            alt={item.filename}
+            alt=""
             className="h-full w-full object-cover"
           />
         ) : (
-          <span>{typeIcon}</span>
+          <div className="flex h-full w-full items-center justify-center text-text-muted">
+            <TypeIcon size={19} strokeWidth={1.4} />
+          </div>
         )}
-      </div>
-
-      {/* Info */}
-      <div className="px-1.5 py-1">
-        <p className="truncate text-2xs text-text-primary" title={item.filename}>
-          {item.filename}
-        </p>
         {item.duration > 0 && (
-          <p className="text-2xs text-text-muted">
+          <span className="absolute bottom-1 right-1 rounded-sm bg-black/75 px-1 py-0.5 font-mono text-[8px] text-white/85">
             {formatDuration(item.duration, fps)}
-          </p>
+          </span>
         )}
       </div>
+      <p
+        data-selected={isSelected}
+        className="mt-1 truncate px-0.5 text-[10px] text-text-secondary data-[selected=true]:text-text-primary"
+        title={item.filename}
+      >
+        {item.filename}
+      </p>
+
+      {menuOpen && (
+        <>
+          {/* Click-away layer so the menu closes without a global listener. */}
+          <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
+          <div
+            role="menu"
+            className="absolute left-1 top-1 z-30 min-w-28 rounded border border-white/15 bg-surface-2 py-0.5 shadow-lg"
+          >
+            <button
+              role="menuitem"
+              onClick={() => {
+                setMenuOpen(false);
+                deleteSelection(item.id);
+              }}
+              className="block w-full px-2 py-1 text-left text-[10px] text-red-300 hover:bg-white/10"
+            >
+              {deleteLabel}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

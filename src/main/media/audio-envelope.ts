@@ -10,10 +10,13 @@ import { spawn } from 'child_process';
 import { ipcMain } from 'electron';
 import {
   detectSilentRanges,
+  resolveSilenceConfig,
   DEFAULT_SILENCE_CONFIG,
+  SILENCE_LIMITS,
   type SilenceConfig,
   type SilentRange,
 } from '../../shared/audio/silence-detector';
+import { loadSilenceSettings, saveSilenceSettings } from './silence-settings';
 
 const SAMPLE_RATE = 16000;
 const DEFAULT_HOP_MS = 20;
@@ -96,14 +99,34 @@ export async function detectSilenceForFile(
 export function registerAudioHandlers(): void {
   ipcMain.handle(
     'audio:detect-silence',
-    async (_event, filePath: string, config?: Partial<SilenceConfig>) => {
+    async (_event, filePath: unknown, config?: Partial<SilenceConfig>) => {
+      // Validated here rather than trusted: a non-string path would otherwise
+      // reach FFmpeg's argument list, and a partial config used to be spread
+      // over the built-in defaults, so an out-of-range threshold produced an
+      // envelope scan that reported the whole clip silent.
+      if (typeof filePath !== 'string' || filePath.length === 0) {
+        return { success: false, error: 'No media file supplied.' };
+      }
       try {
-        const merged: SilenceConfig = { ...DEFAULT_SILENCE_CONFIG, ...(config || {}) };
-        const ranges = await detectSilenceForFile(filePath, merged);
+        const resolved = resolveSilenceConfig(loadSilenceSettings(), config);
+        const ranges = await detectSilenceForFile(filePath, resolved);
         return { success: true, ranges };
       } catch (err: any) {
         return { success: false, error: err.message };
       }
     },
   );
+
+  // ─── Saved controls (upstream PR #426) ──────────────────────────────────────
+  ipcMain.handle('audio:get-silence-settings', () => ({
+    success: true,
+    settings: loadSilenceSettings(),
+    limits: SILENCE_LIMITS,
+    defaults: DEFAULT_SILENCE_CONFIG,
+  }));
+
+  ipcMain.handle('audio:set-silence-settings', (_event, update?: Partial<SilenceConfig>) => ({
+    success: true,
+    settings: saveSilenceSettings(update),
+  }));
 }

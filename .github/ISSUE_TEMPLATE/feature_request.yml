@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a scoped improvement for Palmier Pro Windows
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest useful version of the feature.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Timeline editing
+        - Preview/compositor
+        - Export
+        - AI agent
+        - MCP
+        - Generation providers
+        - Installer/release
+        - Documentation
+        - Security
+        - Other
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What should be true when this is complete?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

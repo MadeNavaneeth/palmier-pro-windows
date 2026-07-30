@@ -167,7 +167,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
               </button>
               <button
                 onClick={handleExport}
-                className="rounded bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition"
+                className="rounded bg-accent px-4 py-2 text-sm font-medium text-surface-0 hover:bg-accent-hover transition"
               >
                 Export
               </button>
@@ -217,7 +217,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             <div className="flex justify-end">
               <button
                 onClick={onClose}
-                className="rounded bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition"
+                  className="rounded bg-accent px-4 py-2 text-sm font-medium text-surface-0 hover:bg-accent-hover transition"
               >
                 Done
               </button>

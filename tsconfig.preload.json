@@ -3,8 +3,10 @@
   "compilerOptions": {
     "module": "CommonJS",
     "moduleResolution": "node",
-    "outDir": "dist/preload",
-    "rootDir": "src/preload"
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src"
   },
-  "include": ["src/preload/**/*", "src/shared/**/*"]
+  "include": ["src/preload/**/*", "src/shared/**/*"],
+  "exclude": ["src/**/*.test.ts"]
 }

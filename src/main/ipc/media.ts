@@ -17,6 +17,9 @@ const MEDIA_FILTERS = [
   { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
   { name: 'All Media', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
 ];
+const SUPPORTED_MEDIA_EXTENSIONS = new Set(
+  MEDIA_FILTERS[MEDIA_FILTERS.length - 1].extensions.map((extension) => `.${extension}`),
+);
 
 export interface MediaProbeResult {
   path: string;
@@ -47,17 +50,20 @@ export function registerMediaHandlers(): void {
       return { success: false, files: [] };
     }
 
-    const probed: MediaProbeResult[] = [];
-    for (const filePath of result.filePaths) {
-      try {
-        const info = await probeMedia(filePath);
-        probed.push(info);
-      } catch (err: any) {
-        console.error(`Failed to probe ${filePath}:`, err.message);
-      }
+    return probeMediaPaths(result.filePaths);
+  });
+
+  // Import paths supplied by an operating-system file drop in the renderer.
+  ipcMain.handle('media:import-paths', async (_event, filePaths: unknown) => {
+    if (!Array.isArray(filePaths)) {
+      return { success: false, files: [], errors: ['Invalid file list'] };
     }
 
-    return { success: true, files: probed };
+    const safePaths = filePaths
+      .filter((filePath): filePath is string => typeof filePath === 'string')
+      .slice(0, 100);
+
+    return probeMediaPaths(safePaths);
   });
 
   // ─── Probe single file ───────────────────────────────────────────────────────
@@ -79,6 +85,32 @@ export function registerMediaHandlers(): void {
       return { success: false, error: err.message };
     }
   });
+}
+
+async function probeMediaPaths(filePaths: string[]): Promise<{
+  success: boolean;
+  files: MediaProbeResult[];
+  errors: string[];
+}> {
+  const probed: MediaProbeResult[] = [];
+  const errors: string[] = [];
+
+  for (const filePath of [...new Set(filePaths)]) {
+    if (!SUPPORTED_MEDIA_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
+      errors.push(`${path.basename(filePath)} is not a supported media file`);
+      continue;
+    }
+
+    try {
+      probed.push(await probeMedia(filePath));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to probe ${filePath}:`, message);
+      errors.push(`Could not import ${path.basename(filePath)}`);
+    }
+  }
+
+  return { success: probed.length > 0, files: probed, errors };
 }
 
 // ─── ffprobe wrapper ─────────────────────────────────────────────────────────

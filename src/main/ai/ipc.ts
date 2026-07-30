@@ -7,7 +7,13 @@
 import { ipcMain, BrowserWindow, safeStorage } from 'electron';
 import Store from 'electron-store';
 import { PalmierAgent, type StreamCallbacks } from './agent';
-import { EditorController } from '../../shared/editor/controller';
+import {
+  PROVIDER_PRESETS,
+  presetById,
+  validateProviderConfig,
+  type ProviderConfig,
+} from '../../shared/ai/provider-config';
+import type { EditorController } from '../../shared/editor/controller';
 
 // Persistent store for encrypted keys and preferences
 const store = new Store({
@@ -16,6 +22,51 @@ const store = new Store({
 });
 
 let agent: PalmierAgent | null = null;
+
+/** Provider ids are used as store keys, so they must not contain path separators. */
+function isSafeProviderId(id: unknown): id is string {
+  return typeof id === 'string' && /^[a-z0-9-]{1,32}$/.test(id);
+}
+
+/**
+ * Stored configuration for a provider, or the preset default.
+ *
+ * Re-validated on read: the config file is user-writable, and a base URL that
+ * reaches the request layer unchecked is how project content ends up at an
+ * unintended endpoint.
+ */
+function loadProviderConfig(providerId: string): ProviderConfig | null {
+  const preset = presetById(providerId);
+  const stored = store.get(`providers.${providerId}`) as
+    | { kind?: unknown; baseUrl?: unknown; model?: unknown }
+    | undefined;
+
+  const candidate = {
+    kind: stored?.kind ?? preset?.kind,
+    baseUrl: stored?.baseUrl ?? preset?.baseUrl,
+    model: stored?.model ?? preset?.defaultModel,
+  };
+
+  const result = validateProviderConfig(candidate);
+  if (result.ok) return result.config;
+
+  console.warn(`[ai] Ignoring invalid stored config for "${providerId}": ${result.reason}`);
+  return null;
+}
+
+function decryptStoredKey(providerId: string): string {
+  const encryptedKey = store.get(`keys.${providerId}`) as string | undefined;
+  if (!encryptedKey) return '';
+  try {
+    return safeStorage.isEncryptionAvailable()
+      ? safeStorage.decryptString(Buffer.from(encryptedKey, 'base64'))
+      : encryptedKey;
+  } catch {
+    // A key encrypted under a different Windows profile cannot be recovered;
+    // treat it as absent rather than throwing on every chat.
+    return '';
+  }
+}
 
 export function registerAiHandlers(getEditor: () => EditorController): void {
   // ─── Chat ──────────────────────────────────────────────────────────────────
@@ -28,20 +79,28 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
       agent = new PalmierAgent(getEditor());
     }
 
-    // Load key
-    const encryptedKey = store.get(`keys.${provider}`) as string | undefined;
-    if (!encryptedKey) {
+    if (!isSafeProviderId(provider)) {
+      throw new Error('Unknown AI provider.');
+    }
+
+    const config = loadProviderConfig(provider);
+    if (!config) {
+      throw new Error(`AI provider "${provider}" is not configured correctly. Check AI settings.`);
+    }
+
+    const apiKey = decryptStoredKey(provider);
+    // Local runtimes accept unauthenticated requests, so a missing key is only
+    // fatal for a provider that needs one.
+    const requiresApiKey = presetById(provider)?.requiresApiKey ?? true;
+    if (requiresApiKey && apiKey.length === 0) {
       throw new Error(`No API key configured for ${provider}`);
     }
 
-    const apiKey = safeStorage.isEncryptionAvailable()
-      ? safeStorage.decryptString(Buffer.from(encryptedKey, 'base64'))
-      : encryptedKey; // fallback if DPAPI unavailable
-
     agent.configure({
-      provider: provider as 'anthropic' | 'openai',
+      provider: config.kind,
       apiKey,
-      model: (store.get(`models.${provider}`) as string) || undefined,
+      baseUrl: config.baseUrl,
+      model: config.model,
     });
 
     // Extract the last user message
@@ -61,6 +120,12 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
       onComplete: (_fullResponse: string) => {
         win.webContents.send('ai:stream-end');
       },
+      onCancelled: (_partialResponse: string) => {
+        // Same channel as a normal finish, with a reason. A separate channel
+        // would race it: the renderer must learn why the stream ended before it
+        // commits the partial answer to the transcript.
+        win.webContents.send('ai:stream-end', 'cancelled');
+      },
       onError: (error: string) => {
         win.webContents.send('ai:stream-end');
         throw new Error(error);
@@ -70,8 +135,27 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
     await agent.chat(lastUserMsg.content, callbacks);
   });
 
+  // ─── Cancellation (upstream #58) ───────────────────────────────────────────
+  // Its own channel rather than a flag on `ai:chat`, because the point is to be
+  // answerable while that handler's promise is still pending.
+  ipcMain.handle('ai:cancel', () => ({ cancelled: agent?.cancel() ?? false }));
+
   // ─── Key Management ────────────────────────────────────────────────────────
   ipcMain.handle('ai:set-key', async (_event, provider: string, key: string) => {
+    if (!isSafeProviderId(provider)) {
+      return { success: false, error: 'Unknown AI provider.' };
+    }
+    if (typeof key !== 'string') {
+      return { success: false, error: 'Invalid API key.' };
+    }
+
+    // An empty key clears the stored credential, which is how a user detaches a
+    // key without deleting the whole provider configuration.
+    if (key.length === 0) {
+      store.delete(`keys.${provider}` as never);
+      return { success: true };
+    }
+
     if (safeStorage.isEncryptionAvailable()) {
       const encrypted = safeStorage.encryptString(key);
       store.set(`keys.${provider}`, encrypted.toString('base64'));
@@ -82,35 +166,42 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
     return { success: true };
   });
 
-  ipcMain.handle('ai:get-providers', () => {
-    const providers = [
-      {
-        id: 'anthropic',
-        name: 'Anthropic',
-        hasKey: !!store.get('keys.anthropic'),
-        lastFour: getLastFour('anthropic'),
-      },
-      {
-        id: 'openai',
-        name: 'OpenAI',
-        hasKey: !!store.get('keys.openai'),
-        lastFour: getLastFour('openai'),
-      },
-    ];
-    return providers;
-  });
+  // ─── Provider configuration (#17, #140) ────────────────────────────────────
+  ipcMain.handle(
+    'ai:set-provider-config',
+    (_event, provider: string, config: { kind?: unknown; baseUrl?: unknown; model?: unknown }) => {
+      if (!isSafeProviderId(provider)) {
+        return { success: false, error: 'Unknown AI provider.' };
+      }
+
+      // Validated in the main process, not just the form: the renderer is not the
+      // only thing that can reach this channel.
+      const result = validateProviderConfig(config ?? {});
+      if (!result.ok) return { success: false, error: result.reason };
+
+      store.set(`providers.${provider}`, result.config);
+      return { success: true, config: result.config };
+    },
+  );
+
+  ipcMain.handle('ai:get-providers', () =>
+    PROVIDER_PRESETS.map((preset) => {
+      const config = loadProviderConfig(preset.id);
+      return {
+        id: preset.id,
+        name: preset.label,
+        kind: preset.kind,
+        requiresApiKey: preset.requiresApiKey,
+        hint: preset.hint,
+        hasKey: decryptStoredKey(preset.id).length > 0,
+        lastFour: getLastFour(preset.id),
+        baseUrl: config?.baseUrl ?? preset.baseUrl ?? '',
+        model: config?.model ?? preset.defaultModel,
+      };
+    }),
+  );
 }
 
 function getLastFour(provider: string): string {
-  const encryptedKey = store.get(`keys.${provider}`) as string | undefined;
-  if (!encryptedKey) return '';
-  try {
-    if (safeStorage.isEncryptionAvailable()) {
-      const key = safeStorage.decryptString(Buffer.from(encryptedKey, 'base64'));
-      return key.slice(-4);
-    }
-    return encryptedKey.slice(-4);
-  } catch {
-    return '';
-  }
+  return decryptStoredKey(provider).slice(-4);
 }

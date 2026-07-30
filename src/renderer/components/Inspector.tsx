@@ -1,12 +1,30 @@
 /**
- * Inspector — properties for the currently selected clip.
- * Currently exposes blend mode (upstream #203) and opacity. Shown only when
- * exactly one clip is selected.
+ * Inspector — properties for the current clip selection.
+ *
+ * Exposes blend mode (upstream #203), opacity, fades, transitions and the
+ * silence-removal controls (upstream PR #426). A single clip is edited directly;
+ * a multi-clip selection edits every selected clip in one batched, single-undo
+ * operation (upstream PR #419).
  */
 
 import React, { useCallback, useState } from 'react';
 import { useTimelineStore } from '../store/timeline';
+import { useProjectStore } from '../store/project';
 import { BLEND_MODES, BLEND_MODE_LABELS, type BlendMode } from '../../shared/types/blend-mode';
+import { DEFAULT_SILENCE_CONFIG, SILENCE_LIMITS } from '../../shared/audio/silence-detector';
+import { useSilenceSettings } from '../hooks/useSilenceSettings';
+import {
+  ASPECT_PRESETS,
+  QUALITY_PRESETS,
+  aspectPresetMatches,
+  aspectRatioLabel,
+  customRatioInput,
+  customRatioResolution,
+  findAspectPreset,
+  findQualityPreset,
+  qualityPresetMatches,
+  resolutionForQuality,
+} from '../../shared/project/aspect-ratio';
 
 export function Inspector() {
   // Re-render on project changes so the controls reflect the selected clip.
@@ -19,6 +37,8 @@ export function Inspector() {
   const setClipTransition = useTimelineStore((s) => s.setClipTransition);
   const removeSilenceForClip = useTimelineStore((s) => s.removeSilenceForClip);
   const fps = useTimelineStore((s) => s.project.settings.fps);
+  const project = useTimelineStore((s) => s.project);
+  const projectName = useProjectStore((s) => s.name);
 
   const [silenceStatus, setSilenceStatus] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
@@ -81,32 +101,46 @@ export function Inspector() {
     }
   }, [clip, removeSilenceForClip]);
 
-  // Nothing useful to show unless exactly one clip is selected.
   if (!clip) {
+    // More than one clip (and not a single linked A/V pair): edit them together.
     if (selectedClipIds.size > 1) {
-      return (
-        <div className="border-b border-surface-3 px-3 py-3">
-          <p className="text-2xs text-text-muted">{selectedClipIds.size} clips selected</p>
-        </div>
-      );
+      return <MultiClipInspector />;
     }
-    return null;
+    const totalFrames = project.timeline.clips.reduce(
+      (maximum, item) => Math.max(maximum, item.startFrame + item.durationFrames),
+      0,
+    );
+    return (
+      <div className="flex flex-1 flex-col overflow-y-auto">
+        <div className="panel-header flex items-center px-3 text-[11px] font-medium text-text-secondary">
+          Inspector
+        </div>
+        <InspectorSection title="Project">
+          <InspectorValue label="Name" value={projectName} />
+          <InspectorValue
+            label="Duration"
+            value={`${(totalFrames / project.settings.fps).toFixed(1)} s`}
+          />
+        </InspectorSection>
+        <ProjectSettingsSection />
+      </div>
+    );
   }
 
   const isAudio = clip.type === 'audio';
   const opacityPct = Math.round(clip.opacity * 100);
 
   return (
-    <div className="border-b border-surface-3">
+    <div className="flex flex-1 flex-col overflow-y-auto">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-surface-3">
-        <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">
+      <div className="panel-header flex items-center justify-between px-3">
+        <h2 className="text-[11px] font-medium text-text-secondary">
           Inspector
         </h2>
-        <span className="text-2xs text-text-muted capitalize">{clip.type}</span>
+        <span className="text-[10px] text-text-muted capitalize">{clip.type}</span>
       </div>
 
-      <div className="px-3 py-3 space-y-3">
+      <div className="space-y-3 px-3 py-3">
         {/* Clip label */}
         <div className="truncate text-xs text-text-primary" title={clip.label || clip.id}>
           {clip.label || clip.id}
@@ -222,21 +256,541 @@ export function Inspector() {
 
         {/* Audio tools — available for audio and video clips (both can carry sound). */}
         {clip.type !== 'image' && clip.type !== 'title' && (
-          <div className="flex flex-col gap-1.5 pt-1 border-t border-surface-3">
-            <label className="text-2xs text-text-muted uppercase tracking-wide pt-1">Audio</label>
-            <button
-              onClick={handleRemoveSilence}
-              disabled={working}
-              className="rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary transition hover:border-surface-4 hover:bg-surface-3 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {working ? 'Analyzing…' : 'Remove Silence'}
-            </button>
-            {silenceStatus && (
-              <span className="text-2xs text-text-muted">{silenceStatus}</span>
-            )}
-          </div>
+          <SilenceRemovalControls
+            onRemove={handleRemoveSilence}
+            working={working}
+            status={silenceStatus}
+          />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Silence removal, with its settings exposed (upstream PR #426).
+ *
+ * Before this the button ran with hardcoded values, so a pass that cut too much
+ * or too little could not be adjusted — the only recourse was undo. The two
+ * duration controls mirror upstream's Minimum Pause and Speech Padding, in
+ * milliseconds. Threshold has no upstream counterpart: upstream decides silence
+ * from an on-device speech mask, while this port measures an RMS envelope, which
+ * makes the level itself a real user-facing decision.
+ *
+ * Ranges come from `SILENCE_LIMITS`, the same bounds the main process and the
+ * Agent tool schema use, so the slider cannot express a value a removal would
+ * refuse. Values are saved by the main process, not here, so a removal the Agent
+ * runs with no arguments uses exactly what these controls show.
+ */
+function SilenceRemovalControls({
+  onRemove,
+  working,
+  status,
+}: {
+  onRemove: () => void;
+  working: boolean;
+  status: string | null;
+}) {
+  const { settings, update, reset, isModified } = useSilenceSettings();
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1">
+      <div className="flex items-center justify-between pt-1">
+        <label className="text-2xs text-text-muted uppercase tracking-wide">Audio</label>
+        {isModified && (
+          <button
+            onClick={reset}
+            className="text-2xs text-text-muted underline decoration-dotted transition hover:text-text-secondary"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+
+      <SilenceSlider
+        id="silence-minimum-pause"
+        label="Minimum Pause"
+        title="Silent gaps shorter than this are left alone."
+        value={settings?.minSilenceSec ?? DEFAULT_SILENCE_CONFIG.minSilenceSec}
+        min={SILENCE_LIMITS.minSilenceSec.min}
+        max={SILENCE_LIMITS.minSilenceSec.max}
+        step={0.05}
+        disabled={settings === null || working}
+        format={formatMilliseconds}
+        onChange={(minSilenceSec) => update({ minSilenceSec })}
+      />
+      <SilenceSlider
+        id="silence-speech-padding"
+        label="Speech Padding"
+        title="Audio kept either side of speech, so a transient is not clipped. Not applied where the silence reaches the start or end of the source."
+        value={settings?.edgePaddingSec ?? DEFAULT_SILENCE_CONFIG.edgePaddingSec}
+        min={SILENCE_LIMITS.edgePaddingSec.min}
+        max={SILENCE_LIMITS.edgePaddingSec.max}
+        step={0.025}
+        disabled={settings === null || working}
+        format={formatMilliseconds}
+        onChange={(edgePaddingSec) => update({ edgePaddingSec })}
+      />
+      <SilenceSlider
+        id="silence-threshold"
+        label="Threshold"
+        title="Audio quieter than this counts as silence. Lower values cut only near-digital silence."
+        value={settings?.thresholdDb ?? DEFAULT_SILENCE_CONFIG.thresholdDb}
+        min={SILENCE_LIMITS.thresholdDb.min}
+        max={SILENCE_LIMITS.thresholdDb.max}
+        step={1}
+        disabled={settings === null || working}
+        format={(value) => `${Math.round(value)} dB`}
+        onChange={(thresholdDb) => update({ thresholdDb })}
+      />
+
+      <button
+        onClick={onRemove}
+        disabled={working}
+        className="mt-0.5 rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary transition hover:border-surface-4 hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {working ? 'Analyzing…' : 'Remove Silence'}
+      </button>
+      {status && (
+        <span className="text-2xs text-text-muted" role="status">
+          {status}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Milliseconds read better than fractional seconds at these magnitudes. */
+function formatMilliseconds(seconds: number): string {
+  return `${Math.round(seconds * 1000)} ms`;
+}
+
+/**
+ * One bounded silence control: label, live value, and a range input.
+ *
+ * A range input rather than a free-text number field, because `min`/`max`/`step`
+ * make an out-of-range value unreachable rather than something to reject after
+ * the fact. The readout carries the units so the label stays short enough for
+ * the panel at its narrowest.
+ */
+function SilenceSlider({
+  id,
+  label,
+  title,
+  value,
+  min,
+  max,
+  step,
+  disabled,
+  format,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  title: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled: boolean;
+  format: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor={id} className="truncate text-2xs text-text-muted" title={title}>
+          {label}
+        </label>
+        <span className="text-2xs tabular-nums text-text-secondary">{format(value)}</span>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        title={title}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full accent-accent disabled:opacity-40"
+      />
+    </div>
+  );
+}
+
+/**
+ * Bulk editor for a multi-clip selection.
+ *
+ * Every control writes the whole selection through the controller's batched
+ * property path, so restyling a selection is one undo step. Controls show the
+ * shared value when the selection agrees and "Mixed" when it does not, matching
+ * upstream's multi-select behaviour rather than pretending one clip is authoritative.
+ */
+function MultiClipInspector() {
+  const getSelectedClips = useTimelineStore((s) => s.getSelectedClips);
+  const setSelectedClipsBlendMode = useTimelineStore((s) => s.setSelectedClipsBlendMode);
+  const setSelectedClipsOpacity = useTimelineStore((s) => s.setSelectedClipsOpacity);
+  const setSelectedClipsFade = useTimelineStore((s) => s.setSelectedClipsFade);
+  const fps = useTimelineStore((s) => s.project.settings.fps);
+
+  const clips = getSelectedClips();
+  const visualClips = clips.filter((item) => item.type !== 'audio');
+  const sharedBlendMode = sharedValue(visualClips.map((item) => item.blendMode ?? 'normal'));
+  const sharedOpacity = sharedValue(visualClips.map((item) => item.opacity));
+  const sharedFadeIn = sharedValue(clips.map((item) => item.fadeInFrames ?? 0));
+  const sharedFadeOut = sharedValue(clips.map((item) => item.fadeOutFrames ?? 0));
+
+  return (
+    <div className="flex flex-1 flex-col overflow-y-auto">
+      <div className="panel-header flex items-center justify-between px-3">
+        <h2 className="text-[11px] font-medium text-text-secondary">Inspector</h2>
+        <span className="text-[10px] text-text-muted">{clips.length} clips</span>
+      </div>
+
+      <div className="space-y-3 px-3 py-3">
+        <p className="text-2xs text-text-muted">
+          Changes apply to all {clips.length} selected clips as one undoable edit.
+        </p>
+
+        {visualClips.length > 0 && (
+          <>
+            <div className="flex flex-col gap-1">
+              <label className="text-2xs text-text-muted uppercase tracking-wide">Blend Mode</label>
+              <select
+                value={sharedBlendMode ?? 'mixed'}
+                onChange={(e) => {
+                  if (e.target.value !== 'mixed') {
+                    setSelectedClipsBlendMode(e.target.value as BlendMode);
+                  }
+                }}
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+              >
+                {sharedBlendMode === undefined && (
+                  <option value="mixed">Mixed</option>
+                )}
+                {BLEND_MODES.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {BLEND_MODE_LABELS[mode]}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center justify-between">
+                <label className="text-2xs text-text-muted uppercase tracking-wide">Opacity</label>
+                <span className="text-2xs text-text-secondary tabular-nums">
+                  {sharedOpacity === undefined ? 'Mixed' : `${Math.round(sharedOpacity * 100)}%`}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={sharedOpacity === undefined ? 100 : Math.round(sharedOpacity * 100)}
+                onChange={(e) => setSelectedClipsOpacity(parseInt(e.target.value, 10) / 100)}
+                aria-label="Opacity for the selected clips"
+                className="w-full accent-accent"
+              />
+            </div>
+          </>
+        )}
+
+        <div className="flex flex-col gap-1">
+          <label className="text-2xs text-text-muted uppercase tracking-wide">Fades (seconds)</label>
+          <div className="flex gap-2">
+            <div className="flex flex-1 flex-col gap-0.5">
+              <span className="text-2xs text-text-muted">In{sharedFadeIn === undefined ? ' (mixed)' : ''}</span>
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                value={sharedFadeIn === undefined ? '' : (sharedFadeIn / fps).toFixed(1)}
+                onChange={(e) =>
+                  setSelectedClipsFade(Math.round(parseFloat(e.target.value || '0') * fps), undefined)
+                }
+                aria-label="Fade in seconds for the selected clips"
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+              />
+            </div>
+            <div className="flex flex-1 flex-col gap-0.5">
+              <span className="text-2xs text-text-muted">Out{sharedFadeOut === undefined ? ' (mixed)' : ''}</span>
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                value={sharedFadeOut === undefined ? '' : (sharedFadeOut / fps).toFixed(1)}
+                onChange={(e) =>
+                  setSelectedClipsFade(undefined, Math.round(parseFloat(e.target.value || '0') * fps))
+                }
+                aria-label="Fade out seconds for the selected clips"
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+              />
+            </div>
+          </div>
+        </div>
+
+        {visualClips.length === 0 && (
+          <p className="text-2xs text-text-muted">
+            Audio only — compositing properties don't apply.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Editable project settings: resolution, frame rate and aspect ratio
+ * (upstream PR #417).
+ *
+ * Aspect ratio offers the preset ratios plus a custom `width:height` entry that
+ * preserves the current short edge. Quality scales the short edge while keeping
+ * the ratio. Every change is one undoable edit and re-fits existing clips, so
+ * preview and export follow the new canvas.
+ */
+function ProjectSettingsSection() {
+  const settings = useTimelineStore((s) => s.project.settings);
+  const applyProjectSettings = useTimelineStore((s) => s.applyProjectSettings);
+  const [customOpen, setCustomOpen] = useState(false);
+
+  const { width, height, fps } = settings;
+
+  const handleAspectPreset = useCallback(
+    (id: string) => {
+      if (id === 'custom') {
+        setCustomOpen(true);
+        return;
+      }
+      const preset = findAspectPreset(id);
+      if (preset) applyProjectSettings({ width: preset.width, height: preset.height });
+    },
+    [applyProjectSettings],
+  );
+
+  const handleQualityPreset = useCallback(
+    (id: string) => {
+      const quality = findQualityPreset(id);
+      if (!quality) return;
+      applyProjectSettings(resolutionForQuality(quality, { width, height }));
+    },
+    [applyProjectSettings, width, height],
+  );
+
+  const currentAspectPreset = ASPECT_PRESETS.find((preset) =>
+    aspectPresetMatches(preset, width, height),
+  );
+  const currentQualityPreset = QUALITY_PRESETS.find((preset) =>
+    qualityPresetMatches(preset, { width, height }),
+  );
+
+  return (
+    <>
+      <InspectorSection title="Settings">
+        <div className="flex items-center gap-3 text-[10px]">
+          <label htmlFor="project-quality" className="text-text-muted">
+            Resolution
+          </label>
+          <span className="ml-auto flex items-center gap-2">
+            <span className="text-text-secondary tabular-nums">
+              {width} x {height}
+            </span>
+            <select
+              id="project-quality"
+              value={currentQualityPreset?.id ?? 'custom'}
+              onChange={(e) => handleQualityPreset(e.target.value)}
+              className="rounded border border-surface-3 bg-surface-2 px-1 py-0.5 text-[10px] text-text-primary focus:border-accent focus:outline-none"
+            >
+              {!currentQualityPreset && <option value="custom">Custom</option>}
+              {QUALITY_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3 text-[10px]">
+          <label htmlFor="project-fps" className="text-text-muted">
+            Frame Rate
+          </label>
+          <select
+            id="project-fps"
+            value={String(fps)}
+            onChange={(e) => applyProjectSettings({ fps: Number(e.target.value) })}
+            className="ml-auto rounded border border-surface-3 bg-surface-2 px-1 py-0.5 text-[10px] text-text-primary focus:border-accent focus:outline-none"
+          >
+            {FPS_OPTIONS.includes(fps) ? null : <option value={String(fps)}>{fps} fps</option>}
+            {FPS_OPTIONS.map((option) => (
+              <option key={option} value={String(option)}>
+                {option} fps
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-3 text-[10px]">
+          <label htmlFor="project-aspect" className="text-text-muted">
+            Aspect Ratio
+          </label>
+          <span className="ml-auto flex items-center gap-2">
+            <span className="text-text-secondary tabular-nums">
+              {aspectRatioLabel(width, height)}
+            </span>
+            <select
+              id="project-aspect"
+              value={currentAspectPreset?.id ?? 'current'}
+              onChange={(e) => handleAspectPreset(e.target.value)}
+              className="rounded border border-surface-3 bg-surface-2 px-1 py-0.5 text-[10px] text-text-primary focus:border-accent focus:outline-none"
+            >
+              {!currentAspectPreset && <option value="current">Custom</option>}
+              {ASPECT_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+              <option value="custom">Custom…</option>
+            </select>
+          </span>
+        </div>
+      </InspectorSection>
+
+      {customOpen && (
+        <CustomAspectRatioEditor
+          width={width}
+          height={height}
+          onClose={() => setCustomOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+const FPS_OPTIONS = [24, 25, 30, 48, 50, 60];
+
+/**
+ * Custom `width:height` entry. Shows the resolution the ratio resolves to, or
+ * the refusal reason, and only enables Apply for a valid edited ratio — the same
+ * gating as upstream's CustomAspectRatioSheet.
+ */
+function CustomAspectRatioEditor({
+  width,
+  height,
+  onClose,
+}: {
+  width: number;
+  height: number;
+  onClose: () => void;
+}) {
+  const applyProjectSettings = useTimelineStore((s) => s.applyProjectSettings);
+  const context = { width, height };
+  const initial = customRatioInput(context);
+  const [horizontal, setHorizontal] = useState(initial.horizontal);
+  const [vertical, setVertical] = useState(initial.vertical);
+
+  const changed = horizontal !== initial.horizontal || vertical !== initial.vertical;
+  let resolution: { width: number; height: number } | null = null;
+  let message: string | null = null;
+  try {
+    resolution = customRatioResolution(context, horizontal, vertical);
+  } catch (err) {
+    message = err instanceof Error ? err.message : 'Enter a valid aspect ratio.';
+  }
+
+  return (
+    <section className="border-b border-white/10 px-3 py-3">
+      <h3 className="mb-1 text-[10px] font-semibold text-text-primary">Custom Aspect Ratio</h3>
+      <p className="mb-2 text-2xs text-text-muted">Changing the ratio preserves the shorter edge.</p>
+      <div className="flex items-end gap-2">
+        <div className="flex flex-1 flex-col gap-0.5">
+          <label htmlFor="aspect-horizontal" className="text-2xs text-text-muted">
+            Width
+          </label>
+          <input
+            id="aspect-horizontal"
+            value={horizontal}
+            onChange={(e) => setHorizontal(e.target.value)}
+            inputMode="decimal"
+            className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs tabular-nums text-text-primary focus:border-accent focus:outline-none"
+          />
+        </div>
+        <span className="pb-1.5 text-xs text-text-muted">:</span>
+        <div className="flex flex-1 flex-col gap-0.5">
+          <label htmlFor="aspect-vertical" className="text-2xs text-text-muted">
+            Height
+          </label>
+          <input
+            id="aspect-vertical"
+            value={vertical}
+            onChange={(e) => setVertical(e.target.value)}
+            inputMode="decimal"
+            className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs tabular-nums text-text-primary focus:border-accent focus:outline-none"
+          />
+        </div>
+      </div>
+
+      <p
+        className={`mt-2 text-2xs ${message ? 'text-red-400' : 'text-text-muted'}`}
+        role={message ? 'alert' : undefined}
+      >
+        {message ?? `Resolution ${resolution!.width} x ${resolution!.height}`}
+      </p>
+
+      <div className="mt-2 flex justify-end gap-2">
+        <button
+          onClick={onClose}
+          className="rounded border border-surface-3 bg-surface-2 px-2 py-1 text-2xs text-text-primary transition hover:bg-surface-3"
+        >
+          Cancel
+        </button>
+        <button
+          disabled={!resolution || !changed}
+          onClick={() => {
+            if (!resolution) return;
+            applyProjectSettings(resolution);
+            onClose();
+          }}
+          className="rounded border border-accent bg-accent/20 px-2 py-1 text-2xs text-text-primary transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Apply
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** The one value every entry shares, or undefined when they differ. */
+function sharedValue<T>(values: T[]): T | undefined {
+  if (values.length === 0) return undefined;
+  const [first] = values;
+  return values.every((value) => value === first) ? first : undefined;
+}
+
+function InspectorSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="border-b border-white/10 px-3 py-3">
+      <h3 className="mb-2 text-[10px] font-semibold text-text-primary">{title}</h3>
+      <div className="space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function InspectorValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-3 text-[10px]">
+      <span className="text-text-muted">{label}</span>
+      <span className="ml-auto max-w-[190px] truncate text-right text-text-secondary">
+        {value}
+      </span>
     </div>
   );
 }

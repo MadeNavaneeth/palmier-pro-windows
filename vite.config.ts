@@ -21,6 +21,7 @@ export default defineConfig({
             },
           },
           resolve: {
+            extensions: ['.ts', '.tsx', '.mjs', '.js', '.mts', '.jsx', '.json'],
             alias: {
               '@main': path.resolve(__dirname, 'src/main'),
               '@shared': path.resolve(__dirname, 'src/shared'),
@@ -36,6 +37,18 @@ export default defineConfig({
         vite: {
           build: {
             outDir: 'dist/preload',
+            lib: {
+              entry: 'src/preload/index.ts',
+              formats: ['cjs'],
+              fileName: () => 'index.cjs',
+            },
+            rollupOptions: {
+              output: {
+                format: 'cjs',
+                inlineDynamicImports: true,
+                entryFileNames: 'index.cjs',
+              },
+            },
           },
         },
       },
@@ -43,6 +56,7 @@ export default defineConfig({
     electronRenderer(),
   ],
   resolve: {
+    extensions: ['.ts', '.tsx', '.mjs', '.js', '.mts', '.jsx', '.json'],
     alias: {
       '@': path.resolve(__dirname, 'src'),
       '@renderer': path.resolve(__dirname, 'src/renderer'),

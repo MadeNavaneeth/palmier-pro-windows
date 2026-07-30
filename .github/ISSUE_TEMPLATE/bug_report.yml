@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible problem in Palmier Pro Windows
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve the Windows alpha. Please avoid posting API keys, private project files, or exploit details publicly.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open...
+        2. Import...
+        3. Click...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      placeholder: commit SHA, branch name, or release version
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Windows version, Node.js version, Rust version, FFmpeg version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Attach only non-sensitive logs or screenshots.

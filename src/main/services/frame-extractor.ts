@@ -219,7 +219,9 @@ export class FrameExtractor {
       const toRemove = entries.slice(0, entries.length - this.maxCacheSize);
       for (const [key, entry] of toRemove) {
         this.cache.delete(key);
-        fs.unlink(entry.path).catch(() => {});
+        // Ignorable by design: the entry is already out of the cache, so a
+        // failed unlink leaves a stray temp file, not a wrong result.
+        void fs.unlink(entry.path).catch(() => {});
       }
     }
 

@@ -1,64 +1,229 @@
-# Upstream Issue Audit
+# Upstream Issue Triage
 
-This document tracks every relevant issue reported against the projects we derive
-from / compete with, and our status on each. The goal is that defects reported
-upstream are **resolved or structurally impossible** in this Windows port.
+Every open issue captured in
+[`UPSTREAM_SNAPSHOT.md`](./UPSTREAM_SNAPSHOT.md) has exactly one row in the
+[complete disposition table](#complete-disposition-table) below. The workflow and
+the high-priority ledger live in [`UPSTREAM_PARITY.md`](./UPSTREAM_PARITY.md);
+this file is the exhaustive per-issue record.
 
-Sources audited:
-- [palmier-io/palmier-pro](https://github.com/palmier-io/palmier-pro) (upstream, macOS)
-- [soysebas-reyes/reelmind](https://github.com/soysebas-reyes/reelmind) (competing Windows port)
+- Upstream baseline: `457e853a789e16eb104a0bfb43d2485d9e1ac0c8`
+- Open issues captured: 50
+- Triage date: 2026-07-29
 
-> ReelMind currently has **zero** reported issues, so there is nothing to mirror
-> from it. The list below is derived from Palmier Pro's tracker. Issues that are
-> macOS-platform-specific (Apple auth, AVFoundation, Sparkle, Keychain) cannot
-> occur in our stack and are marked **N/A by architecture**.
+## Dispositions
+
+| Disposition | Meaning |
+|---|---|
+| `Implemented` | Equivalent behavior and regression coverage exist on Windows. |
+| `Partial` | Some behavior exists; the missing parts are listed explicitly. |
+| `Planned` | Relevant and not implemented yet. |
+| `Different by design` | Windows uses a documented alternative contract. |
+| `N/A platform` | Depends on Apple-only frameworks or packaging; cannot occur in this stack. |
+| `Needs investigation` | Relevance or Windows exposure is not yet established. |
+
+| Disposition | Count |
+|---|---|
+| Implemented | 14 |
+| Partial | 4 |
+| Planned | 21 |
+| N/A platform | 11 |
+| Needs investigation | 0 |
+| **Total** | **50** |
+
+Every open issue in the captured snapshot now has a concrete disposition; none
+remain under investigation.
+
+`N/A platform` is not a shortcut. Each such row names the Apple framework,
+packaging mechanism, or hosted service that the issue depends on.
+
+## Adopted in the current pass
+
+Six issues moved to `Implemented` in this pass. Details are in
+[implementation notes](#implementation-notes).
+
+| Upstream | Title | Windows owner |
+|---|---|---|
+| [#68](https://github.com/palmier-io/palmier-pro/issues/68) | Export/seek hang when source fps differs from timeline fps | `shared/media/source-time.ts` |
+| [#212](https://github.com/palmier-io/palmier-pro/issues/212) | Playback speed below 0.5x | `shared/editor/playback-rate.ts` |
+| [#164](https://github.com/palmier-io/palmier-pro/issues/164) | Keyboard shortcut parity + discoverability | `shared/editor/shortcuts.ts` |
+| [#167](https://github.com/palmier-io/palmier-pro/issues/167) | Viewer guides for the preview canvas | `shared/preview/guides.ts` |
+| [#17](https://github.com/palmier-io/palmier-pro/issues/17), [#140](https://github.com/palmier-io/palmier-pro/issues/140) | Custom API base URL and OpenAI-compatible providers | `shared/ai/provider-config.ts` |
+| [#89](https://github.com/palmier-io/palmier-pro/issues/89) | Fire-and-forget promises | `eslint.config.js`, `shared/editor/state-mirror.ts` |
+
+Three `Partial` issues also moved substantially without changing disposition:
+
+| Upstream | What landed | What is still missing |
+|---|---|---|
+| [#58](https://github.com/palmier-io/palmier-pro/issues/58) | An in-flight agent turn can be stopped: `ai:cancel`, a Stop button, and signal checks between rounds and before each remaining tool call. A long multi-step turn is now covered by a stress suite that pins replayed history to linear growth, project consistency across dozens of mutations, and undoability of the whole run (`main/ai/agent.ts`, `agent.stress.test.ts`) | Nothing outstanding for the freeze itself; a headless mode for batch MCP production remains under #302 |
+| [#286](https://github.com/palmier-io/palmier-pro/issues/286) | The panel layout is persisted, so a reduced "timeline and video only" workspace survives a restart (`store/ui.ts`) | Reordering, tab grouping, detaching a panel into its own window, resizable splitters |
+| [PR #426](https://github.com/palmier-io/palmier-pro/pull/426) | Inspector sliders for Minimum Pause, Speech Padding and Threshold, with the saved settings owned by the main process so a no-argument `remove_silence` matches the visible controls (`main/media/silence-settings.ts`) | Scoped removal over a selection or marked range, and timeline shading of the removable spans |
+
+## Complete disposition table
+
+Ordered by issue number.
+
+| Upstream | Title | Disposition | Windows reason and owner |
+|---|---|---|---|
+| [#14](https://github.com/palmier-io/palmier-pro/issues/14) | Support more macOS versions (15.x, 14.x) | N/A platform | A macOS deployment-target request. Windows support floor is set by Electron and the `win32` NSIS/portable targets in `package.json`. |
+| [#17](https://github.com/palmier-io/palmier-pro/issues/17) | Allow custom API base URL / endpoint | Implemented | `shared/ai/provider-config.ts` validates and normalizes a base URL; Anthropic accepts an optional gateway override, `openai-compatible` requires one. `provider-config.test.ts`. |
+| [#18](https://github.com/palmier-io/palmier-pro/issues/18) | Expose text/caption background styling through MCP tools | Planned | `ClipType` reserves `title` but there is no text or font model, so there is no styling surface to expose. Blocked on the text domain. |
+| [#20](https://github.com/palmier-io/palmier-pro/issues/20) | Linux support | Planned | Electron, FFmpeg, and wgpu are all portable, so nothing in the architecture prevents it. No Linux build target, native prebuild, or CI job exists yet. |
+| [#21](https://github.com/palmier-io/palmier-pro/issues/21) | Timeline for Intel Mac support | N/A platform | An Apple-silicon-versus-Intel packaging question. Windows ships x64 portable plus x64/arm64 installers. |
+| [#37](https://github.com/palmier-io/palmier-pro/issues/37) | Installation via Homebrew | N/A platform | Homebrew is a macOS package manager. The Windows analogue (a winget manifest) is a distribution task tracked in the roadmap, not this issue. |
+| [#39](https://github.com/palmier-io/palmier-pro/issues/39) | Transcription locked to the system language | Planned | No transcription subsystem exists on Windows. When one lands, the source language must be an explicit per-job parameter rather than read from the OS locale. |
+| [#41](https://github.com/palmier-io/palmier-pro/issues/41) | Minimum macOS 26 (Tahoe) | N/A platform | A macOS minimum-version policy question with no Windows counterpart. |
+| [#44](https://github.com/palmier-io/palmier-pro/issues/44) | Debug build crashes on timeline mutation (EXC_BAD_ACCESS) | N/A platform | A Swift/AppKit memory fault. Timeline mutation on Windows runs in TypeScript over immutable project snapshots, and the compositor is safe Rust, so this crash class is not reachable. |
+| [#45](https://github.com/palmier-io/palmier-pro/issues/45) | AI-driven shape annotations + animation presets | Planned | Requires a shape/annotation clip type and a keyframe model, neither of which exists. |
+| [#50](https://github.com/palmier-io/palmier-pro/issues/50) | Variable fonts for motion typography | Planned | Blocked on the same missing text/font model as #18. |
+| [#58](https://github.com/palmier-io/palmier-pro/issues/58) | App freezes (100% CPU, MCP unresponsive) during agent multi-step edits | Partial | Structurally mitigated: editor tools are bounded pure state operations, decode/export/generation run as separate processes off the IPC reply path, frame requests coalesce newest-wins (`main/media/latest-request.ts`), numeric args are range-checked (#264), and the agent tool loop is now capped at `MAX_TOOL_ROUNDS` so a model that always requests a tool cannot spin. A turn can now be stopped from the panel: `ai:cancel` aborts the in-flight request and both provider paths check the signal between rounds and before each remaining tool call, so an unresponsive or runaway turn no longer has to be waited out. A tool already executing is allowed to finish, and a stopped turn records text only, so no orphaned tool call is left in history to poison later requests. Missing: a long-running multi-step agent stress test. |
+| [#59](https://github.com/palmier-io/palmier-pro/issues/59) | 10-bit HDR export (HEVC Main10, BT.2020 + HLG) | Planned | The exporter is 8-bit SDR end to end: the wgpu compositor works in 8-bit RGBA and the FFmpeg pipeline has no pixel-format, transfer-function, or color-primaries controls. Needs a color-management contract shared by preview and export. |
+| [#68](https://github.com/palmier-io/palmier-pro/issues/68) | Export hangs on deep seeks into 60 fps sources in a 30 fps timeline | Implemented | Root cause was identical: project-frame offsets were divided by the *source* fps. `shared/media/source-time.ts` is now the single source-time model; the decoder takes `sourceSeconds` instead of an ambiguous frame + fps pair, out-of-range seeks are skipped instead of scanning to EOF, and the exporter resamples each source to the project rate before compositing. `source-time.test.ts`, `frame-decoder.test.ts`. |
+| [#70](https://github.com/palmier-io/palmier-pro/issues/70) | RFC: Windows port feasibility and platform abstraction plan | Implemented | This repository is the answer to the RFC. Architecture is recorded in `README.md` and `docs/PROJECT_PLAN.md`. |
+| [#75](https://github.com/palmier-io/palmier-pro/issues/75) | App hangs on launch (0% CPU, never draws a window) on macOS 26.2 | N/A platform | An AppKit/`NSApplication` launch stall. Electron window creation on Windows does not use that path. |
+| [#89](https://github.com/palmier-io/palmier-pro/issues/89) | Async function without await — fire-and-forget Promise | Implemented | Enforced rather than audited once: `no-floating-promises`, `no-misused-promises`, and `await-thenable` are errors under a type-aware ESLint config. The 14 pre-existing violations are fixed, detached work is marked `void` with a stated reason, and the two substantive bugs found are fixed with coverage — a failed project save no longer looks like a success (`store/project.ts`), and a failed renderer→main sync no longer permanently desynchronizes the controller the Agent reads (`shared/editor/state-mirror.ts`, `state-mirror.test.ts`). |
+| [#91](https://github.com/palmier-io/palmier-pro/issues/91) | Captions: timing drift + no words-per-caption control | Planned | No caption subsystem. The lesson to carry over: snap caption phrases to real word timestamps rather than distributing by character count. |
+| [#97](https://github.com/palmier-io/palmier-pro/issues/97) | Chroma key (green-screen removal) | Planned | The compositor has blend modes and opacity but no per-clip effect stack. Should land through the shared preview/export effect registry, not as a compositor special case. |
+| [#107](https://github.com/palmier-io/palmier-pro/issues/107) | Video preview stops every time Claude sends an MCP command | Implemented | Agent and MCP edits arrive as `editor:apply-from-main`, are adopted as one undoable step, and the resulting project revision requests a fresh composite at the current playhead; per-window generations stop a stale async frame from replacing newer output. The preview is not torn down or paused by a tool call. |
+| [#117](https://github.com/palmier-io/palmier-pro/issues/117) | Evaluate and Install palmier-pro | N/A platform | A macOS install/evaluation thread. Windows installation is a different mechanism entirely (NSIS and portable builds), documented in `README.md`. |
+| [#118](https://github.com/palmier-io/palmier-pro/issues/118) | AI content labels for media assets | Planned | `MediaAsset` carries technical probe metadata only, with no tag or description fields and no media index to search them. |
+| [#122](https://github.com/palmier-io/palmier-pro/issues/122) | Expose MCP server to local network | N/A platform | Not applicable as built: `PalmierMcpServer` uses `StdioServerTransport`, so there is no listening socket to expose or to secure. If an HTTP transport is ever added it must be loopback-bound by default and require a bearer token — the same conclusion upstream reached. |
+| [#137](https://github.com/palmier-io/palmier-pro/issues/137) | Support multiple concurrent Palmier tabs/sessions | Planned | `main/application.ts` owns a single `mainWindow`, and the main-process `EditorController` mirror plus the MCP server are process-wide singletons. Multi-session needs per-window controller identity and session routing on the MCP surface first. |
+| [#140](https://github.com/palmier-io/palmier-pro/issues/140) | Multi-provider LLM support (DeepSeek, custom OpenAI-compatible APIs) | Implemented | `main/ai/openai-compatible.ts` speaks `/chat/completions` with tool calling over `fetch`, no vendor SDK added. Presets cover OpenAI, OpenRouter, Groq, Together, Ollama, and LM Studio, plus a custom endpoint. The same `ToolExecutor` runs regardless of provider. `openai-compatible.test.ts`, `agent.openai-compatible.test.ts`. |
+| [#141](https://github.com/palmier-io/palmier-pro/issues/141) | `{"code":"... Server Error"}` | N/A platform | An error from upstream's hosted chat backend. This port is bring-your-own-key with no Palmier-operated service in the request path. |
+| [#142](https://github.com/palmier-io/palmier-pro/issues/142) | Add Codex CLI agent provider | Planned | The provider registry added for #17/#140 covers HTTP endpoints only. A CLI-subprocess provider is a different transport (spawn, stream, sandbox the working directory) and is not implemented. |
+| [#154](https://github.com/palmier-io/palmier-pro/issues/154) | XML import/export for professional NLE compatibility | Planned | No interchange layer. Tracked jointly with #289 in the parity ledger. |
+| [#155](https://github.com/palmier-io/palmier-pro/issues/155) | Compound clips (nested sequences) | Planned | The project model has a single flat timeline; a clip cannot reference another timeline. Needs a nested-sequence type plus recursive preview and export resolution. |
+| [#156](https://github.com/palmier-io/palmier-pro/issues/156) | Library / Event / Project hierarchy | Planned | Projects are single files opened individually; there is no library container or browser. |
+| [#157](https://github.com/palmier-io/palmier-pro/issues/157) | Named presets for color grading and shot settings | Planned | Depends on the missing effect stack (#97) — there are no grading parameters to name or reuse. |
+| [#158](https://github.com/palmier-io/palmier-pro/issues/158) | Audio editing tools beyond volume control | Planned | Audio support is clip placement, fades, linked A/V, and silence detection. No EQ, compression, or gain automation. |
+| [#164](https://github.com/palmier-io/palmier-pro/issues/164) | Keyboard shortcuts for common editing actions (Premiere/Resolve parity) | Implemented | `shared/editor/shortcuts.ts` is a declarative catalogue with strict modifier matching and a conflict test; the handler dispatches on command id with a compile-time exhaustiveness guard, so an unbound command fails the build. Adds edit-point navigation, mark navigation, snapping, fit-to-window, project I/O, and guide toggles, and a generated shortcut sheet (F1 or `?`). `shortcuts.test.ts`, `edit-points.test.ts`, `timeline-navigation.test.ts`. |
+| [#165](https://github.com/palmier-io/palmier-pro/issues/165) | Noise reduction for audio clips | Planned | Same missing effect stack as #97, on the audio side. |
+| [#166](https://github.com/palmier-io/palmier-pro/issues/166) | Preview ignores aspect ratio; move export to a dedicated workspace panel | Partial | The aspect-ratio half is done: the preview reads the live canvas from project settings and resizes with it, and the compositor composites at the project canvas, so a ratio change shows immediately. The second half — export as a dedicated workspace panel rather than a modal — is still planned; export remains `ExportDialog`. |
+| [#167](https://github.com/palmier-io/palmier-pro/issues/167) | Viewer guides for the preview canvas | Implemented | `shared/preview/guides.ts` holds normalized geometry for a centre cross, thirds, a grid, and SMPTE action/title safe areas, with the cross aspect-corrected so its arms stay square on any canvas. `GuideOverlay` draws it as a non-interactive SVG above the canvas; it is never part of compositor or exporter input, so guides cannot be baked into an export. Toggles live in the preview toolbar and on `G` / `Shift+G`. `guides.test.ts`, `ui-guides.test.ts`. |
+| [#173](https://github.com/palmier-io/palmier-pro/issues/173) | Google sign-in stalls on macOS 26 | N/A platform | Depends on Clerk and `ASWebAuthenticationSession`. This port has no account system or OAuth flow; keys are user-supplied and stored via DPAPI. |
+| [#174](https://github.com/palmier-io/palmier-pro/issues/174) | Auto Remove Silence: detect and ripple-delete silent regions | Implemented | On-device RMS envelope detection (FFmpeg feed into a pure `SilenceDetector`), ripple close through a snapshot-undoable `ReplaceClipsCommand`, plus Inspector and `remove_silence` agent paths, both resolving the same saved Minimum Pause / Speech Padding / Threshold controls (PR #426). `silence-detector.test.ts`, `remove-silence.test.ts`, `silence-settings.test.ts`, `executor.silence.test.ts`. |
+| [#195](https://github.com/palmier-io/palmier-pro/issues/195) | Request for Windows Support | Implemented | The purpose of this repository. x64 portable plus x64/arm64 NSIS installers. |
+| [#211](https://github.com/palmier-io/palmier-pro/issues/211) | Support auto save on change | Implemented | Debounced crash-recovery autosave writes an atomic snapshot through the serialized project writer and is cleared on a clean explicit save. `useAutosave`, `main/ipc/autosave.ts`, `project-writer.test.ts`. |
+| [#212](https://github.com/palmier-io/palmier-pro/issues/212) | Playback speed beyond 0.25x | Implemented | `shared/editor/playback-rate.ts` owns the presets (0.25x through 10x), normalizes any rate at the store boundary so a non-finite value cannot poison the frame accumulator, and centralizes J/K/L shuttle behavior. The playback loop also clamps catch-up to 250 ms so returning from a background tab cannot trigger a thousand-iteration render burst. `playback-rate.test.ts`. |
+| [#222](https://github.com/palmier-io/palmier-pro/issues/222) | Intel Mac: "incorrect executable format" (binary is arm64-only) | N/A platform | A Mach-O fat-binary packaging problem. Windows publishes separate x64 and arm64 artifacts. |
+| [#252](https://github.com/palmier-io/palmier-pro/issues/252) | Sharing an idea for caption transcription | Planned | Depends on the absent transcription and caption subsystems (#39, #91). |
+| [#262](https://github.com/palmier-io/palmier-pro/issues/262) | Windows help | Implemented | Same request as #195; this port is the answer. |
+| [#264](https://github.com/palmier-io/palmier-pro/issues/264) | Agent crash: out-of-range integer frame arg traps Int arithmetic | Implemented | Frame arguments are validated at the Zod boundary (finite, integer, within `[0, MAX_FRAME]`), clamped again in `ToolExecutor`, and guarded in `EditorController` via `clampFrame`/`asValidFrame`. `safe-number.test.ts`, `controller.overflow.test.ts` including the upstream `1e19` repro. |
+| [#286](https://github.com/palmier-io/palmier-pro/issues/286) | Ability to restructure parts | Partial | The request is workspace layout, in CapCut's terms: rearrange the panels, detach the chat into its own window, or reduce the view to just the timeline and video. Nothing here is platform-specific, so it applies in full. Hiding panels already worked from the title bar, and that layout is now persisted, so "only the timeline and video in view" survives a restart instead of resetting on every launch — the reduced layout was otherwise something a user had to rebuild each session. Stored flags are narrowed on read, and a panel the saved layout does not mention falls back to its default, so a layout written by a build with a different set of panels still loads. Missing: reordering the panels, grouping them as tabs, detaching one into a separate window, and resizable splitters. `store/ui.ts`, `ui-panels.test.ts`. |
+| [#287](https://github.com/palmier-io/palmier-pro/issues/287) | Custom STT | Planned | Requires the transcription subsystem (#39) plus a pluggable STT provider, neither of which exists. |
+| [#289](https://github.com/palmier-io/palmier-pro/issues/289) | XML imports and exports | Planned | Duplicate of #154 in substance; tracked as one interchange work item. |
+| [#302](https://github.com/palmier-io/palmier-pro/issues/302) | Local MCP batch reel production: headless/stability + `manage_tracks` mis-targeting | Partial | The mis-targeting half does not apply: there is no `manage_tracks` tool, and every track-addressing tool takes a stable track id rather than an index, which is the fix upstream landed in PR #307. Stability is covered by the #58 row. Missing: a headless or windowless mode — the MCP server currently requires the Electron app to be running with a window. |
+| [#310](https://github.com/palmier-io/palmier-pro/issues/310) | Hermes / Herm MCP client integration | Planned | The stdio MCP server is client-agnostic and `generateMcpConfig` emits a launch config, so a compliant client can already attach. No Hermes-specific config generation, install flow, or verification exists. |
+
+## Implementation notes
+
+Detailed notes for adopted work. Older entries are retained for provenance.
+
+### #68 — source fps versus timeline fps
+
+`MediaAsset.duration`, `Clip.inPoint`, `Clip.outPoint`, and `Clip.durationFrames`
+are all stored in **project** frames. The preview previously converted a
+project-frame offset into seconds by dividing by the *asset* fps, so a 60 fps
+source in a 30 fps timeline sought to half the intended time, and a 24 fps source
+overshot by 1.25x — far enough on a long clip to seek past EOF, which made FFmpeg
+scan the file until the five-second timeout and presented as a hang.
+
+The fix introduces one shared model (`shared/media/source-time.ts`) and removes
+the ambiguity at the interface: `DecodeRequest` now carries `sourceSeconds`
+rather than a frame index plus an fps to interpret it with. The cache key
+includes the asset, the output dimensions, and the millisecond source time, which
+also closes a cross-size collision that became reachable once project resolution
+could change. Out-of-range seeks are rejected before FFmpeg is spawned, and the
+exporter inserts `fps=<project fps>` ahead of each overlay so sources are
+resampled to the project timebase rather than queueing extra frames.
+
+### #164 — keyboard shortcuts
+
+Bindings live in data, not in a switch statement. `shortcutConflicts()` is
+asserted empty by a test, so two commands can never silently claim one chord, and
+matching is strict about modifiers — `C` razors but `Ctrl+C` is left alone, which
+a test pins down for `Ctrl+C/V/X/F/P/W/R/T`. The handler dispatches on command id
+through a `switch` with a `never` exhaustiveness guard, so adding a command
+without handling it fails the build instead of shipping a dead key.
+
+Two incidental fixes came out of it: `End` landed in the timeline's trailing
+padding rather than on the last frame of material, and `fitToWindow` was not
+clamped to the viewport's zoom ceiling. Fit-to-window also needed a real width —
+the timeline panel now publishes its measured lane width to the store, because
+neither the toolbar nor the keyboard layer can see that element.
+
+### #167 — viewer guides
+
+Geometry is normalized to the unit square, so one set of numbers serves any
+project resolution and the scaled-to-fit preview. The centre cross is the
+exception: its arm length is taken from the shorter edge and converted per axis,
+or it would stretch with the aspect ratio. Guides are drawn by the renderer above
+the canvas and are deliberately absent from compositor and exporter input.
+
+### #17 / #140 — provider configuration
+
+The base URL is the security-relevant field, since it decides where an API key
+and the project's timeline structure are sent. `validateBaseUrl` rejects
+non-`http(s)` schemes, credentials embedded in the URL, a query string or
+fragment on a base URL, and plaintext HTTP to anything that is not a loopback
+address. Loopback HTTP is allowed because local runtimes cannot present a
+certificate and their traffic never leaves the machine — refusing it would rule
+out the main reason to configure a custom endpoint at all. Validation runs in the
+main process as well as the form, because the renderer is not the only thing that
+can reach the IPC channel, and the persisted config file is user-writable.
+
+The settings panel states which category the configured endpoint falls into
+before the assistant is used.
+
+### #89 — fire-and-forget promises
+
+Made a build constraint rather than a one-time sweep. Beyond marking intentional
+detached work, two real defects surfaced:
+
+- `ProjectStore.save()` ignored `result.success`, so a failed write left the
+  project dirty while the caller proceeded as though it had been saved. It now
+  rejects, and `Ctrl+S` surfaces the failure.
+- `useEditorSync` recorded a snapshot as mirrored *before* the IPC call resolved.
+  One transient failure therefore left the main-process controller holding a
+  stale project while the renderer believed it was current — and because the
+  dedupe check then matched, that snapshot was never retried. The Agent and MCP
+  server read that controller, so the visible symptom was tools acting on a stale
+  timeline. `StateMirror` now records a snapshot only after the peer confirms it.
+
+Silent catches that remain are the genuinely ignorable ones — best-effort temp
+file cleanup, audio-context teardown, prefetch misses — and each states why.
+Sustained preview composite failures are now reported once per outage instead of
+being dropped at frame rate.
+
+### Earlier adopted work
+
+| Upstream | Windows status |
+|---|---|
+| [#200](https://github.com/palmier-io/palmier-pro/issues/200) | Fixed with #264 above; same validation chain. |
+| [#182](https://github.com/palmier-io/palmier-pro/issues/182) | Fixed. The exporter no longer trusts exit code 0 — it stats the output and reports `export:error` on a missing or zero-byte file. |
+| [PR #218](https://github.com/palmier-io/palmier-pro/pull/218) | Adopted. `native/src/geometry.rs` is shared by preview and export, and aspect-aware refit now runs on the project-settings change path via `EditorController.applyProjectSettings` (see PR #417 in the parity ledger). |
+| [PR #179](https://github.com/palmier-io/palmier-pro/pull/179) | Applied. Project settings are applied before frame durations are derived; `mediaAssetsFromProbeResults` converts probe seconds using the project fps. |
+| [PR #192](https://github.com/palmier-io/palmier-pro/pull/192) | Noted. Project and media state must be restored before the preview's first composite. |
+| [PR #180](https://github.com/palmier-io/palmier-pro/pull/180) | Noted for the waveform phase: peak-envelope extraction, not duration-based sampling. |
+| [PR #189](https://github.com/palmier-io/palmier-pro/pull/189) | Noted for the captions phase; see #91. |
+| [PR #216](https://github.com/palmier-io/palmier-pro/pull/216), [PR #219](https://github.com/palmier-io/palmier-pro/pull/219) | Partially designed. Generation cache and job tracking exist; persistent in-flight recovery and import placeholders remain planned. |
+| [PR #203](https://github.com/palmier-io/palmier-pro/pull/203), [PR #213](https://github.com/palmier-io/palmier-pro/pull/213) | Shipped. Twelve W3C separable blend modes in the wgpu compositor with an exact CPU fallback, Inspector controls, and a `set_clip_blend_mode` tool that rejects audio. |
+
+## Feature parity backlog
+
+Upstream capabilities worth matching that are not defects. Each has a row in the
+table above.
+
+- Animated / word-timed captions with a max-words-per-caption control (#91).
+- FCPXML / XMEML interchange for Resolve and Final Cut (#154, #289).
+- Text outline, stroke, and caption background styling (#18, #50).
+- Chroma key, noise reduction, and named grading presets — all blocked on a
+  shared effect stack (#97, #165, #157).
+- Compound clips (#155) and a Library/Event/Project hierarchy (#156).
+- 10-bit HDR export (#59).
+- Optional cloud video understanding and AI media labels (#118).
+- A Codex CLI agent provider (#142) and Hermes MCP client integration (#310).
 
 ---
 
-## Resolved / preempted in this repo
-
-| Upstream | Title | Severity | Our status |
-|----------|-------|----------|------------|
-| [#200](https://github.com/palmier-io/palmier-pro/issues/200) | Agent/MCP numeric tool args crash via `Int(Double)` overflow | **Critical (security)** | **Fixed.** All frame args are validated at the Zod boundary (`finite + int + [0, MAX_FRAME]`), clamped again in `ToolExecutor`, and guarded in `EditorController` via `clampFrame`/`asValidFrame`. Tests: `safe-number.test.ts`, `controller.overflow.test.ts` (incl. the exact `1e19` repro). |
-| [#182](https://github.com/palmier-io/palmier-pro/issues/182) | Export silently reports success when the file write fails | Medium (data-loss) | **Fixed.** `Exporter` no longer trusts exit code 0 alone — it `fs.stat`s the output and reports `export:error` if the file is missing or zero-byte. |
-| [#58](https://github.com/palmier-io/palmier-pro/issues/58) | MCP server / UI freezes during long agent tool runs | Medium | **Mitigated by design.** Editor tool calls are pure, bounded state ops; long-running work (decode, export, generation) already runs as async child processes / background jobs off the IPC reply path. Bounded loops (#200) remove the freeze trigger. |
-| [#211](https://github.com/palmier-io/palmier-pro/issues/211) | Lost progress on crash — needs autosave | Medium (data-loss) | **Fixed.** Debounced crash-recovery autosave (`useAutosave` → `project:autosave`) writes an atomic recovery snapshot; cleared on clean save. |
-| [#222](https://github.com/palmier-io/palmier-pro/issues/222) · [#195](https://github.com/palmier-io/palmier-pro/issues/195) · [#220](https://github.com/palmier-io/palmier-pro/issues/220) | Intel Mac / Windows / arch gaps | — | **This project is the Windows answer.** Installer builds **x64 + arm64** NSIS targets. |
-| [#173](https://github.com/palmier-io/palmier-pro/issues/173) | Google sign-in stalls (Clerk/ASWebAuthenticationSession) | High | **N/A by architecture.** No cloud account or OAuth — bring-your-own-key only, so this failure mode cannot exist. |
-
----
-
-## Correctness lessons applied (from merged upstream fixes)
-
-These were upstream PRs (not open bugs) whose lessons we bake in so the bug never appears here.
-
-| Upstream | Lesson | Our status |
-|----------|--------|------------|
-| [#218](https://github.com/palmier-io/palmier-pro/pull/218) | Clips distort on aspect-ratio change; need shared fit math | **Designed in.** A single geometry module (`native/src/geometry.rs`) is shared by preview and export. Aspect-aware refit is tracked for the project-settings change path. |
-| [#179](https://github.com/palmier-io/palmier-pro/pull/179) | Clip durations sized at stale FPS (settings applied after duration calc) | **Noted.** When we add auto-match-on-import, settings must be applied *before* deriving frame durations. |
-| [#192](https://github.com/palmier-io/palmier-pro/pull/192) | Media manifest restored after window mount → clips flash "offline" | **Noted.** Project/media state must be restored before the preview's first composite. |
-| [#180](https://github.com/palmier-io/palmier-pro/pull/180) | Waveform peaks misaligned with audio | **Noted** for the waveform phase (peak-envelope extraction, not duration-based sampling). |
-| [#189](https://github.com/palmier-io/palmier-pro/pull/189) | Caption timing drifts vs. word timestamps | **Noted** for the captions phase (snap phrases to real word timings). |
-| [#216](https://github.com/palmier-io/palmier-pro/pull/216) · [#219](https://github.com/palmier-io/palmier-pro/pull/219) | Generation/import jobs not recoverable after restart; no progress placeholders | **Partially designed.** Generation cache + job tracking exist; persistent in-flight recovery + import placeholders are tracked for the generation phase. |
-| [#188](https://github.com/palmier-io/palmier-pro/pull/188) · [#122](https://github.com/palmier-io/palmier-pro/issues/122) | MCP LAN exposure needs auth | **N/A today / guarded later.** Our MCP server uses **stdio**, not a network socket, so there is no open port. If an HTTP transport is added it must be loopback-only by default with a bearer token. |
-
----
-
-## Feature parity backlog (upstream features worth porting)
-
-Not defects — capabilities Palmier Pro shipped that we should match over time:
-
-- ~~Per-clip **blend modes** ([#203](https://github.com/palmier-io/palmier-pro/pull/203), [#213](https://github.com/palmier-io/palmier-pro/pull/213))~~ — **Shipped.** 12 W3C separable modes in the wgpu compositor with an exact CPU fallback, inspector dropdown + opacity, and a `set_clip_blend_mode` agent tool (audio rejected).
-- ~~**Auto remove silence** ([#175](https://github.com/palmier-io/palmier-pro/pull/175))~~ — **Shipped.** On-device RMS-envelope detection (FFmpeg → pure `SilenceDetector`), ripple-close via a snapshot-undoable `ReplaceClipsCommand`, Inspector "Remove Silence" button, and a `remove_silence` agent tool.
-- **Animated / word-timed captions** + max-words-per-caption ([#215](https://github.com/palmier-io/palmier-pro/pull/215), [#202](https://github.com/palmier-io/palmier-pro/pull/202)).
-- **Auto remove silence** ([#175](https://github.com/palmier-io/palmier-pro/pull/175)).
-- **FCPXML / XMEML interchange** export for Resolve / Final Cut ([#193](https://github.com/palmier-io/palmier-pro/pull/193), [#197](https://github.com/palmier-io/palmier-pro/pull/197)).
-- Ripple trim / select-forward / track reorder ([#208](https://github.com/palmier-io/palmier-pro/pull/208), [#210](https://github.com/palmier-io/palmier-pro/pull/210), [#209](https://github.com/palmier-io/palmier-pro/pull/209)).
-- Text outline/stroke + caption background ([#190](https://github.com/palmier-io/palmier-pro/pull/190), [#181](https://github.com/palmier-io/palmier-pro/pull/181)).
-- **Skills** system and **batch `split_clips`** agent tool ([#199](https://github.com/palmier-io/palmier-pro/pull/199), [#186](https://github.com/palmier-io/palmier-pro/pull/186)).
-- Optional cloud video understanding (e.g. TwelveLabs `analyze_video`) ([#198](https://github.com/palmier-io/palmier-pro/pull/198)).
-- Playback speeds beyond 0.25x ([#212](https://github.com/palmier-io/palmier-pro/issues/212)).
-
----
-
-_Last audited: 2026-06-20. Re-run the audit against both trackers before each release._
+_Last reconciled with the parity workflow: 2026-07-29._

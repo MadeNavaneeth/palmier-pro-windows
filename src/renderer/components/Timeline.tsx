@@ -21,6 +21,7 @@ export function Timeline() {
   const addTrack = useTimelineStore((s) => s.addTrack);
   const viewport = useTimelineStore((s) => s.viewport);
   const scrollTo = useTimelineStore((s) => s.scrollTo);
+  const setViewportWidth = useTimelineStore((s) => s.setViewportWidth);
 
   const tracksContainerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(800);
@@ -29,7 +30,8 @@ export function Timeline() {
   useDragHandler();
   useKeyboardShortcuts();
 
-  // Track container width for ruler
+  // Track container width for the ruler, and publish it so fit-to-window works
+  // from the toolbar and the keyboard, neither of which can see this element.
   useEffect(() => {
     const el = tracksContainerRef.current;
     if (!el) return;
@@ -37,11 +39,13 @@ export function Timeline() {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         setContainerWidth(entry.contentRect.width);
+        setViewportWidth(entry.contentRect.width);
       }
     });
     observer.observe(el);
+    setViewportWidth(el.clientWidth);
     return () => observer.disconnect();
-  }, []);
+  }, [setViewportWidth]);
 
   // Horizontal scroll handler
   const handleWheel = useCallback(
@@ -71,16 +75,21 @@ export function Timeline() {
   const sortedTracks = [...tracks].sort((a, b) => b.order - a.order);
 
   return (
-    <section className="flex flex-col border-t border-surface-3 bg-surface-1" style={{ height: '240px' }}>
-      {/* Toolbar */}
+    <section className="flex h-[270px] min-h-[160px] shrink-0 flex-col overflow-hidden bg-surface-1">
+      <div className="panel-header flex items-center px-2">
+        <div className="flex h-full items-center gap-1 border-b border-white/80 px-2 text-[10px] font-medium text-text-primary">
+          Timeline 1
+        </div>
+      </div>
+
       <TimelineToolbar />
 
       {/* Tracks area */}
       <div className="flex flex-1 overflow-hidden" onWheel={handleWheel}>
         {/* Track headers (labels) */}
-        <div className="flex w-28 flex-shrink-0 flex-col border-r border-surface-3 bg-surface-2">
+        <div className="flex w-[116px] flex-shrink-0 flex-col border-r border-white/10 bg-surface-2">
           {/* Ruler spacer */}
-          <div className="h-6 border-b border-surface-3" />
+          <div className="h-6 border-b border-white/10" />
           {/* Track headers */}
           {sortedTracks.map((track) => (
             <TrackHeader key={track.id} track={track} />
@@ -89,14 +98,14 @@ export function Timeline() {
           <div className="flex items-center gap-1 px-2 py-1">
             <button
               onClick={() => addTrack('video')}
-              className="rounded px-1 py-0.5 text-2xs text-text-muted transition hover:bg-surface-3 hover:text-text-primary"
+              className="rounded px-1 py-0.5 text-[9px] text-text-muted transition hover:bg-white/[0.08] hover:text-text-primary"
               title="Add video track"
             >
               +V
             </button>
             <button
               onClick={() => addTrack('audio')}
-              className="rounded px-1 py-0.5 text-2xs text-text-muted transition hover:bg-surface-3 hover:text-text-primary"
+              className="rounded px-1 py-0.5 text-[9px] text-text-muted transition hover:bg-white/[0.08] hover:text-text-primary"
               title="Add audio track"
             >
               +A

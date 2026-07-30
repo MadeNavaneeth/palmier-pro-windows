@@ -6,6 +6,7 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
+import { writeProjectFile } from '../services/project-writer';
 
 const VPROJ_EXTENSION = '.vproj';
 const VPROJ_FILTER = { name: 'Palmier Project', extensions: ['vproj'] };
@@ -31,8 +32,18 @@ export function registerProjectHandlers(): void {
       targetPath += VPROJ_EXTENSION;
     }
 
+    // Refuse a payload that is not a project document before touching the file.
+    // The write itself is atomic, so the previous project survives any failure,
+    // but there is no reason to stage bytes we already know are unusable.
+    if (typeof projectJson !== 'string' || !isParsableProject(projectJson)) {
+      return { success: false, error: 'Refusing to save: project payload is not valid project JSON.' };
+    }
+
     try {
-      await fs.writeFile(targetPath, projectJson, 'utf-8');
+      // Serialized + atomic: overlapping saves and autosaves for the same file
+      // queue instead of racing, and a failed write leaves the last good
+      // project on disk (upstream #337 / #403 / #422).
+      await writeProjectFile(targetPath, projectJson);
       return { success: true, path: targetPath };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -66,4 +77,14 @@ export function registerProjectHandlers(): void {
     // TODO: persist recent list via electron-store
     return [];
   });
+}
+
+/** A project document must at minimum parse as a JSON object. */
+function isParsableProject(projectJson: string): boolean {
+  try {
+    const parsed = JSON.parse(projectJson);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
 }

@@ -11,11 +11,18 @@
  */
 
 import { BrowserWindow, ipcMain } from 'electron';
-import { getFrameDecoder } from './frame-decoder';
+import { getFrameDecoder, type DecodeRequest } from './frame-decoder';
 import { blendModeToIndex } from '../../shared/types/blend-mode';
 import { effectiveOpacity } from '../../shared/editor/fade';
 import { wipeParamsFor, slideOffsetFor } from '../../shared/editor/transition';
 import type { Project, Clip, Frame } from '../../shared/types/project';
+import {
+  assetDurationSeconds,
+  clampSourceSeconds,
+  isSourceSeekable,
+  sourceSecondsForTimelineFrame,
+} from '../../shared/media/source-time';
+import { LatestRequestGate, type RequestToken } from './latest-request';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -41,10 +48,14 @@ interface GpuLayerDesc {
 export class PreviewCompositor {
   private project: Project | null = null;
   private nativeAddon: any = null;
+  private readonly requests = new LatestRequestGate<number>();
 
   constructor() {}
 
   setProject(project: Project): void {
+    if (project !== this.project) {
+      this.requests.invalidateAll();
+    }
     this.project = project;
   }
 
@@ -56,17 +67,17 @@ export class PreviewCompositor {
    * Composite a single frame and send the result to the renderer.
    */
   async compositeFrame(frameIndex: Frame, win: BrowserWindow): Promise<void> {
-    if (!this.project) return;
+    const project = this.project;
+    if (!project) return;
 
-    const { settings, timeline } = this.project;
+    const request = this.requests.begin(win.webContents.id);
+    const { settings } = project;
     const { width, height, fps } = settings;
 
     // Find visible clips at this frame (sorted by track order → z-index)
-    const visibleClips = this.getVisibleClips(frameIndex);
+    const visibleClips = this.getVisibleClips(project, frameIndex);
     if (visibleClips.length === 0) {
-      // Send a black frame
-      const blackFrame = Buffer.alloc(width * height * 4);
-      win.webContents.send('preview:frame', blackFrame);
+      this.sendFrame(win, request, Buffer.alloc(width * height * 4));
       return;
     }
 
@@ -76,36 +87,17 @@ export class PreviewCompositor {
     const buffers: Buffer[] = [];
 
     for (const clip of visibleClips) {
-      // Calculate source frame within the clip
-      const clipLocalFrame = frameIndex - clip.startFrame + clip.inPoint;
-
       // Find the media asset
-      const asset = this.project.media.find((m) => m.id === clip.assetId);
+      const asset = project.media.find((m) => m.id === clip.assetId);
       if (!asset) continue;
 
-      let frameBuffer: Buffer | null = null;
+      const decodeRequest = this.decodeRequestForClip(project, clip, frameIndex);
+      if (!decodeRequest) continue;
 
-      if (asset.type === 'image') {
-        // Images: decode once, always the same frame
-        const decoded = await decoder.getFrame({
-          assetPath: asset.path,
-          width: clip.width,
-          height: clip.height,
-          fps: 1,
-          frameIndex: 0,
-        });
-        frameBuffer = decoded?.data || null;
-      } else if (asset.type === 'video') {
-        const decoded = await decoder.getFrame({
-          assetPath: asset.path,
-          width: clip.width,
-          height: clip.height,
-          fps: asset.fps || fps,
-          frameIndex: clipLocalFrame,
-        });
-        frameBuffer = decoded?.data || null;
-      }
+      const decoded = await decoder.getFrame(decodeRequest);
+      const frameBuffer = decoded?.data || null;
 
+      if (!this.requests.isCurrent(request)) return;
       if (!frameBuffer) continue;
 
       const wipe = wipeParamsFor(clip, frameIndex);
@@ -133,8 +125,7 @@ export class PreviewCompositor {
     }
 
     if (layerDescs.length === 0) {
-      const blackFrame = Buffer.alloc(width * height * 4);
-      win.webContents.send('preview:frame', blackFrame);
+      this.sendFrame(win, request, Buffer.alloc(width * height * 4));
       return;
     }
 
@@ -155,34 +146,21 @@ export class PreviewCompositor {
       composited = buffers[0] || Buffer.alloc(width * height * 4);
     }
 
-    // Send to renderer
-    win.webContents.send('preview:frame', composited);
+    this.sendFrame(win, request, composited);
   }
 
   /**
    * Prefetch frames for smooth playback.
    */
   async prefetchFrames(frames: Frame[]): Promise<void> {
-    if (!this.project) return;
+    const project = this.project;
+    if (!project) return;
 
     const decoder = getFrameDecoder();
-    const { settings } = this.project;
+    const { settings } = project;
 
     for (const frameIndex of frames) {
-      const visibleClips = this.getVisibleClips(frameIndex);
-      const requests = visibleClips.map((clip) => {
-        const asset = this.project!.media.find((m) => m.id === clip.assetId);
-        if (!asset) return null;
-        const clipLocalFrame = frameIndex - clip.startFrame + clip.inPoint;
-        return {
-          assetPath: asset.path,
-          width: clip.width,
-          height: clip.height,
-          fps: asset.type === 'image' ? 1 : (asset.fps || settings.fps),
-          frameIndex: asset.type === 'image' ? 0 : clipLocalFrame,
-        };
-      }).filter(Boolean) as any[];
-
+      const requests = this.decodeRequestsForFrame(project, frameIndex);
       if (requests.length > 0) {
         await decoder.prefetch(requests);
       }
@@ -191,20 +169,82 @@ export class PreviewCompositor {
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
-  private getVisibleClips(frameIndex: Frame): Clip[] {
-    if (!this.project) return [];
+  /**
+   * Decode requests for every visible clip at a frame.
+   *
+   * Prefetch and composite share this so a prefetched frame is addressed exactly
+   * as the composite will ask for it; a mismatch would warm the cache with
+   * entries the composite never reads and decode everything twice.
+   */
+  private decodeRequestsForFrame(project: Project, frameIndex: Frame): DecodeRequest[] {
+    const requests: DecodeRequest[] = [];
+    for (const clip of this.getVisibleClips(project, frameIndex)) {
+      const request = this.decodeRequestForClip(project, clip, frameIndex);
+      if (request) requests.push(request);
+    }
+    return requests;
+  }
 
-    return this.project.timeline.clips
+  /**
+   * The single decode request for one clip at one timeline frame, or null when
+   * the clip cannot contribute a frame.
+   */
+  private decodeRequestForClip(
+    project: Project,
+    clip: Clip,
+    frameIndex: Frame,
+  ): DecodeRequest | null {
+    const asset = project.media.find((m) => m.id === clip.assetId);
+    if (!asset) return null;
+    const size = { width: clip.width, height: clip.height };
+
+    // A still image has one frame; there is nothing to seek.
+    if (asset.type === 'image') {
+      return { assetPath: asset.path, ...size, sourceSeconds: 0 };
+    }
+    if (asset.type !== 'video') return null;
+
+    // Timeline frames convert to source seconds through the PROJECT frame rate;
+    // the source's own rate does not affect the seek target (#68).
+    const fps = project.settings.fps;
+    const durationSeconds = assetDurationSeconds(asset, fps);
+    const requested = sourceSecondsForTimelineFrame(clip, frameIndex, fps);
+    // A seek past the end of the source can never produce a frame, and asking
+    // anyway makes the decoder scan the file until it times out.
+    if (!isSourceSeekable(requested, durationSeconds)) return null;
+
+    return {
+      assetPath: asset.path,
+      ...size,
+      sourceSeconds: clampSourceSeconds(requested, durationSeconds, asset.fps),
+    };
+  }
+
+  private getVisibleClips(project: Project, frameIndex: Frame): Clip[] {
+    return project.timeline.clips
       .filter((clip) => {
         const clipEnd = clip.startFrame + clip.durationFrames;
-        return frameIndex >= clip.startFrame && frameIndex < clipEnd;
+        const track = project.timeline.tracks.find((candidate) => candidate.id === clip.trackId);
+        return clip.type !== 'audio'
+          && track?.visible !== false
+          && frameIndex >= clip.startFrame
+          && frameIndex < clipEnd;
       })
       .sort((a, b) => {
         // Sort by track order (video tracks with higher order render on top)
-        const trackA = this.project!.timeline.tracks.find((t) => t.id === a.trackId);
-        const trackB = this.project!.timeline.tracks.find((t) => t.id === b.trackId);
+        const trackA = project.timeline.tracks.find((t) => t.id === a.trackId);
+        const trackB = project.timeline.tracks.find((t) => t.id === b.trackId);
         return (trackA?.order || 0) - (trackB?.order || 0);
       });
+  }
+
+  private sendFrame(
+    win: BrowserWindow,
+    request: RequestToken<number>,
+    frame: Buffer,
+  ): void {
+    if (!this.requests.isCurrent(request) || win.isDestroyed()) return;
+    win.webContents.send('preview:frame', frame);
   }
 }
 
@@ -219,10 +259,12 @@ export function getPreviewCompositor(): PreviewCompositor {
   return compositorInstance;
 }
 
-export function registerPreviewHandlers(): void {
+export function registerPreviewHandlers(getProject: () => Project | null): void {
   const compositor = getPreviewCompositor();
 
   ipcMain.handle('preview:composite-frame', async (event, frameIndex: number) => {
+    const project = getProject();
+    if (project) compositor.setProject(project);
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win) {
       await compositor.compositeFrame(frameIndex, win);
@@ -230,6 +272,8 @@ export function registerPreviewHandlers(): void {
   });
 
   ipcMain.handle('preview:prefetch', async (_event, frames: number[]) => {
+    const project = getProject();
+    if (project) compositor.setProject(project);
     await compositor.prefetchFrames(frames);
   });
 }

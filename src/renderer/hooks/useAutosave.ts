@@ -44,7 +44,10 @@ export function useAutosave(debounceMs: number = DEFAULT_DEBOUNCE_MS) {
       try {
         const data = controller.serialize();
         const { name, filePath } = useProjectStore.getState();
-        window.palmier.project.autosave(name, filePath, data);
+        // Cannot be awaited: `beforeunload` handlers must be synchronous, so the
+        // write is dispatched and the page is allowed to go. The main process
+        // completes it. Marked `void` because there is no one left to catch.
+        void window.palmier.project.autosave(name, filePath, data).catch(() => {});
       } catch {
         /* best effort */
       }
