@@ -15,6 +15,11 @@ import { ipcMain, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
 import type { Project, Clip, Track, Frame } from '../../shared/types/project';
+import {
+  assetDurationSeconds,
+  clampSourceSeconds,
+  clipTrimSeconds,
+} from '../../shared/media/source-time';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -287,9 +292,16 @@ export class Exporter {
         geomFilter = `scale=${sw}:${sh},overlay=x=${Math.round(clip.x)}:y=${Math.round(clip.y)}`;
       }
 
-      // Trim the input clip
-      const trimStart = clip.inPoint / fps;
-      const trimEnd = clip.outPoint / fps;
+      // Trim window in source seconds, through the shared mapping so export and
+      // preview address the source identically (#68).
+      const asset = project.media.find((m) => m.id === clip.assetId);
+      const sourceDuration = asset ? assetDurationSeconds(asset, fps) : 0;
+      const trim = clipTrimSeconds(clip, fps);
+      const trimStart = clampSourceSeconds(trim.start, sourceDuration, asset?.fps);
+      const clampedEnd = sourceDuration > 0 ? Math.min(trim.end, sourceDuration) : trim.end;
+      // Clamping must never collapse the window: an empty FFmpeg trim range
+      // renders the clip as nothing instead of failing loudly.
+      const trimEnd = Math.max(clampedEnd, trimStart + 1 / fps);
 
       const trimmedLabel = `v${i}trimmed`;
       const scaledLabel = `v${i}scaled`;
@@ -318,8 +330,12 @@ export class Exporter {
         fadeChain += `,fade=t=out:st=${st.toFixed(4)}:d=${d.toFixed(4)}:alpha=1`;
       }
 
+      // Resample every source to the project frame rate before compositing.
+      // `overlay` runs on the base input's timebase, so a 60 fps source dropped
+      // onto a 30 fps canvas otherwise queues two source frames per output frame
+      // and the encode crawls or stalls on long 4K clips (#68).
       filters.push(
-        `[${trimmedLabel}]scale=${scaledW}:${scaledH}:flags=bilinear,format=rgba${fadeChain}[${scaledLabel}]`,
+        `[${trimmedLabel}]fps=${fps},scale=${scaledW}:${scaledH}:flags=bilinear,format=rgba${fadeChain}[${scaledLabel}]`,
       );
 
       // Overlay with enable condition (time window)

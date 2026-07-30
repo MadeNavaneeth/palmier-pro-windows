@@ -11,11 +11,17 @@
  */
 
 import { BrowserWindow, ipcMain } from 'electron';
-import { getFrameDecoder } from './frame-decoder';
+import { getFrameDecoder, type DecodeRequest } from './frame-decoder';
 import { blendModeToIndex } from '../../shared/types/blend-mode';
 import { effectiveOpacity } from '../../shared/editor/fade';
 import { wipeParamsFor, slideOffsetFor } from '../../shared/editor/transition';
 import type { Project, Clip, Frame } from '../../shared/types/project';
+import {
+  assetDurationSeconds,
+  clampSourceSeconds,
+  isSourceSeekable,
+  sourceSecondsForTimelineFrame,
+} from '../../shared/media/source-time';
 import { LatestRequestGate, type RequestToken } from './latest-request';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -81,35 +87,15 @@ export class PreviewCompositor {
     const buffers: Buffer[] = [];
 
     for (const clip of visibleClips) {
-      // Calculate source frame within the clip
-      const clipLocalFrame = frameIndex - clip.startFrame + clip.inPoint;
-
       // Find the media asset
       const asset = project.media.find((m) => m.id === clip.assetId);
       if (!asset) continue;
 
-      let frameBuffer: Buffer | null = null;
+      const decodeRequest = this.decodeRequestForClip(project, clip, frameIndex);
+      if (!decodeRequest) continue;
 
-      if (asset.type === 'image') {
-        // Images: decode once, always the same frame
-        const decoded = await decoder.getFrame({
-          assetPath: asset.path,
-          width: clip.width,
-          height: clip.height,
-          fps: 1,
-          frameIndex: 0,
-        });
-        frameBuffer = decoded?.data || null;
-      } else if (asset.type === 'video') {
-        const decoded = await decoder.getFrame({
-          assetPath: asset.path,
-          width: clip.width,
-          height: clip.height,
-          fps: asset.fps || fps,
-          frameIndex: clipLocalFrame,
-        });
-        frameBuffer = decoded?.data || null;
-      }
+      const decoded = await decoder.getFrame(decodeRequest);
+      const frameBuffer = decoded?.data || null;
 
       if (!this.requests.isCurrent(request)) return;
       if (!frameBuffer) continue;
@@ -174,20 +160,7 @@ export class PreviewCompositor {
     const { settings } = project;
 
     for (const frameIndex of frames) {
-      const visibleClips = this.getVisibleClips(project, frameIndex);
-      const requests = visibleClips.map((clip) => {
-        const asset = project.media.find((m) => m.id === clip.assetId);
-        if (!asset) return null;
-        const clipLocalFrame = frameIndex - clip.startFrame + clip.inPoint;
-        return {
-          assetPath: asset.path,
-          width: clip.width,
-          height: clip.height,
-          fps: asset.type === 'image' ? 1 : (asset.fps || settings.fps),
-          frameIndex: asset.type === 'image' ? 0 : clipLocalFrame,
-        };
-      }).filter(Boolean) as any[];
-
+      const requests = this.decodeRequestsForFrame(project, frameIndex);
       if (requests.length > 0) {
         await decoder.prefetch(requests);
       }
@@ -195,6 +168,57 @@ export class PreviewCompositor {
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
+
+  /**
+   * Decode requests for every visible clip at a frame.
+   *
+   * Prefetch and composite share this so a prefetched frame is addressed exactly
+   * as the composite will ask for it; a mismatch would warm the cache with
+   * entries the composite never reads and decode everything twice.
+   */
+  private decodeRequestsForFrame(project: Project, frameIndex: Frame): DecodeRequest[] {
+    const requests: DecodeRequest[] = [];
+    for (const clip of this.getVisibleClips(project, frameIndex)) {
+      const request = this.decodeRequestForClip(project, clip, frameIndex);
+      if (request) requests.push(request);
+    }
+    return requests;
+  }
+
+  /**
+   * The single decode request for one clip at one timeline frame, or null when
+   * the clip cannot contribute a frame.
+   */
+  private decodeRequestForClip(
+    project: Project,
+    clip: Clip,
+    frameIndex: Frame,
+  ): DecodeRequest | null {
+    const asset = project.media.find((m) => m.id === clip.assetId);
+    if (!asset) return null;
+    const size = { width: clip.width, height: clip.height };
+
+    // A still image has one frame; there is nothing to seek.
+    if (asset.type === 'image') {
+      return { assetPath: asset.path, ...size, sourceSeconds: 0 };
+    }
+    if (asset.type !== 'video') return null;
+
+    // Timeline frames convert to source seconds through the PROJECT frame rate;
+    // the source's own rate does not affect the seek target (#68).
+    const fps = project.settings.fps;
+    const durationSeconds = assetDurationSeconds(asset, fps);
+    const requested = sourceSecondsForTimelineFrame(clip, frameIndex, fps);
+    // A seek past the end of the source can never produce a frame, and asking
+    // anyway makes the decoder scan the file until it times out.
+    if (!isSourceSeekable(requested, durationSeconds)) return null;
+
+    return {
+      assetPath: asset.path,
+      ...size,
+      sourceSeconds: clampSourceSeconds(requested, durationSeconds, asset.fps),
+    };
+  }
 
   private getVisibleClips(project: Project, frameIndex: Frame): Clip[] {
     return project.timeline.clips
