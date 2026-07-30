@@ -10,6 +10,8 @@
  */
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
+import { GuideOverlay } from './preview/GuideOverlay';
+import { useUiStore } from '../store/ui';
 
 interface PreviewCanvasProps {
   /** Project canvas width in pixels */
@@ -26,6 +28,7 @@ export function PreviewCanvas({ width, height, emptyMessage }: PreviewCanvasProp
   const rafRef = useRef<number>(0);
   const pendingFrameRef = useRef<Uint8ClampedArray | null>(null);
   const [displayScale, setDisplayScale] = useState(1);
+  const guides = useUiStore((s) => s.guides);
 
   // Compute display scale to fit container
   useEffect(() => {
@@ -118,6 +121,13 @@ export function PreviewCanvas({ width, height, emptyMessage }: PreviewCanvasProp
           imageRendering: 'auto',
         }}
         className="block"
+      />
+      <GuideOverlay
+        guides={guides}
+        width={width}
+        height={height}
+        displayWidth={displayWidth}
+        displayHeight={displayHeight}
       />
       {emptyMessage && (
         <div className="pointer-events-none absolute text-center text-xs text-text-muted">
