@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+/*
+ * Single source of truth for the design tokens.
+ *
+ * Tailwind v4 is configured entirely from the @theme block below. There is
+ * deliberately no `@config` directive: a `tailwind.config.ts` used to exist and
+ * was silently ignored, so any token it declared but this block did not —
+ * `text-2xs`, the fade-in and slide-up animations — resolved to nothing and
+ * quietly fell back to the inherited 12px body size. Its palette had also
+ * diverged (an indigo accent against the warm accent used here), so
+ * re-attaching it would have reverted a deliberate redesign. It was removed
+ * instead, and the tokens the app actually uses were folded in here.
+ */
+
 @theme {
   --color-surface-0: #0a0a0a;
   --color-surface-1: #161616;
@@ -15,6 +28,34 @@
   --color-text-muted: rgba(255, 255, 255, 0.54);
   --font-sans: "Segoe UI Variable", "Segoe UI", "system-ui", "sans-serif";
   --font-mono: "Cascadia Mono", "Consolas", "monospace";
+
+  /* Caption size for dense inspector rows and timeline labels. 10px matches the
+     explicit `text-[10px]` already used throughout, so both spellings agree. */
+  --text-2xs: 0.625rem;
+  --text-2xs--line-height: 0.875rem;
+
+  --animate-fade-in: fade-in 150ms ease-out;
+  --animate-slide-up: slide-up 200ms ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @layer base {
