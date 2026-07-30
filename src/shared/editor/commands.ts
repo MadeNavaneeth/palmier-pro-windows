@@ -6,7 +6,6 @@
  * This is the core design inherited from Palmier Pro.
  */
 
-import type { BlendMode } from '../types/blend-mode';
 import type { Project, Clip, Track, Frame, MediaAsset } from '../types/project';
 
 // ─── Command interface ───────────────────────────────────────────────────────
@@ -393,89 +392,59 @@ export class SetPlayheadCommand implements Command {
 }
 
 
-export class SetBlendModeCommand implements Command {
-  readonly name = 'setBlendMode';
-  private previousMode: BlendMode | undefined;
-  private found = false;
+/**
+ * Apply a pre-resolved set of clip replacements in one undoable step.
+ *
+ * This is the single command behind every clip-property edit — blend mode,
+ * opacity, fades — whether the edit targets one clip or a whole selection.
+ * Windows translation of upstream PR #419 ("batch bulk clip property
+ * mutations"): the caller resolves each target clip once, then execute/undo
+ * touch the clip array in a single pass instead of running one linear search
+ * per clip per property.
+ *
+ * Clips outside the edit are passed through by reference, so restyling three
+ * clips does not invalidate every other clip for React consumers.
+ */
+export class SetClipPropertiesCommand implements Command {
+  readonly name = 'setClipProperties';
+  private previousClips = new Map<string, Clip>();
+  private captured = false;
 
   constructor(
-    private clipId: string,
-    private blendMode: BlendMode,
+    private nextClips: Map<string, Clip>,
+    private label: string,
   ) {}
 
   execute(project: Project): Project {
-    const clips = project.timeline.clips.map((c) => {
-      if (c.id !== this.clipId) return c;
-      this.previousMode = c.blendMode;
-      this.found = true;
-      // 'normal' clears the property to keep saved projects clean.
-      const next = { ...c };
-      if (this.blendMode === 'normal') {
-        delete next.blendMode;
-      } else {
-        next.blendMode = this.blendMode;
+    if (!this.captured) {
+      for (const clip of project.timeline.clips) {
+        if (this.nextClips.has(clip.id)) this.previousClips.set(clip.id, clip);
       }
-      return next;
-    });
-    if (!this.found) return project;
-    return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };
+      this.captured = true;
+    }
+    return this.replace(project, this.nextClips);
   }
 
   undo(project: Project): Project {
-    if (!this.found) return project;
-    const clips = project.timeline.clips.map((c) => {
-      if (c.id !== this.clipId) return c;
-      const next = { ...c };
-      if (this.previousMode === undefined || this.previousMode === 'normal') {
-        delete next.blendMode;
-      } else {
-        next.blendMode = this.previousMode;
-      }
-      return next;
-    });
-    return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };
+    return this.replace(project, this.previousClips);
+  }
+
+  private replace(project: Project, source: Map<string, Clip>): Project {
+    const clips = project.timeline.clips.map((clip) => source.get(clip.id) ?? clip);
+    return {
+      ...project,
+      timeline: { ...project.timeline, clips },
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   describe(): string {
-    return `Set blend mode to "${this.blendMode}"`;
+    return this.label;
   }
 }
 
 
-export class SetOpacityCommand implements Command {
-  readonly name = 'setOpacity';
-  private previousOpacity = 1;
-  private found = false;
 
-  constructor(
-    private clipId: string,
-    private opacity: number,
-  ) {}
-
-  execute(project: Project): Project {
-    const clamped = Math.max(0, Math.min(1, this.opacity));
-    const clips = project.timeline.clips.map((c) => {
-      if (c.id !== this.clipId) return c;
-      this.previousOpacity = c.opacity;
-      this.found = true;
-      return { ...c, opacity: clamped };
-    });
-    if (!this.found) return project;
-    return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };
-  }
-
-  undo(project: Project): Project {
-    if (!this.found) return project;
-    const clips = project.timeline.clips.map((c) =>
-      c.id === this.clipId ? { ...c, opacity: this.previousOpacity } : c,
-    );
-    return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };
-  }
-
-  describe(): string {
-    return `Set opacity to ${Math.round(this.opacity * 100)}%`;
-  }
-}
 
 
 /**
@@ -592,59 +561,3 @@ export class ReplaceProjectCommand implements Command {
 }
 
 
-/**
- * Set a clip's fade-in / fade-out lengths (frames). Either may be left
- * undefined to keep its current value. Lengths are clamped so they can't
- * exceed the clip duration.
- */
-export class SetFadeCommand implements Command {
-  readonly name = 'setFade';
-  private prevIn: Frame | undefined;
-  private prevOut: Frame | undefined;
-  private found = false;
-
-  constructor(
-    private clipId: string,
-    private fadeInFrames: Frame | undefined,
-    private fadeOutFrames: Frame | undefined,
-  ) {}
-
-  execute(project: Project): Project {
-    const clips = project.timeline.clips.map((c) => {
-      if (c.id !== this.clipId) return c;
-      this.prevIn = c.fadeInFrames;
-      this.prevOut = c.fadeOutFrames;
-      this.found = true;
-
-      const next = { ...c };
-      const max = c.durationFrames;
-      if (this.fadeInFrames !== undefined) {
-        const v = Math.max(0, Math.min(max, Math.round(this.fadeInFrames)));
-        if (v <= 0) delete next.fadeInFrames; else next.fadeInFrames = v;
-      }
-      if (this.fadeOutFrames !== undefined) {
-        const v = Math.max(0, Math.min(max, Math.round(this.fadeOutFrames)));
-        if (v <= 0) delete next.fadeOutFrames; else next.fadeOutFrames = v;
-      }
-      return next;
-    });
-    if (!this.found) return project;
-    return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };
-  }
-
-  undo(project: Project): Project {
-    if (!this.found) return project;
-    const clips = project.timeline.clips.map((c) => {
-      if (c.id !== this.clipId) return c;
-      const next = { ...c };
-      if (this.prevIn === undefined) delete next.fadeInFrames; else next.fadeInFrames = this.prevIn;
-      if (this.prevOut === undefined) delete next.fadeOutFrames; else next.fadeOutFrames = this.prevOut;
-      return next;
-    });
-    return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };
-  }
-
-  describe(): string {
-    return 'Set clip fades';
-  }
-}

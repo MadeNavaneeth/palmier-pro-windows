@@ -9,11 +9,15 @@
  *
  * The recovery file is separate from the user's .vproj so a crash mid-write can
  * never corrupt the real project, and it is cleared on a clean explicit save.
+ *
+ * The atomic + serialized write contract itself lives in
+ * `main/services/project-writer.ts`, shared with explicit project saves.
  */
 
 import { ipcMain, app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
+import { writeProjectFile } from '../services/project-writer';
 
 interface RecoverySnapshot {
   savedAt: string; // ISO timestamp
@@ -30,15 +34,6 @@ function recoveryFile(): string {
   return path.join(recoveryDir(), 'autosave.json');
 }
 
-/** Atomic write: write to a temp file then rename, so a crash mid-write
- * cannot leave a half-written (corrupt) recovery file. */
-async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, contents, 'utf-8');
-  await fs.rename(tmp, filePath);
-}
-
 export function registerAutosaveHandlers(): void {
   // Renderer pushes a debounced snapshot of the current project.
   ipcMain.handle(
@@ -51,7 +46,10 @@ export function registerAutosaveHandlers(): void {
           projectName,
           data,
         };
-        await atomicWrite(recoveryFile(), JSON.stringify(snapshot));
+        // Serialized through the shared write coordinator: a debounced
+        // autosave burst can no longer collide with itself on one temp file,
+        // and each snapshot lands whole (upstream #337 / #422).
+        await writeProjectFile(recoveryFile(), JSON.stringify(snapshot));
         return { success: true, savedAt: snapshot.savedAt };
       } catch (err: any) {
         return { success: false, error: err.message };
