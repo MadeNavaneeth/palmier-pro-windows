@@ -91,3 +91,61 @@ describe('EditorController', () => {
     expect(ctrl2.getTracks()).toHaveLength(3);
   });
 });
+
+/**
+ * Placement onto a track that does not exist (#302, upstream PR #307's
+ * mis-targeting class).
+ *
+ * Tracks are what the timeline, the compositor and the exporter iterate, so a
+ * clip naming an unknown track is invisible everywhere while still counting in
+ * the clip list and toward the project duration. Reporting success for that is
+ * worse than refusing: an agent that invented the track id is told the edit
+ * landed and goes on to build on it.
+ */
+describe('EditorController.addClip track targeting', () => {
+  function withAsset() {
+    const ctrl = new EditorController();
+    ctrl.addMedia({
+      id: 'asset-1',
+      path: 'C:\\media\\video.mp4',
+      filename: 'video.mp4',
+      type: 'video',
+      duration: 300,
+      fileSize: 1000,
+      addedAt: '2026-07-29T00:00:00.000Z',
+    });
+    return ctrl;
+  }
+
+  it('refuses an unknown track instead of creating an unreachable clip', () => {
+    const ctrl = withAsset();
+
+    const clipId = ctrl.addClip({ assetId: 'asset-1', trackId: 'no-such-track', startFrame: 0 });
+
+    expect(clipId).toBe('');
+    expect(ctrl.getClips()).toHaveLength(0);
+    // Nothing happened, so there is nothing to undo either.
+    expect(ctrl.canUndo()).toBe(false);
+  });
+
+  it('still places onto a track that exists', () => {
+    const ctrl = withAsset();
+    const second = ctrl.addTrack('video', 'Video 2');
+
+    const onDefault = ctrl.addClip({ assetId: 'asset-1', trackId: 'v1', startFrame: 0 });
+    const onSecond = ctrl.addClip({ assetId: 'asset-1', trackId: second, startFrame: 300 });
+
+    expect(onDefault).not.toBe('');
+    expect(onSecond).not.toBe('');
+    expect(ctrl.getClips().map((clip) => clip.trackId)).toContain(second);
+  });
+
+  it('leaves no clip referencing a track that is not in the project', () => {
+    const ctrl = withAsset();
+    ctrl.addClip({ assetId: 'asset-1', trackId: 'v1', startFrame: 0 });
+    ctrl.addClip({ assetId: 'asset-1', trackId: 'ghost', startFrame: 300 });
+
+    const trackIds = new Set(ctrl.getTracks().map((track) => track.id));
+    expect(ctrl.getClips().every((clip) => trackIds.has(clip.trackId))).toBe(true);
+  });
+});
