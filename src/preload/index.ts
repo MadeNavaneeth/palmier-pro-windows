@@ -7,6 +7,7 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import type { SilenceConfig } from '../shared/audio/silence-detector';
 
 // ─── Type-safe API exposed to the renderer as `window.palmier` ───────────────
 
@@ -37,8 +38,13 @@ const api = {
     probe: (filePath: string) => ipcRenderer.invoke('media:probe', filePath),
     thumbnail: (filePath: string, outputDir: string, timestamp?: number) =>
       ipcRenderer.invoke('media:thumbnail', filePath, outputDir, timestamp),
-    detectSilence: (filePath: string, config?: Record<string, number>) =>
+    // `config` overrides the saved silence controls for this call only; omit it
+    // to use them as-is (upstream PR #426).
+    detectSilence: (filePath: string, config?: Partial<SilenceConfig>) =>
       ipcRenderer.invoke('audio:detect-silence', filePath, config),
+    getSilenceSettings: () => ipcRenderer.invoke('audio:get-silence-settings'),
+    setSilenceSettings: (update: Partial<SilenceConfig>) =>
+      ipcRenderer.invoke('audio:set-silence-settings', update),
   },
 
   // ── System ───────────────────────────────────────────────────────────────────
@@ -64,8 +70,15 @@ const api = {
   ai: {
     chat: (messages: unknown[], provider: string) =>
       ipcRenderer.invoke('ai:chat', messages, provider),
+    /** Stop the turn in progress (#58). Resolves whether there was one. */
+    cancel: (): Promise<{ cancelled: boolean }> => ipcRenderer.invoke('ai:cancel'),
     setApiKey: (provider: string, key: string) =>
       ipcRenderer.invoke('ai:set-key', provider, key),
+    /** Persist a provider's base URL and model (#17, #140). Validated in main. */
+    setProviderConfig: (
+      provider: string,
+      config: { kind: string; baseUrl?: string; model: string },
+    ) => ipcRenderer.invoke('ai:set-provider-config', provider, config),
     getProviders: () => ipcRenderer.invoke('ai:get-providers'),
   },
 

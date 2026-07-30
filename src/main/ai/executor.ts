@@ -7,13 +7,102 @@ import { z } from 'zod';
 import { tools, getToolByName } from './tools';
 import { clampFrame } from '../../shared/utils/safe-number';
 import { detectSilenceForFile } from '../media/audio-envelope';
-import { DEFAULT_SILENCE_CONFIG } from '../../shared/audio/silence-detector';
+import { loadSilenceSettings } from '../media/silence-settings';
+import { resolveSilenceConfig } from '../../shared/audio/silence-detector';
+import {
+  MAX_CANVAS_EDGE,
+  aspectRatioLabel,
+  findQualityPreset,
+  parseAspectRatio,
+  resolutionForAspectRatio,
+  resolutionForQuality,
+} from '../../shared/project/aspect-ratio';
+import type { ProjectSettings } from '../../shared/types/project';
 import type { EditorController } from '../../shared/editor/controller';
 
 export interface ToolResult {
   success: boolean;
   data?: unknown;
   error?: string;
+}
+
+/**
+ * Turn `set_project_settings` arguments into concrete fps/width/height
+ * (upstream PR #417's `validateProjectSettings` + `resolve(for:)`).
+ *
+ * The rules, all of which are refusals rather than silent corrections:
+ *
+ *   - at least one field must be present;
+ *   - width and height only arrive together;
+ *   - explicit dimensions cannot be mixed with aspectRatio or quality, since
+ *     that would make the resulting canvas ambiguous;
+ *   - aspectRatio preserves the current short edge unless quality overrides it.
+ *
+ * Exported so the contract is testable without an agent transport.
+ */
+export function resolveProjectSettings(
+  args: {
+    fps?: number;
+    width?: number;
+    height?: number;
+    aspectRatio?: string;
+    quality?: string;
+  },
+  current: ProjectSettings,
+): { fps?: number; width?: number; height?: number } {
+  const hasWidth = args.width !== undefined;
+  const hasHeight = args.height !== undefined;
+
+  if (
+    args.fps === undefined
+    && !hasWidth
+    && !hasHeight
+    && args.aspectRatio === undefined
+    && args.quality === undefined
+  ) {
+    throw new Error('Provide at least one of: fps, width, height, aspectRatio, quality');
+  }
+  if (hasWidth !== hasHeight) {
+    throw new Error('Provide both width and height');
+  }
+  if (hasWidth && (args.aspectRatio !== undefined || args.quality !== undefined)) {
+    throw new Error("Explicit dimensions can't be combined with aspectRatio or quality");
+  }
+
+  const quality = args.quality === undefined ? undefined : findQualityPreset(args.quality);
+  if (args.quality !== undefined && !quality) {
+    throw new Error(`Unknown quality '${args.quality}'.`);
+  }
+
+  let size = { width: args.width ?? current.width, height: args.height ?? current.height };
+  if (args.aspectRatio !== undefined) {
+    // parseAspectRatio / resolutionForAspectRatio raise AspectRatioError with a
+    // user-facing message; let it surface unchanged.
+    size = resolutionForAspectRatio(
+      parseAspectRatio(args.aspectRatio),
+      quality?.shortEdge ?? Math.min(current.width, current.height),
+    );
+  } else if (quality) {
+    size = resolutionForQuality(quality, size);
+  }
+
+  const changesResolution = hasWidth || args.aspectRatio !== undefined || quality !== undefined;
+  if (
+    size.width < 1
+    || size.height < 1
+    || (changesResolution && (size.width > MAX_CANVAS_EDGE || size.height > MAX_CANVAS_EDGE))
+  ) {
+    throw new Error(
+      `Resolution must be positive and no larger than ${MAX_CANVAS_EDGE} pixels on either edge`,
+    );
+  }
+
+  return {
+    ...(args.fps === undefined ? {} : { fps: args.fps }),
+    // Leave the resolution untouched when nothing asked to change it, so an
+    // fps-only edit preserves an oversized legacy canvas.
+    ...(changesResolution ? { width: size.width, height: size.height } : {}),
+  };
 }
 
 export class ToolExecutor {
@@ -40,8 +129,23 @@ export class ToolExecutor {
   private async dispatch(name: string, args: any): Promise<ToolResult> {
     switch (name) {
       // ── Read operations ───────────────────────────────────────────────────
-      case 'get_timeline':
-        return { success: true, data: this.editor.getTimeline() };
+      case 'get_timeline': {
+        // The tool contract promises project settings alongside the timeline, and
+        // set_project_settings is only useful if the agent can read the canvas
+        // back (upstream #417).
+        const project = this.editor.getProject();
+        return {
+          success: true,
+          data: {
+            ...project.timeline,
+            settings: project.settings,
+            width: project.settings.width,
+            height: project.settings.height,
+            fps: project.settings.fps,
+            aspectRatio: aspectRatioLabel(project.settings.width, project.settings.height),
+          },
+        };
+      }
 
       case 'get_clips': {
         let clips = this.editor.getClips();
@@ -62,6 +166,17 @@ export class ToolExecutor {
           startFrame: clampFrame(args.startFrame),
           durationFrames: args.durationFrames === undefined ? undefined : clampFrame(args.durationFrames, 1),
         });
+        if (!clipId) {
+          // Naming the tracks that do exist, because the alternative is a model
+          // retrying the same invented id. Reported as a failure rather than a
+          // clip id, so the model does not build on a placement that did not
+          // happen.
+          const available = this.editor.getTracks().map((track) => track.id).join(', ');
+          return {
+            success: false,
+            error: `No track "${String(args.trackId)}". Available tracks: ${available}.`,
+          };
+        }
         return { success: true, data: { clipId } };
       }
 
@@ -87,6 +202,22 @@ export class ToolExecutor {
         return report
           ? { success: true, data: report }
           : { success: false, error: 'Gap is invalid, occupied, blocked, or has no following clips.' };
+      }
+
+      case 'ripple_delete_ranges': {
+        const report = this.editor.rippleDeleteRanges(
+          args.trackId,
+          args.ranges.map(([start, end]: [number, number]) => ({
+            start: clampFrame(start),
+            end: clampFrame(end),
+          })),
+        );
+        return report
+          ? { success: true, data: report }
+          : {
+              success: false,
+              error: 'Range extract could not be applied. Check range order, track locks, and affected clips.',
+            };
       }
 
       case 'ripple_trim_clip': {
@@ -145,12 +276,17 @@ export class ToolExecutor {
         const asset = this.editor.getMedia().find((m) => m.id === clip.assetId);
         if (!asset) return { success: false, error: 'Source media for clip not found.' };
 
-        const config = {
-          ...DEFAULT_SILENCE_CONFIG,
+        // Resolved against the user's saved controls rather than the built-in
+        // defaults, so a no-argument request performs the edit the Inspector
+        // describes; supplied arguments override for this call only and do not
+        // rewrite the controls. Normalizing both layers matters because the MCP
+        // socket is another caller — an out-of-range threshold would otherwise
+        // report the whole clip silent (upstream PR #426).
+        const config = resolveSilenceConfig(loadSilenceSettings(), {
           ...(args.thresholdDb !== undefined ? { thresholdDb: args.thresholdDb } : {}),
           ...(args.minSilenceSeconds !== undefined ? { minSilenceSec: args.minSilenceSeconds } : {}),
           ...(args.edgePaddingSeconds !== undefined ? { edgePaddingSec: args.edgePaddingSeconds } : {}),
-        };
+        });
 
         try {
           const ranges = await detectSilenceForFile(asset.path, config);
@@ -204,6 +340,33 @@ export class ToolExecutor {
         return ok
           ? { success: true, data: { clipId: args.clipId, type: args.type, direction: args.direction } }
           : { success: false, error: 'Clip not found.' };
+      }
+
+      case 'set_project_settings': {
+        let resolved: { fps?: number; width?: number; height?: number };
+        try {
+          resolved = resolveProjectSettings(args, this.editor.getProject().settings);
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+
+        const report = this.editor.applyProjectSettings(resolved);
+        if (!report) {
+          return {
+            success: false,
+            error: `Resolution must be positive and no larger than ${MAX_CANVAS_EDGE} pixels on either edge.`,
+          };
+        }
+        return {
+          success: true,
+          data: {
+            fps: report.fps,
+            resolution: `${report.width}x${report.height}`,
+            aspectRatio: aspectRatioLabel(report.width, report.height),
+            changed: report.changed,
+            ...(report.changed.length === 0 ? { note: 'Settings already matched.' } : {}),
+          },
+        };
       }
 
       case 'undo': {
