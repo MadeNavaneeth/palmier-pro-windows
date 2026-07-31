@@ -6,15 +6,38 @@
  * that component and needs the same switches, so ownership moved here rather
  * than threading callbacks down through the tree.
  *
- * Panel layout toggles stay in App: they are pure presentation and nothing
- * outside App drives them.
+ * Workspace arrangement lives here for a different reason: it is persisted, so it
+ * has to outlive any one component's mount.
  */
 
 import { create } from 'zustand';
 import { asGuideKind, type GuideKind } from '../../shared/preview/guides';
+import {
+  DEFAULT_LAYOUT,
+  asLayoutPreset,
+  type LayoutPreset,
+} from '../../shared/ui/workspace-layout';
 
 const GUIDES_STORAGE_KEY = 'palmier.preview.guides';
 const PANELS_STORAGE_KEY = 'palmier.layout.panels';
+const LAYOUT_STORAGE_KEY = 'palmier.layout.preset';
+
+/** Persisted layout preset, or the default when unset or unrecognized. */
+function loadLayout(): LayoutPreset {
+  try {
+    return asLayoutPreset(window.localStorage?.getItem(LAYOUT_STORAGE_KEY)) ?? DEFAULT_LAYOUT;
+  } catch {
+    return DEFAULT_LAYOUT;
+  }
+}
+
+function saveLayout(preset: LayoutPreset): void {
+  try {
+    window.localStorage?.setItem(LAYOUT_STORAGE_KEY, preset);
+  } catch {
+    // A full or unavailable storage quota must not break the switch itself.
+  }
+}
 
 /** The side panels a user can show or hide (upstream #286). */
 export type PanelKey = 'media' | 'inspector' | 'agent';
@@ -23,7 +46,7 @@ export type PanelVisibility = Record<PanelKey, boolean>;
 
 const PANEL_KEYS: readonly PanelKey[] = ['media', 'inspector', 'agent'];
 
-/** Media and Inspector out, Agent in — the first-run editing layout. */
+/** Media and Inspector in, Agent out — the first-run editing layout. */
 const DEFAULT_PANELS: PanelVisibility = { media: true, inspector: true, agent: false };
 
 /**
@@ -108,6 +131,13 @@ interface UiState {
    * than in App so the state survives a remount and can be read from anywhere.
    */
   panels: PanelVisibility;
+  /**
+   * How the workspace is arranged (upstream PR #430).
+   *
+   * Orthogonal to `panels`: the preset decides where things sit, the toggles
+   * decide which of them are present.
+   */
+  layout: LayoutPreset;
 
   openExport: () => void;
   closeExport: () => void;
@@ -121,6 +151,7 @@ interface UiState {
   togglePanel: (panel: PanelKey) => void;
   /** Restore the first-run layout. */
   resetPanels: () => void;
+  setLayout: (preset: LayoutPreset) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -128,6 +159,7 @@ export const useUiStore = create<UiState>((set) => ({
   shortcutHelpOpen: false,
   guides: loadGuides(),
   panels: loadPanels(),
+  layout: loadLayout(),
 
   // Only one modal is meaningful at a time; opening one dismisses the other so
   // a stacked pair can't trap focus or leave an unreachable close button.
@@ -178,5 +210,15 @@ export const useUiStore = create<UiState>((set) => ({
       const next = { ...DEFAULT_PANELS };
       savePanels(next);
       return { panels: next };
+    }),
+
+  setLayout: (preset) =>
+    set((state) => {
+      // Guarded so a bad value from a caller cannot persist and then be read
+      // back as the active layout on the next launch.
+      const next = asLayoutPreset(preset);
+      if (next === null || next === state.layout) return {};
+      saveLayout(next);
+      return { layout: next };
     }),
 }));
