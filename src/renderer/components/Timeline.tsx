@@ -15,7 +15,13 @@ import { TrackHeader } from './timeline/TrackHeader';
 import { PlayheadIndicator } from './timeline/PlayheadIndicator';
 import { SnapLine } from './timeline/SnapLine';
 
-export function Timeline() {
+/**
+ * @param fill Take all the height the parent offers instead of the fixed panel
+ *   height. Set by the `vertical` workspace preset when nothing else shares the
+ *   timeline's column, matching upstream, where collapsing a split view item hands
+ *   its space to the remaining siblings rather than leaving a hole.
+ */
+export function Timeline({ fill = false }: { fill?: boolean } = {}) {
   const tracks = useTimelineStore((s) => s.getTracks());
   const clips = useTimelineStore((s) => s.getClips());
   const addTrack = useTimelineStore((s) => s.addTrack);
@@ -75,7 +81,14 @@ export function Timeline() {
   const sortedTracks = [...tracks].sort((a, b) => b.order - a.order);
 
   return (
-    <section className="flex h-[270px] min-h-[160px] shrink-0 flex-col overflow-hidden bg-surface-1">
+    // `min-h-*` comes from exactly one branch: Tailwind resolves duplicate
+    // properties by stylesheet order, not class order, so listing it in the base
+    // string as well would make the winner depend on build output.
+    <section
+      className={`flex flex-col overflow-hidden bg-surface-1 ${
+        fill ? 'min-h-0 flex-1' : 'h-[270px] min-h-[160px] shrink-0'
+      }`}
+    >
       <div className="panel-header flex items-center px-2">
         <div className="flex h-full items-center gap-1 border-b border-white/80 px-2 text-[10px] font-medium text-text-primary">
           Timeline 1

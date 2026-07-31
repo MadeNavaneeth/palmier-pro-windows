@@ -69,6 +69,9 @@ export type ShortcutId =
   | 'toggleSnap'
   | 'toggleThirds'
   | 'toggleSafeAreas'
+  | 'layoutDefault'
+  | 'layoutMedia'
+  | 'layoutVertical'
   | 'newProject'
   | 'openProject'
   | 'saveProject'
@@ -157,6 +160,26 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
     label: 'Toggle title and action safe guides',
     category: 'View',
     bindings: [{ key: 'g', shift: true }],
+  },
+  // Workspace arrangements, on Ctrl plus a digit to match upstream's Cmd+1/2/3
+  // (upstream PR #430).
+  {
+    id: 'layoutDefault',
+    label: 'Default layout',
+    category: 'View',
+    bindings: [{ key: '1', ctrl: true }],
+  },
+  {
+    id: 'layoutMedia',
+    label: 'Media layout',
+    category: 'View',
+    bindings: [{ key: '2', ctrl: true }],
+  },
+  {
+    id: 'layoutVertical',
+    label: 'Vertical layout',
+    category: 'View',
+    bindings: [{ key: '3', ctrl: true }],
   },
 
   // ── Project ────────────────────────────────────────────────────────────────

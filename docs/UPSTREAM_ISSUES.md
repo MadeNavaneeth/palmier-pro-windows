@@ -6,9 +6,9 @@ Every open issue captured in
 the high-priority ledger live in [`UPSTREAM_PARITY.md`](./UPSTREAM_PARITY.md);
 this file is the exhaustive per-issue record.
 
-- Upstream baseline: `457e853a789e16eb104a0bfb43d2485d9e1ac0c8`
-- Open issues captured: 50
-- Triage date: 2026-07-29
+- Upstream baseline: `8d5648d893c3cd9b71677c5acea44c08b9616f7c`
+- Open issues captured: 51
+- Triage date: 2026-07-31
 
 ## Dispositions
 
@@ -24,11 +24,11 @@ this file is the exhaustive per-issue record.
 | Disposition | Count |
 |---|---|
 | Implemented | 14 |
-| Partial | 4 |
+| Partial | 5 |
 | Planned | 21 |
 | N/A platform | 11 |
 | Needs investigation | 0 |
-| **Total** | **50** |
+| **Total** | **51** |
 
 Every open issue in the captured snapshot now has a concrete disposition; none
 remain under investigation.
@@ -55,7 +55,7 @@ Three `Partial` issues also moved substantially without changing disposition:
 | Upstream | What landed | What is still missing |
 |---|---|---|
 | [#58](https://github.com/palmier-io/palmier-pro/issues/58) | An in-flight agent turn can be stopped: `ai:cancel`, a Stop button, and signal checks between rounds and before each remaining tool call. A long multi-step turn is now covered by a stress suite that pins replayed history to linear growth, project consistency across dozens of mutations, and undoability of the whole run (`main/ai/agent.ts`, `agent.stress.test.ts`) | Nothing outstanding for the freeze itself; a headless mode for batch MCP production remains under #302 |
-| [#286](https://github.com/palmier-io/palmier-pro/issues/286) | The panel layout is persisted, so a reduced "timeline and video only" workspace survives a restart (`store/ui.ts`) | Reordering, tab grouping, detaching a panel into its own window, resizable splitters |
+| [#286](https://github.com/palmier-io/palmier-pro/issues/286) | The panel layout is persisted, so a reduced "timeline and video only" workspace survives a restart, and the three named arrangements from PR #430 (`default`, `media`, `vertical`) are switchable from the title bar or `Ctrl+1/2/3` (`shared/ui/workspace-layout.ts`, `store/ui.ts`) | Tab grouping, detaching a panel into its own window, resizable splitters with remembered divider positions |
 | [PR #426](https://github.com/palmier-io/palmier-pro/pull/426) | Inspector sliders for Minimum Pause, Speech Padding and Threshold, with the saved settings owned by the main process so a no-argument `remove_silence` matches the visible controls (`main/media/silence-settings.ts`) | Scoped removal over a selection or marked range, and timeline shading of the removable spans |
 
 ## Complete disposition table
@@ -109,11 +109,12 @@ Ordered by issue number.
 | [#252](https://github.com/palmier-io/palmier-pro/issues/252) | Sharing an idea for caption transcription | Planned | Depends on the absent transcription and caption subsystems (#39, #91). |
 | [#262](https://github.com/palmier-io/palmier-pro/issues/262) | Windows help | Implemented | Same request as #195; this port is the answer. |
 | [#264](https://github.com/palmier-io/palmier-pro/issues/264) | Agent crash: out-of-range integer frame arg traps Int arithmetic | Implemented | Frame arguments are validated at the Zod boundary (finite, integer, within `[0, MAX_FRAME]`), clamped again in `ToolExecutor`, and guarded in `EditorController` via `clampFrame`/`asValidFrame`. `safe-number.test.ts`, `controller.overflow.test.ts` including the upstream `1e19` repro. |
-| [#286](https://github.com/palmier-io/palmier-pro/issues/286) | Ability to restructure parts | Partial | The request is workspace layout, in CapCut's terms: rearrange the panels, detach the chat into its own window, or reduce the view to just the timeline and video. Nothing here is platform-specific, so it applies in full. Hiding panels already worked from the title bar, and that layout is now persisted, so "only the timeline and video in view" survives a restart instead of resetting on every launch — the reduced layout was otherwise something a user had to rebuild each session. Stored flags are narrowed on read, and a panel the saved layout does not mention falls back to its default, so a layout written by a build with a different set of panels still loads. Missing: reordering the panels, grouping them as tabs, detaching one into a separate window, and resizable splitters. `store/ui.ts`, `ui-panels.test.ts`. |
+| [#286](https://github.com/palmier-io/palmier-pro/issues/286) | Ability to restructure parts | Partial | The request is workspace layout, in CapCut's terms: rearrange the panels, detach the chat into its own window, or reduce the view to just the timeline and video. Nothing here is platform-specific, so it applies in full, and two of the three now work. Hiding panels already worked from the title bar, and that layout is persisted, so "only the timeline and video in view" survives a restart instead of resetting on every launch. Stored flags are narrowed on read, and a panel the saved layout does not mention falls back to its default, so a layout written by a build with a different set of panels still loads. Rearranging arrived with the named presets adopted from PR #430 — `default`, `media` and `vertical`, on `Ctrl+1/2/3` — which is the shape upstream chose over free-form dragging and the one that actually answers the vertical-video case. Missing: grouping panels as tabs, detaching one into a separate window, and resizable splitters with remembered divider positions. `shared/ui/workspace-layout.ts`, `store/ui.ts`, `ui-panels.test.ts`, `ui-layout.test.ts`. |
 | [#287](https://github.com/palmier-io/palmier-pro/issues/287) | Custom STT | Planned | Requires the transcription subsystem (#39) plus a pluggable STT provider, neither of which exists. |
 | [#289](https://github.com/palmier-io/palmier-pro/issues/289) | XML imports and exports | Planned | Duplicate of #154 in substance; tracked as one interchange work item. |
 | [#302](https://github.com/palmier-io/palmier-pro/issues/302) | Local MCP batch reel production: headless/stability + `manage_tracks` mis-targeting | Partial | The mis-targeting half does not apply: there is no `manage_tracks` tool, and every track-addressing tool takes a stable track id rather than an index, which is the fix upstream landed in PR #307. Stability is covered by the #58 row. Missing: a headless or windowless mode — the MCP server currently requires the Electron app to be running with a window. |
 | [#310](https://github.com/palmier-io/palmier-pro/issues/310) | Hermes / Herm MCP client integration | Planned | The stdio MCP server is client-agnostic and `generateMcpConfig` emits a launch config, so a compliant client can already attach. No Hermes-specific config generation, install flow, or verification exists. |
+| [#453](https://github.com/palmier-io/palmier-pro/issues/453) | Media import silently drops files, no error shown | Partial | Applies here, and in one respect the Windows behaviour is worse than the one reported. Skipped files *are* reported: `probeMediaPaths` collects a reason per rejected path and the Media panel shows it, so this port does not fail silently the way upstream does. But only `errors[0]` reaches the banner, so dropping several unsupported files names one of them; and **folders are not expanded at all** — a dropped directory has no media extension, so it is rejected as "not a supported media file" and none of the media inside is imported, where upstream at least imports what it recognises. Missing: recursive directory expansion with a bounded depth and file cap, a readable failure when a directory cannot be listed, and a summary of everything skipped rather than the first item. `main/ipc/media.ts`, `renderer/components/MediaBin.tsx`. |
 
 ## Implementation notes
 
@@ -226,4 +227,4 @@ table above.
 
 ---
 
-_Last reconciled with the parity workflow: 2026-07-29._
+_Last reconciled with the parity workflow: 2026-07-31._
