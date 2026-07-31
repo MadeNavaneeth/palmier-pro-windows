@@ -2,12 +2,19 @@ import React from 'react';
 import {
   Bot,
   ChevronDown,
+  Columns3,
   PanelLeft,
   PanelRight,
   Save,
   Share2,
 } from 'lucide-react';
 import { useProjectStore } from '../store/project';
+import { useUiStore } from '../store/ui';
+import {
+  LAYOUT_PRESET_INFO,
+  layoutPresetInfo,
+  type LayoutPreset,
+} from '../../shared/ui/workspace-layout';
 
 interface TitleBarProps {
   mediaVisible?: boolean;
@@ -88,6 +95,7 @@ export function TitleBar({
             <PanelRight size={15} strokeWidth={1.7} />
           </button>
         )}
+        <LayoutSwitcher />
         {onExport && (
           <button
             onClick={onExport}
@@ -106,5 +114,39 @@ export function TitleBar({
         </div>
       </div>
     </header>
+  );
+}
+
+/**
+ * Workspace arrangement picker (upstream PR #430).
+ *
+ * A native select rather than a custom menu: it is a single-choice control, and
+ * the platform widget already gives keyboard navigation, type-ahead and screen
+ * reader semantics for free. The Ctrl+digit chords are shown in the option labels
+ * so the shortcut is discoverable from the control it duplicates.
+ */
+function LayoutSwitcher() {
+  const layout = useUiStore((s) => s.layout);
+  const setLayout = useUiStore((s) => s.setLayout);
+
+  return (
+    <span className="flex h-7 items-center gap-1 rounded-md px-1.5 text-[11px] text-text-secondary hover:bg-white/[0.08] hover:text-text-primary">
+      <Columns3 size={14} strokeWidth={1.7} aria-hidden="true" />
+      <select
+        value={layout}
+        // The store narrows the value, so a stale option from a previous build
+        // cannot become the active layout.
+        onChange={(event) => setLayout(event.target.value as LayoutPreset)}
+        aria-label="Workspace layout"
+        title={layoutPresetInfo(layout).description}
+        className="cursor-pointer bg-transparent text-[11px] text-inherit outline-none"
+      >
+        {LAYOUT_PRESET_INFO.map((entry) => (
+          <option key={entry.id} value={entry.id} className="bg-surface-2 text-text-primary">
+            {entry.label} (Ctrl+{entry.digit})
+          </option>
+        ))}
+      </select>
+    </span>
   );
 }

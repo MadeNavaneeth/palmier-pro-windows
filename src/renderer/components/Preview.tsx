@@ -107,8 +107,11 @@ export function Preview() {
           while pushing the transport off centre. */}
       <div className="@container flex h-9 shrink-0 items-center justify-between px-3">
         {/* Both side columns share a width so the transport stays centered; it
-            has to hold the guides control without pushing the transport off. */}
-        <div className="w-44 whitespace-nowrap @max-xl:w-24">
+            has to hold the guides control without pushing the transport off.
+            Below ~384px the matched width is what does not fit any more, so the
+            columns collapse to their content and the transport gives up being
+            exactly centred rather than being clipped. */}
+        <div className="w-44 whitespace-nowrap @max-xl:w-24 @max-sm:w-auto">
           <span className="font-mono text-[11px] text-text-secondary tabular-nums">
             {frameToTimecode(playhead, fps)}
           </span>
@@ -142,7 +145,7 @@ export function Preview() {
           </TransportButton>
         </div>
 
-        <div className="flex w-44 items-center justify-end gap-1 @max-xl:w-24">
+        <div className="flex w-44 items-center justify-end gap-1 @max-xl:w-24 @max-sm:w-auto">
           <label
             className="flex h-7 items-center gap-1 px-1.5 text-[10px] text-text-muted @max-xl:hidden"
             title="Playback speed"
