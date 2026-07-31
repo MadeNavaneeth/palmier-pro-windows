@@ -185,6 +185,15 @@ export function useKeyboardShortcuts() {
         // both rather than leaving a half-shown pair.
         ui.setSafeAreaGuides(!(ui.guides.has('actionSafe') && ui.guides.has('titleSafe')));
         return;
+      case 'layoutDefault':
+        ui.setLayout('default');
+        return;
+      case 'layoutMedia':
+        ui.setLayout('media');
+        return;
+      case 'layoutVertical':
+        ui.setLayout('vertical');
+        return;
       case 'showShortcuts':
         ui.toggleShortcutHelp();
         return;
