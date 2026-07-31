@@ -46,9 +46,9 @@ titles are discovery aids, not sufficient implementation specifications.
 
 - Upstream repository: `palmier-io/palmier-pro`
 - Upstream branch: `main`
-- Upstream baseline: `457e853a789e16eb104a0bfb43d2485d9e1ac0c8`
-- Baseline date: 2026-07-30
-- Windows audit date: 2026-07-29
+- Upstream baseline: `8d5648d893c3cd9b71677c5acea44c08b9616f7c`
+- Baseline date: 2026-07-31
+- Windows audit date: 2026-07-31
 - Upstream release at baseline: v0.6.16
 
 ## High-Priority Parity Ledger
@@ -61,7 +61,7 @@ titles are discovery aids, not sufficient implementation specifications.
 | #98, PRs #203/#213 | Blend modes | Implemented | shared blend model, compositor, Inspector, Agent command |
 | PR #353, PR #342 | Explorer/Finder files directly to timeline and linked audio placement | Implemented | Explorer and Media-panel drops share atomic sequential placement; video with probed embedded audio creates a linked audio clip on a free/unlocked lane (or an undoable new lane), and linked selection/move/trim/split/delete stay synchronized |
 | PR #373 | Preview refresh after text insertion or timeline mutation | Implemented | Project revisions at the current playhead request a fresh composite immediately; renderer synchronization recomposites and per-window generations prevent stale async frames from replacing newer output |
-| PR #397 | Multicam ripple synchronization | Planned | Multicam domain is not implemented |
+| PR #397, PR #438 | Multicam ripple synchronization and angle-trim steering | Planned | Multicam domain is not implemented. PR #438 is merged into a stacked branch (`trim/2-trim-clip-tool`) rather than `main`; it narrows the agent's tool description so an ordinary trim request stops being routed to the multicam angle trim. The transferable rule — a specialized tool must be reachable only on explicit intent, never as the default reading of a general request — already holds here because there is no specialized variant to mis-select |
 | PR #372 | Large caption workflow responsiveness | Planned | Caption workflow is not implemented |
 | PR #371, issue #212 | Preview playback speeds | Implemented | `shared/editor/playback-rate.ts` owns the 0.25x-10x preset list, normalizes every rate at the store boundary so a non-finite value cannot poison the playback frame accumulator, and centralizes J/K/L shuttle stepping. The playback loop clamps catch-up elapsed time to 250 ms, so returning from a backgrounded window cannot trigger a thousand-iteration render burst (`playback-rate.test.ts`) |
 | PR #369 | Edge rounding and softness | Planned | Not represented in the Windows clip/compositor contract |
@@ -91,7 +91,10 @@ titles are discovery aids, not sufficient implementation specifications.
 | PR #428 (open) | Take auditioning: track solo, comping, loop region | Planned | Opened after the recorded baseline, so it is not in the snapshot's merged set. Fully applicable — none of the three exist here. The design constraint worth carrying over is that solo is *derived* state that never rewrites `muted`/`visible`, so un-soloing restores the user's exact setup and undo is unaffected; our `Track.visible` doubles as audio mute, which makes that separation more important, not less. Soloing a video take must follow `linkGroupId` to its audio, which this port already models. Export deliberately ignores solo upstream via a threaded flag; our exporter and preview share compositing rules, so the flag has to reach both or preview and export will disagree |
 | PR #429 (open) | Audio track selection for transcripts and captions | Planned | Opened after the recorded baseline. Blocked behind a prerequisite this port does not have: there is no transcription or caption pipeline yet (#39, #91, #252, #287 are all Planned), so there is nothing to target. The transferable part is the argument contract — a positional `trackIndex` validated once and resolved to a stable track id internally — which matches the convention already used here and is the same class of hardening as refusing a clip placement onto an unknown track |
 | PR #427 | Provider logos in model menus | Planned | Cosmetic, but it now has a Windows analogue worth having: the AI settings provider list added for #17/#140 is text-only. Needs bundled provider marks with attribution before adoption |
-| #286 | Restructure the workspace panels | Partial | The request is CapCut-style layout control: rearrange the panels, detach the chat into its own window, or reduce the view to just the timeline and video. Panel visibility already existed in the title bar; the layout is now persisted in the UI store, so a reduced workspace survives a restart rather than being rebuilt every session. Stored flags are narrowed on read and a panel the saved layout omits falls back to its default, so a layout written by a build with a different set of panels still loads. Missing: reordering, tab grouping, detaching a panel into a separate window, and resizable splitters (`ui-panels.test.ts`) |
+| PR #430 | Appearance settings: workspace layouts, adaptive light mode, timeline clip colors | Partial | The workspace half is adopted. `shared/ui/workspace-layout.ts` is the single definition of the three arrangements upstream ships — `default` (`[Media \| Preview \| Inspector] / [Timeline]`), `media` (media full height down the left, for sifting a large bin) and `vertical` (a tall preview column, which is what makes a 9:16 frame usable instead of letterboxed into a wide box) — together with their labels and the `Ctrl+1/2/3` chords that mirror upstream's `Cmd+1/2/3`. The store, the shortcut catalogue and the title bar switcher all read that one table, so a preset cannot be listed in the menu without a binding or vice versa. The choice is persisted and **narrowed on read**, matching upstream's `flatMap(init(rawValue:)) ?? .default` when loading from `UserDefaults`: a stored preset written by a build that no longer has it must not become the active layout. The Agent panel is deliberately a **sibling column of the preset rather than a member of it**, so switching arrangement never moves or tears down an in-progress chat. Presets stay orthogonal to the #286 visibility toggles — the preset decides where things sit, the toggles decide which of them are present — and a test pins that switching preset does not touch the panel object. One translated difference: upstream *collapses* an `NSSplitViewItem` and the split view hands its space to the remaining siblings, whereas hiding a panel here removes it from the tree, so the `vertical` preset lets the timeline take the whole left column when neither side panel is showing rather than leaving a hole under it. Missing: the adaptive light theme and dark-mode-by-default toggle (this port is dark-only with a warm accent, so a light theme means auditing every token, not adding a switch), customizable timeline clip colors, and resizable splitters with remembered divider positions — upstream gets those from `NSSplitView` autosave names, and they are the same gap #286 still records (`workspace-layout.test.ts`, `ui-layout.test.ts`) |
+| PR #440 | Make Swift package development traits opt in | N/A platform | The change makes `BundledSpeech` and `ProductionTelemetry` opt-in Swift Package Manager *traits* so a debug bundle skips compiling the MLX metallib, and forces them on for release. Every moving part is Apple-only: SPM traits, `swift build --traits`, the MLX Metal library, and `.app` bundle resource layout. There is nothing to translate, not merely nothing convenient — this port has no speech or telemetry subsystem to make optional, and its one heavy native component (the Rust/wgpu compositor) is already built by a separate `npm run build:rust` rather than by the renderer build |
+| #453 | Media import silently drops files | Partial | Skipped files are already reported here — `probeMediaPaths` collects a reason per rejected path and the Media panel shows it — so this port does not fail silently the way the report describes. Two gaps remain, one of them worse than upstream's: only `errors[0]` reaches the banner, so dropping several unsupported files names one of them; and a dropped **folder** is not expanded at all, so it is rejected as an unsupported file and none of the media inside is imported. Needs recursive expansion with a bounded depth and file cap, a readable failure when a directory cannot be listed, and a summary of everything skipped (`main/ipc/media.ts`, `renderer/components/MediaBin.tsx`) |
+| #286 | Restructure the workspace panels | Partial | The request is CapCut-style layout control: rearrange the panels, detach the chat into its own window, or reduce the view to just the timeline and video. Two of the three now work. Panel visibility already existed in the title bar; the layout is persisted in the UI store, so a reduced workspace survives a restart rather than being rebuilt every session, and stored flags are narrowed on read so a panel the saved layout omits falls back to its default. Rearranging arrived with the named presets adopted from PR #430, which is the shape upstream chose over free-form dragging and the one that actually answers the vertical-video case. Missing: tab grouping, detaching a panel into a separate window, and resizable splitters with remembered divider positions (`ui-panels.test.ts`, `ui-layout.test.ts`) |
 | #166 | Preview must honour the project aspect ratio | Partial | Preview reads the live canvas from project settings and re-sizes with it, and the compositor composites at the project canvas, so a ratio change is reflected immediately. The second half of the upstream request — moving export into a dedicated workspace panel — is still planned |
 | #173 | Apple OAuth stall | N/A platform | No Clerk/ASWebAuthenticationSession path |
 | #195, #220, #262, #70 | Windows support | Implemented by project | x64 portable plus x64/arm64 installer targets |
@@ -123,11 +126,14 @@ Use this block in pull requests or development notes:
 
 ## Rendered UI Checks
 
-Last run: 2026-07-29, against the editor shell with a seeded four-asset project.
+Last run: 2026-07-31, against the editor shell with a seeded four-asset project.
 
 Captured by mounting the real `App` in Electron over a loopback HTTP server and
 measuring layout at each target size, rather than by eye. The assertion is the
 overflow report, not the screenshot.
+
+Each run below is recorded as it was measured at the time; later runs supersede
+earlier numbers rather than rewriting them.
 
 | View | 1600x1000 | 1024x680 |
 |---|---|---|
@@ -204,6 +210,50 @@ thing: at a 1024 px window with no side panels the toolbar is 1014 px wide and
 keeps its zoom slider, where the old viewport breakpoint would have hidden it
 despite the row having ample room. Each run reads the persisted layout back, so
 the assertion covers the round trip rather than only the render.
+
+Fifth run, for the workspace layout presets (PR #430). Seven views at both sizes:
+each of the three presets in the first-run panel configuration, the `vertical`
+preset reduced to timeline and preview only, `media` and `vertical` with all three
+panels open, and the shortcut sheet.
+
+| View | 1600x1000 | 1024x680 |
+|---|---|---|
+| `default` | Fits, panels 480 / 320, preview 780, timeline 780x270 | Fits, panels 307 / 240, preview 457, timeline 457x270 |
+| `media` | Fits, media full height 480x676, preview 780 | Fits, media full height 307x356, preview 457 |
+| `vertical` | Fits, preview column 608x951, timeline 977x270 | Fits, preview column 389x631, timeline 620x270 |
+| `vertical` reduced | Fits, timeline fills 977x951, preview 608x951 | Fits, timeline fills 620x631, preview 389x631 |
+| `media`, all panels | Fits, panels 300 / 480 / 320, preview 475 | Fits, panels 300 / 200 / 200, preview 300 |
+| `vertical`, all panels | Fits, panels 300 / 400 / 267, timeline 672x270 | Fits, panels 300 / 200 / 200, timeline 405x270 |
+| Shortcut sheet | 3 columns, 40 commands / 49 chords | 3 columns, 40 commands / 49 chords |
+
+All fourteen combinations report no document scrollbars, zero overflow on the
+workspace row and on both toolbar rows, every column ending inside the row, the
+layout switcher present and reachable with the active preset selected,
+`--text-2xs` at 10 px, the persisted preset reading back as the active one, and no
+application console errors. Chord count rises from 46 to 49 for `Ctrl+1/2/3`.
+
+This run found a real clipping bug that **predates the presets**, and the reason
+the four earlier runs missed it is worth recording: they measured document
+scrollbars and the two toolbar rows, but never the workspace row itself. That row
+is `overflow-hidden`, so a column that does not fit is clipped rather than
+scrolled and never produces a scrollbar to detect. At 1024 px with all three
+panels open, media + inspector + a 400 px preview minimum asked for roughly 250 px
+more than the row had, and the rightmost panel was simply outside the window — the
+fourth run recorded "centre 400 px" for exactly that case without noticing 400 px
+was the *minimum* being enforced rather than the space available.
+
+The fix is to stop treating the side panels as rigid. They keep their preferred
+viewport-relative widths and now shrink under pressure to a stated 200 px floor;
+only the Agent column stays fixed, and it is already at its minimum useful width.
+Wrapper columns carry explicit floors rather than a content-derived minimum,
+because they contain the timeline, whose min-content width is the full length of
+the material. The preview floor is set by its own transport row rather than by
+taste — that row needs about 290 px at its narrowest container tier, so a 300 px
+floor is the point below which the preview would be narrower than its own
+controls; a `@max-sm` tier was added there so the matched side columns collapse to
+their content instead of being clipped. The probe now measures the workspace row's
+overflow and each column's right edge, so this class of defect fails the check
+rather than passing it quietly.
 
 ## Release Gate
 

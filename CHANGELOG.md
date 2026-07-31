@@ -8,15 +8,21 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
 
 ### Upstream Review
 
-- Baseline: `457e853a789e16eb104a0bfb43d2485d9e1ac0c8` (upstream v0.6.16; previous
-  baseline `de37a5378fe269f4439c20fb88c55365b9d1c4e5`, 22 upstream commits
+- Baseline: `8d5648d893c3cd9b71677c5acea44c08b9616f7c` (upstream v0.6.16; previous
+  baseline `de37a5378fe269f4439c20fb88c55365b9d1c4e5`, 24 upstream commits
   reviewed).
 - Issues/PRs reviewed: PRs #409, #410, #411, #415, #416, #417, #418, #419, #420,
-  #421, #422, #423, #424, #425, #426, #427, and **all 50 open upstream issues**
-  in the captured snapshot.
+  #421, #422, #423, #424, #425, #426, #427, #430, #438, #440, and **all 50 open
+  upstream issues** in the captured snapshot.
 - Dispositions: every open issue now has exactly one explicit disposition in
-  `docs/UPSTREAM_ISSUES.md` — 14 Implemented, 3 Partial, 21 Planned,
-  11 N/A platform, 1 Needs investigation.
+  `docs/UPSTREAM_ISSUES.md` — 14 Implemented, 5 Partial, 21 Planned,
+  11 N/A platform, 0 Needs investigation, over 51 open issues.
+- New upstream issue #453 (media import silently drops files) is dispositioned
+  Partial. Skipped files are already reported here rather than dropped silently,
+  but only the first reason reaches the panel, and a dropped **folder** is not
+  expanded at all — it is rejected as an unsupported file, so none of the media
+  inside is imported. Recursive expansion and a full skip summary are the
+  remaining work.
 - Newly adopted this pass: #68, #212, #164, #167, #17, #140, #89, and #107.
   Planned for PRs #410, #411, #415, #416, #427; N/A platform for PRs #418, #420,
   #421, #423, #424; Different by design for PR #425 (no telemetry in this port).
@@ -37,6 +43,19 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
 - #286 moved off `Needs investigation` once the request was read in full: it asks
   for CapCut-style workspace layout control, which applies to this port in full.
   No open issue in the captured snapshot remains under investigation.
+- PR #430 (appearance settings) is Partial: the workspace-layout half is adopted,
+  while the adaptive light theme and customizable timeline clip colours stay
+  Planned — this port is dark-only with a warm accent, so a light theme means
+  auditing every token rather than adding a switch. Adopting the layouts moves
+  #286 further along: rearranging now works, leaving tab grouping, detaching a
+  panel into its own window, and resizable splitters.
+- PR #440 is N/A platform: it makes Swift Package Manager *traits* opt-in so a
+  debug bundle skips compiling the MLX Metal library. Every moving part is
+  Apple-only, and this port has no speech or telemetry subsystem to make optional.
+- PR #438 is grouped with PR #397 as Planned. It is merged into a stacked branch
+  rather than `main`, and it narrows an agent tool description so an ordinary trim
+  request stops being routed to the multicam angle trim; there is no multicam
+  domain here for that mis-selection to occur in.
 - Details and Windows owners are recorded in `docs/UPSTREAM_PARITY.md` and
   `docs/UPSTREAM_ISSUES.md`.
 
@@ -100,6 +119,18 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
   media, inspector and agent panels already worked, but the choice reset on every
   launch, so working with just the timeline and video in view — which is what the
   request asks for — meant rebuilding the layout each session.
+- Workspace layout presets (upstream PR #430, and the rearranging half of #286).
+  Three named arrangements, switchable from the title bar or `Ctrl+1/2/3` to match
+  upstream's `Cmd+1/2/3`: **Default** keeps media, preview and inspector in a row
+  with the timeline underneath; **Media** runs the media browser full height down
+  the left, for sifting a large bin; **Vertical** gives the preview a tall
+  right-hand column, which is what makes a 9:16 frame usable instead of
+  letterboxed into a wide box. The choice is persisted and validated on read, so a
+  preset saved by a build that no longer has it falls back to the default rather
+  than becoming the active layout. Presets are independent of the panel toggles —
+  the preset decides where things sit, the toggles decide which of them are
+  present — and the Agent panel sits beside the preset rather than inside it, so
+  switching arrangement never moves or closes an in-progress chat.
 - Contributor guide with development, test, branch, and PR expectations.
 - Security policy covering Electron IPC, MCP commands, FFmpeg execution, API-key storage, path validation, and native Rust bindings.
 - Issue and pull request templates.
@@ -180,6 +211,16 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
   tool results, and appending the next question after it violated the required role
   alternation. The question now joins that turn, and tools that were not run are
   answered with a cancelled result rather than left unanswered.
+- Opening all three side panels in a 1024 px window no longer pushes the rightmost
+  panel out of the window. The side panels were fixed at viewport-relative widths
+  and refused to shrink, so media, inspector and the preview's 400 px minimum
+  together asked for about 250 px more than the row had; because the row clips
+  rather than scrolls, the excess left the window with no scrollbar to reveal it.
+  Panels keep their preferred widths where there is room and now shrink to a stated
+  floor under pressure, and the preview transport row gained a narrow tier so it
+  stays inside a minimum-width preview. The rendered-check probe now measures the
+  workspace row itself, which is what let this go unnoticed through four earlier
+  passes.
 - `add_clip` no longer places a clip onto a track that does not exist. The
   controller checked for the track but only used it to decide audio linking, so an
   invented track id produced a clip that the timeline, the compositor and the
