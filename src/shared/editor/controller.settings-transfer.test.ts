@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { EditorController } from './controller';
+import { createEmptyProject } from '../types/project';
 
 function controllerWithClips() {
   const ctrl = new EditorController();
@@ -105,6 +106,7 @@ describe('transferClipSettings (R1, #515)', () => {
     const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
     ctrl.applyClipProperties([source], 'Set', (d) => {
       d.opacity = 0.2;
+      d.x = 90;
       return true;
     });
     const t1 = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
@@ -114,5 +116,94 @@ describe('transferClipSettings (R1, #515)', () => {
     ctrl.undo();
     expect(ctrl.getClips().find((c) => c.id === t1)?.opacity).not.toBe(0.2);
     expect(ctrl.getClips().find((c) => c.id === t2)?.opacity).not.toBe(0.2);
+  });
+});
+
+describe('paste-attributes snapshot (R1 checklist)', () => {
+  it('copies once, pastes onto many, and clears on project load', () => {
+    const ctrl = controllerWithClips();
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (d) => {
+      d.opacity = 0.3;
+      d.x = 77;
+      return true;
+    });
+    expect(ctrl.copySettingsSnapshot(source)).toBe(true);
+
+    const t = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 400 });
+    const receipt = ctrl.pasteSettingsFromSnapshot([t]);
+    expect(receipt.changedClipIds).toEqual([t]);
+    const after = ctrl.getClips().find((c) => c.id === t)!;
+    expect(after.opacity).toBe(0.3);
+    expect(after.x).toBe(77);
+
+    // A fresh project clears the snapshot.
+    ctrl.loadProject(createEmptyProject());
+    expect(() =>
+      ctrl.pasteSettingsFromSnapshot([ctrl.addClip({
+        assetId: 'asset-v', trackId: 'v1', startFrame: 0,
+      })]),
+    ).toThrow(/copy a clip's settings first/i);
+  });
+
+  it('applies only the requested field groups (the checklist)', () => {
+    const ctrl = controllerWithClips();
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (d) => {
+      d.opacity = 0.15;
+      d.x = 55;
+      d.blendMode = 'screen';
+      return true;
+    });
+    ctrl.copySettingsSnapshot(source);
+
+    const t = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 200 });
+    const before = ctrl.getClips().find((c) => c.id === t)!;
+
+    // Transform-only paste must not drag opacity or blend mode along.
+    ctrl.pasteSettingsFromSnapshot([t], ['transform']);
+    const afterTransform = ctrl.getClips().find((c) => c.id === t)!;
+    expect(afterTransform.x).toBe(55);
+    expect(afterTransform.opacity).toBe(before.opacity);
+    expect(afterTransform.blendMode).toBe(before.blendMode);
+
+    ctrl.pasteSettingsFromSnapshot([t], ['blendMode']);
+    expect(ctrl.getClips().find((c) => c.id === t)?.blendMode).toBe('screen');
+  });
+
+  it('refuses without a snapshot and across kinds with upstream messages', () => {
+    const ctrl = controllerWithClips();
+    const audioId = ctrl.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 0 });
+
+    expect(() => ctrl.pasteSettingsFromSnapshot([audioId]))
+      .toThrow(/copy a clip's settings first/i);
+
+    const videoSource = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 10 });
+    ctrl.copySettingsSnapshot(videoSource);
+    expect(() => ctrl.pasteSettingsFromSnapshot([audioId])).toThrow(
+      /is audio; copied settings require video clips/i,
+    );
+  });
+
+  it('pastes volume for audio snapshots', () => {
+    const ctrl = controllerWithClips();
+    const src = ctrl.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 0 });
+    ctrl.applyClipProperties([src], 'Set', (d) => {
+      d.volume = 0.4;
+      return true;
+    });
+    ctrl.copySettingsSnapshot(src);
+    const t = ctrl.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 100 });
+
+    ctrl.pasteSettingsFromSnapshot([t], ['volume']);
+    expect(ctrl.getClips().find((c) => c.id === t)?.volume).toBe(0.4);
+  });
+
+  it('never counts the snapshot source as changed', () => {
+    const ctrl = controllerWithClips();
+    const src = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 5 });
+    ctrl.copySettingsSnapshot(src);
+    const receipt = ctrl.pasteSettingsFromSnapshot([src]);
+    expect(receipt).toEqual({ changedClipIds: [], unchangedClipIds: [src] });
   });
 });

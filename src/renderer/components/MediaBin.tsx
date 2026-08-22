@@ -205,6 +205,9 @@ export function MediaBin() {
             <MediaLibraryCount visibleCount={mediaItems.length} />
           </div>
 
+          {/* Three-point placement strip for the single selected asset */}
+          <SourcePlaceStrip />
+
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {offlineAssets.length > 0 && (
             <div className="mb-2 flex items-center gap-2 border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-200">
@@ -387,9 +390,118 @@ function MediaGrid({ items, fps }: { items: MediaAsset[]; fps: number }) {
   );
 }
 
+/**
+ * Three-point placement strip (R1 source-viewer, minimal form): with one
+ * video/audio asset selected, set an optional source window in seconds and
+ * land it on a compatible track via insert/overwrite/append. The timeline
+ * playhead is the default landing frame.
+ */
+function SourcePlaceStrip() {
+  const project = useTimelineStore((s) => s.project);
+  const controller = useTimelineStore((s) => s.controller);
+  const selectedIds = useMediaPanelStore((s) => s.selection.selectedIds);
+  const fps = project.settings.fps;
+
+  const asset =
+    selectedIds.length === 1
+      ? project.media.find((m) => m.id === selectedIds[0])
+      : undefined;
+  const placeable = asset !== undefined && (asset.type === 'video' || asset.type === 'audio');
+  const compatibleTracks = project.timeline.tracks.filter((t) =>
+    asset ? (t.type === 'audio' ? asset.type === 'audio' : t.type === 'video') : false,
+  );
+
+  const [inSec, setInSec] = useState('0');
+  const [outSec, setOutSec] = useState('');
+  const [mode, setMode] = useState<'overwrite' | 'insert' | 'append'>('overwrite');
+  const [trackId, setTrackId] = useState('');
+  const activeTrackId = trackId || compatibleTracks[0]?.id || '';
+
+  if (!placeable) return null;
+  const maxSeconds = asset.duration > 0 ? asset.duration / fps : Infinity;
+
+  function handlePlace() {
+    if (!asset || !activeTrackId) return;
+    const s = parseFloat(inSec);
+    const e = parseFloat(outSec);
+    const hasWindow =
+      Number.isFinite(s) && Number.isFinite(e) && s >= 0 && e > s && s < maxSeconds;
+    const clampedEnd = hasWindow && Number.isFinite(maxSeconds) ? Math.min(e, maxSeconds) : e;
+
+    const placed = controller.placeClipWithMode({
+      assetId: asset.id,
+      trackId: activeTrackId,
+      mode,
+      ...(mode !== 'append'
+        ? { startFrame: useTimelineStore.getState().getPlayhead() }
+        : {}),
+      ...(hasWindow ? { source: [s, clampedEnd] as [number, number] } : {}),
+    });
+    if (placed) {
+      useTimelineStore.setState({ selectedClipIds: new Set(placed.clipIds) });
+      useMediaPanelStore.getState().setNotice(null);
+    } else {
+      useMediaPanelStore.getState().setNotice('Cannot place on that track (locked or incompatible).');
+    }
+  }
+
+  const inputCls = 'w-14 rounded border border-white/15 bg-surface-0 px-1 py-0.5 text-[9px] text-text-primary outline-none focus:border-accent/60';
+
+  return (
+    <div
+      className="mb-2 flex flex-wrap items-center gap-1.5 rounded border border-white/10 bg-surface-2 px-2 py-1.5"
+      data-source-place-strip
+    >
+      <span className="text-[9px] font-semibold uppercase tracking-wide text-text-muted">
+        Source
+      </span>
+      <label className="flex items-center gap-1 text-[9px] text-text-secondary">
+        In
+        <input value={inSec} onChange={(e) => setInSec(e.target.value)} className={inputCls} inputMode="decimal" />
+      </label>
+      <label className="flex items-center gap-1 text-[9px] text-text-secondary">
+        Out
+        <input
+          value={outSec}
+          onChange={(e) => setOutSec(e.target.value)}
+          placeholder={Number.isFinite(maxSeconds) ? maxSeconds.toFixed(2) : '—'}
+          className={inputCls}
+          inputMode="decimal"
+        />
+      </label>
+      <select
+        value={mode}
+        onChange={(e) => setMode(e.target.value as typeof mode)}
+        className="rounded border border-white/15 bg-surface-0 px-1 py-0.5 text-[9px] text-text-primary outline-none"
+        aria-label="Placement mode"
+      >
+        <option value="overwrite">Overwrite</option>
+        <option value="insert">Insert</option>
+        <option value="append">Append</option>
+      </select>
+      <select
+        value={activeTrackId}
+        onChange={(e) => setTrackId(e.target.value)}
+        className="max-w-28 rounded border border-white/15 bg-surface-0 px-1 py-0.5 text-[9px] text-text-primary outline-none"
+        aria-label="Target track"
+      >
+        {compatibleTracks.map((t) => (
+          <option key={t.id} value={t.id}>{t.name}</option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={handlePlace}
+        className="ml-auto rounded border border-accent/50 px-2 py-0.5 text-[9px] font-medium text-text-primary hover:bg-accent/10"
+      >
+        Place at playhead
+      </button>
+    </div>
+  );
+}
+
 /** One-line status for panel actions; click to dismiss. */
-function PanelNotice() {
-  const notice = useMediaPanelStore((state) => state.notice);
+function PanelNotice() {  const notice = useMediaPanelStore((state) => state.notice);
   const setNotice = useMediaPanelStore((state) => state.setNotice);
   if (!notice) return null;
   return (

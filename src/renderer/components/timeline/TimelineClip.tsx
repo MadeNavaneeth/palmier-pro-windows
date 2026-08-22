@@ -83,6 +83,32 @@ export function TimelineClip({ clip }: TimelineClipProps) {
     }
   }, [controller, selectedClipIds]);
 
+  // ─── Paste attributes (R1 checklist) ─────────────────────────────────────
+  const [snapshotVersion, setSnapshotVersion] = useState(0);
+  const settingsSnapshot = controller.getSettingsSnapshot();
+  const snapshotMatches =
+    settingsSnapshot !== null
+    && settingsSnapshot.kind === clip.type
+    && settingsSnapshot.sourceId !== clip.id;
+
+  const handleCopySettings = useCallback(() => {
+    setMenuPos(null);
+    if (controller.copySettingsSnapshot(clip.id)) setSnapshotVersion((v) => v + 1);
+  }, [controller, clip.id]);
+
+  const pasteWith = useCallback(
+    (fields?: Array<'transform' | 'opacity' | 'blendMode' | 'volume'>) => {
+      setMenuPos(null);
+      try {
+        controller.pasteSettingsFromSnapshot([clip.id], fields);
+      } catch {
+        // Kind/unknown refusals are non-actionable from the menu.
+      }
+      setSnapshotVersion((v) => v + 1);
+    },
+    [controller, clip.id],
+  );
+
   // Position and size
   const left = (clip.startFrame - viewport.scrollFrame) * viewport.pixelsPerFrame;
   const width = clip.durationFrames * viewport.pixelsPerFrame;
@@ -261,7 +287,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
           into a standalone library asset (#562); Detach/Link expose the #462
           link management to the pointer. Fixed-positioned so the clip's
           overflow-hidden body cannot clip it. */}
-      {menuPos && (canSaveAudio || canDetach || canRelink) && (
+      {menuPos && (
         <>
           {/* Click-away layer so the menu closes without a global listener. */}
           <div className="fixed inset-0 z-20" onClick={() => setMenuPos(null)} />
@@ -298,6 +324,57 @@ export function TimelineClip({ clip }: TimelineClipProps) {
               >
                 Link selected clips
               </button>
+            )}
+            <button
+              role="menuitem"
+              onClick={handleCopySettings}
+              className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+            >
+              Copy settings
+            </button>
+            {snapshotMatches && (
+              <>
+                <button
+                  role="menuitem"
+                  onClick={() => pasteWith()}
+                  className="block w-full px-2 py-1 text-left text-[10px] text-text-primary hover:bg-white/10"
+                >
+                  Paste settings
+                </button>
+                {clip.type === 'audio' ? (
+                  <button
+                    role="menuitem"
+                    onClick={() => pasteWith(['volume'])}
+                    className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+                  >
+                    Paste volume only
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      role="menuitem"
+                      onClick={() => pasteWith(['transform'])}
+                      className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+                    >
+                      Paste position &amp; scale
+                    </button>
+                    <button
+                      role="menuitem"
+                      onClick={() => pasteWith(['opacity'])}
+                      className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+                    >
+                      Paste opacity only
+                    </button>
+                    <button
+                      role="menuitem"
+                      onClick={() => pasteWith(['blendMode'])}
+                      className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+                    >
+                      Paste blend mode only
+                    </button>
+                  </>
+                )}
+              </>
             )}
           </div>
         </>

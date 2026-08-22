@@ -266,6 +266,32 @@ function generatedTrackLabelIn(track: Track, tracks: readonly Track[]): string {
   return `${track.type === 'video' ? 'Video' : 'Audio'} ${position}`;
 }
 
+/**
+ * The settings fields a paste would touch, narrowed by the requested field
+ * groups — used for value comparison so unchanged pastes add no history.
+ */
+function pickSettings(
+  clip: Clip,
+  kind: ClipType,
+  fields?: Array<'transform' | 'opacity' | 'blendMode' | 'volume'>,
+): Record<string, unknown> {
+  const want = (f: string): boolean => !fields || fields.includes(f as 'transform');
+  if (kind === 'audio') {
+    return want('volume') ? { volume: clip.volume } : {};
+  }
+  const out: Record<string, unknown> = {};
+  if (want('opacity')) out.opacity = clip.opacity;
+  if (want('blendMode')) out.blendMode = clip.blendMode ?? null;
+  if (want('transform')) {
+    out.x = clip.x;
+    out.y = clip.y;
+    out.rotation = clip.rotation;
+    out.scaleX = clip.scaleX;
+    out.scaleY = clip.scaleY;
+  }
+  return out;
+}
+
 export class EditorController {  private project: Project;
   private history: CommandHistory;
   private listeners: Set<StateChangeListener> = new Set();
@@ -1595,6 +1621,7 @@ export class EditorController {  private project: Project;
     const changedClipIds = targets.filter((id) => {
       const current = this.findClipById(id)!;
       const replacement = replacements.get(id)!;
+      if (id === sourceClipId) return false;
       return settingsDiffer(current, replacement);
     });
     if (changedClipIds.length === 0) {
@@ -1612,6 +1639,118 @@ export class EditorController {  private project: Project;
     };
   }
 
+  private settingsSnapshot: {
+    sourceId: string;
+    kind: ClipType;
+    values: Partial<Clip>;
+  } | null = null;
+
+  getSettingsSnapshot(): { sourceId: string; kind: ClipType } | null {
+    return this.settingsSnapshot
+      ? { sourceId: this.settingsSnapshot.sourceId, kind: this.settingsSnapshot.kind }
+      : null;
+  }
+
+  /** Capture a clip's presentation fields as the paste-attributes source. */
+  copySettingsSnapshot(sourceId: string): boolean {
+    const clip = this.findClipById(sourceId);
+    if (!clip) return false;
+    const values: Partial<Clip> =
+      clip.type === 'audio'
+        ? { volume: clip.volume }
+        : {
+            opacity: clip.opacity,
+            x: clip.x,
+            y: clip.y,
+            rotation: clip.rotation,
+            scaleX: clip.scaleX,
+            scaleY: clip.scaleY,
+            ...(clip.blendMode !== undefined ? { blendMode: clip.blendMode } : {}),
+          };
+    this.settingsSnapshot = { sourceId, kind: clip.type, values };
+    return true;
+  }
+
+  /**
+   * Paste previously captured settings onto targets. Without `fields` every
+   * captured field applies; with it, only the named groups do — the
+   * property checklist from R1. One undoable step, upstream refusal shape.
+   */
+  pasteSettingsFromSnapshot(
+    targetIds: Iterable<string>,
+    fields?: Array<'transform' | 'opacity' | 'blendMode' | 'volume'>,
+    actionName = 'Paste clip settings',
+  ): { changedClipIds: string[]; unchangedClipIds: string[] } {
+    const snap = this.settingsSnapshot;
+    if (!snap) throw new Error("Copy a clip's settings first.");
+    const want = (field: 'transform' | 'opacity' | 'blendMode' | 'volume'): boolean =>
+      fields === undefined || fields.includes(field);
+
+    const seen = new Set<string>();
+    const targets = [...targetIds].filter((id) => !seen.has(id) && seen.add(id));
+    if (targets.length === 0) throw new Error('Provide at least one target clip.');
+
+    const replacements = new Map<string, Clip>();
+    for (const id of targets) {
+      const target = this.findClipById(id);
+      if (!target) throw new Error(`Clip not found: ${id}`);
+      if (target.type !== snap.kind) {
+        throw new Error(
+          `Clip ${id} is ${target.type}; copied settings require ${snap.kind} clips.`,
+        );
+      }
+      let next = target;
+      if (id !== snap.sourceId) {
+        next = { ...target };
+        const v = snap.values;
+        if (want('transform')) {
+          if (v.x !== undefined) next.x = v.x;
+          if (v.y !== undefined) next.y = v.y;
+          if (v.rotation !== undefined) next.rotation = v.rotation;
+          if (v.scaleX !== undefined) next.scaleX = v.scaleX;
+          if (v.scaleY !== undefined) next.scaleY = v.scaleY;
+        }
+        if (want('opacity') && v.opacity !== undefined) next.opacity = v.opacity;
+        if (
+          want('blendMode') && snap.kind !== 'audio'
+          && (v.blendMode !== undefined || next.blendMode !== undefined)
+        ) {
+          if (v.blendMode === undefined) delete next.blendMode;
+          else next.blendMode = v.blendMode;
+        }
+        if (want('volume') && snap.kind === 'audio' && v.volume !== undefined) {
+          next.volume = v.volume;
+        }
+      }
+      replacements.set(id, next);
+    }
+
+    const settingsDiffer = (a: Clip, b: Clip): boolean =>
+      JSON.stringify(pickSettings(a, snap.kind, fields)) !== JSON.stringify(pickSettings(b, snap.kind, fields));
+
+    const changedClipIds = targets.filter((id) => {
+      const current = this.findClipById(id)!;
+      const replacement = replacements.get(id)!;
+      if (id === snap.sourceId) return false;
+      return settingsDiffer(current, replacement);
+    });
+    if (changedClipIds.length === 0) {
+      return { changedClipIds: [], unchangedClipIds: [...targets] };
+    }
+
+    const changedSet = new Set(changedClipIds);
+    const clips = this.project.timeline.clips.map((clip) =>
+      changedSet.has(clip.id) ? replacements.get(clip.id)! : clip,
+    );
+    this.execute(new ReplaceClipsCommand(clips, actionName));
+    return {
+      changedClipIds,
+      unchangedClipIds: targets.filter((id) => !changedSet.has(id)),
+    };
+  }
+
+  // ─── Offline media relink (upstream EditorViewModel+Relink) ──────────────
+
   /**
    * Repoint assets at relocated source files in one undoable step per asset.
    * Upstream validates that the replacement file is the same media kind as
@@ -1619,8 +1758,6 @@ export class EditorController {  private project: Project;
    * extension. Unknown ids are refused by name, and a bad entry leaves every
    * earlier relink in the call untouched-but-committed (each is its own undo).
    */
-  // ─── Offline media relink (upstream EditorViewModel+Relink) ──────────────
-
   relinkAsset(assetId: string, newPath: string): boolean {
     const asset = this.project.media.find((a) => a.id === assetId);
     if (!asset) throw new Error(`No media asset "${assetId}" in this project.`);
@@ -2578,6 +2715,7 @@ export class EditorController {  private project: Project;
   loadProject(project: Project): void {
     this.project = project;
     this.history.clear();
+    this.settingsSnapshot = null;
     this.notify();
   }
 
@@ -2603,6 +2741,7 @@ export class EditorController {  private project: Project;
   reset(): void {
     this.project = createEmptyProject();
     this.history.clear();
+    this.settingsSnapshot = null;
     this.notify();
   }
 
