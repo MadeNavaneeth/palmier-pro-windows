@@ -43,6 +43,9 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   // ─── Save as audio (#562) ────────────────────────────────────────────────
   const fps = useTimelineStore((s) => s.getProjectFps());
   const asset = useTimelineStore((s) => s.project.media.find((m) => m.id === clip.assetId));
+  const isOffline = useTimelineStore(
+    (s) => Boolean(asset && s.offlinePaths.has(asset.path)),
+  );
   const canSaveAudio =
     (clip.type === 'video' || clip.type === 'audio') && Boolean(asset?.audioCodec);
   // Viewport-fixed coordinates: the clip body is overflow-hidden, which would
@@ -176,6 +179,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
         left: `${left}px`,
         width: `${Math.max(width, 4)}px`, // minimum 4px visible
       }}
+      data-offline={isOffline || undefined}
       onMouseDown={handleMouseDown}
       onClick={handleClick}
       onContextMenu={canSaveAudio ? handleContextMenu : undefined}
@@ -211,6 +215,24 @@ export function TimelineClip({ clip }: TimelineClipProps) {
             background: 'linear-gradient(to left, rgba(0,0,0,0.65), transparent)',
           }}
         />
+      )}
+
+      {/* Offline state: the source file is gone; relink from the media panel */}
+      {isOffline && (
+        <div
+          className="absolute inset-0 z-10 flex items-center justify-center bg-black/55 pointer-events-none"
+          style={{
+            backgroundImage:
+              'repeating-linear-gradient(45deg, rgba(239,68,68,0.35) 0 6px, transparent 6px 12px)',
+          }}
+          data-offline-overlay
+        >
+          {width > 60 && (
+            <span className="rounded-sm bg-red-950/80 px-1 text-[9px] font-medium text-red-200">
+              Offline
+            </span>
+          )}
+        </div>
       )}
 
       {/* Clip content */}

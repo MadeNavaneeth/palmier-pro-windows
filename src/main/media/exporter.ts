@@ -13,8 +13,10 @@ import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
 import { ipcMain, BrowserWindow } from 'electron';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import type { Project } from '../../shared/types/project';
 import { selectExportClips } from '../../shared/media/export-eligibility';
+import { offlineExportBlockers, formatOfflineNames } from '../../shared/media/offline';
 import { buildFfmpegArgs as buildExportFfmpegArgs } from './export-args';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -67,9 +69,19 @@ export class Exporter {
       return;
     }
 
+    // Loud pre-flight: a missing source file would otherwise render as a
+    // black hole or fail mid-encode. Refuse with the filenames named so the
+    // user can relink from the media panel (upstream R0 offline state).
+    const blockers = offlineExportBlockers(project, (p) => fsSync.existsSync(p));
+    if (blockers.length > 0) {
+      const message = `Media offline: ${formatOfflineNames(blockers)}. Relink or remove ${blockers.length === 1 ? 'it' : 'them'} before exporting.`;
+      win.webContents.send('export:error', message);
+      // The IPC wrapper turns this into { success:false } for the caller.
+      throw new Error(message);
+    }
+
     // Build the FFmpeg command
     const args = this.buildFfmpegArgs(project, options, width, height, fps, totalFrames);
-
     win.webContents.send('export:progress', {
       percent: 0,
       frame: 0,

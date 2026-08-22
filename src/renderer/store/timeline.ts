@@ -191,6 +191,11 @@ export interface TimelineState {
   ) => void;
   endMarquee: () => void;
 
+  // Offline media (R0/R1)
+  /** Asset paths that no longer exist on disk; refreshed via IPC. */
+  offlinePaths: ReadonlySet<string>;
+  refreshOfflineStatus: () => Promise<void>;
+
   // Editing
   addClip: (assetId: string, trackId: string, startFrame: Frame, durationFrames?: Frame) => string;
   placeAssets: (assetIds: string[], trackId: string, startFrame: Frame) => string[];
@@ -328,6 +333,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     selectedGap: null,
     selectedMarkerIds: new Set(),
     marqueeBaseIds: null,
+    offlinePaths: new Set(),
 
     isPlaying: false,
     playbackRate: 1,
@@ -576,6 +582,22 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
   },
 
   endMarquee: () => set({ marqueeBaseIds: null }),
+
+  // ─── Offline media (R0/R1) ─────────────────────────────────────────────
+  refreshOfflineStatus: async () => {
+    const paths = get().project.media.map((asset) => asset.path);
+    if (paths.length === 0) {
+      set({ offlinePaths: new Set() });
+      return;
+    }
+    try {
+      const { missing } = await window.palmier.media.checkOffline(paths);
+      set({ offlinePaths: new Set(missing) });
+    } catch {
+      // IPC unavailable (e.g. probe harness): treat everything as online
+      // rather than flashing offline states across the timeline.
+    }
+  },
 
     // ─── Editing ───────────────────────────────────────────────────────────
     addClip: (assetId, trackId, startFrame, durationFrames) => {

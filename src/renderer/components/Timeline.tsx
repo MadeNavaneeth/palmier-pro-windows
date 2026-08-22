@@ -96,6 +96,16 @@ export function Timeline({ fill = false }: { fill?: boolean } = {}) {
   useDragHandler();
   useKeyboardShortcuts();
 
+  // Offline-media detection: refresh whenever the project's media list or
+  // any asset path can have changed (import, relink, open, undo of relink).
+  const mediaSignature = useTimelineStore((s) =>
+    s.project.media.map((a) => a.path).join('|'),
+  );
+  const refreshOfflineStatus = useTimelineStore((s) => s.refreshOfflineStatus);
+  useEffect(() => {
+    void refreshOfflineStatus();
+  }, [mediaSignature, refreshOfflineStatus]);
+
   // Track container width for the ruler, and publish it so fit-to-window works
   // from the toolbar and the keyboard, neither of which can see this element.
   useEffect(() => {

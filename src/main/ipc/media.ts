@@ -8,6 +8,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 
 const execFileAsync = promisify(execFile);
 
@@ -84,6 +85,15 @@ export function registerMediaHandlers(): void {
     } catch (err: any) {
       return { success: false, error: err.message };
     }
+  });
+
+  // ─── Offline check: which asset paths no longer exist on disk ────────────────
+  ipcMain.handle('media:check-offline', async (_event, paths: unknown) => {
+    if (!Array.isArray(paths)) return { missing: [] };
+    const missing = paths.filter(
+      (p): p is string => typeof p === 'string' && p.length > 0 && !fsSync.existsSync(p),
+    );
+    return { missing };
   });
 
   // ─── Extract audio from a video into a library asset (upstream PR #562) ─────
