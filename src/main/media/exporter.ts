@@ -11,7 +11,7 @@
 
 import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
-import { ipcMain, BrowserWindow } from 'electron';
+import { ipcMain, BrowserWindow, shell } from 'electron';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import type { Project } from '../../shared/types/project';
@@ -23,11 +23,13 @@ import { buildFfmpegArgs as buildExportFfmpegArgs } from './export-args';
 
 export interface ExportOptions {
   outputPath: string;
-  format: 'mp4' | 'mov' | 'webm';
+  format: 'mp4' | 'mov' | 'webm' | 'audio';
   quality: 'draft' | 'normal' | 'high';
   width?: number;
   height?: number;
   fps?: number;
+  /** Export only this timeline span (In/Out marks), frames inclusive-exclusive. */
+  range?: { start: number; end: number };
 }
 
 export interface ExportProgress {
@@ -60,13 +62,20 @@ export class Exporter {
     // so the reported duration and the rendered output cannot disagree
     // (muted-audio exclusion is shared with the argument builder, #544).
     const clips = selectExportClips(project);
-    const totalFrames = clips.length > 0
-      ? Math.max(...clips.map((c) => c.startFrame + c.durationFrames))
-      : 0;
+    const totalFrames = options.range
+      ? options.range.end - options.range.start
+      : clips.length > 0
+        ? Math.max(...clips.map((c) => c.startFrame + c.durationFrames))
+        : 0;
 
     if (totalFrames === 0) {
       win.webContents.send('export:error', 'No clips on timeline');
       return;
+    }
+    if (options.format === 'audio' && !clips.some((c) => c.type === 'audio')) {
+      const message = 'No audio to export — add an audio clip or pick a video format.';
+      win.webContents.send('export:error', message);
+      throw new Error(message);
     }
 
     // Loud pre-flight: a missing source file would otherwise render as a
@@ -81,7 +90,16 @@ export class Exporter {
     }
 
     // Build the FFmpeg command
-    const args = this.buildFfmpegArgs(project, options, width, height, fps, totalFrames);
+    let args: string[];
+    try {
+      args = this.buildFfmpegArgs(project, options, width, height, fps, totalFrames);
+    } catch (err) {
+      // Argument-building refusals (e.g. audio-only with no eligible audio)
+      // are user-facing; surface them through the same channel as progress.
+      const message = err instanceof Error ? err.message : String(err);
+      win.webContents.send('export:error', message);
+      throw err;
+    }
     win.webContents.send('export:progress', {
       percent: 0,
       frame: 0,
@@ -249,6 +267,13 @@ export function registerExportHandlers(getProject: () => Project | null): void {
 
   ipcMain.handle('export:cancel', () => {
     exporter.cancel();
+    return { success: true };
+  });
+
+  ipcMain.handle('export:reveal', (_event, outputPath: string) => {
+    if (typeof outputPath === 'string' && outputPath.length > 0) {
+      shell.showItemInFolder(outputPath);
+    }
     return { success: true };
   });
 }

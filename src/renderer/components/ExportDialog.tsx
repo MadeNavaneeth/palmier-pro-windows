@@ -11,7 +11,7 @@ interface ExportDialogProps {
   onClose: () => void;
 }
 
-type Format = 'mp4' | 'mov' | 'webm';
+type Format = 'mp4' | 'mov' | 'webm' | 'audio';
 type Quality = 'draft' | 'normal' | 'high';
 
 interface ExportProgress {
@@ -36,6 +36,12 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
   const [format, setFormat] = useState<Format>('mp4');
   const [quality, setQuality] = useState<Quality>('normal');
+  const [useRange, setUseRange] = useState(false);
+  const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
+  const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
+  const hasRange = inFrame !== undefined && outFrame !== undefined && inFrame !== outFrame;
+  const rangeStart = hasRange ? Math.min(inFrame!, outFrame!) : 0;
+  const rangeEnd = hasRange ? Math.max(inFrame!, outFrame!) : 0;
   const [resIdx, setResIdx] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
@@ -76,7 +82,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     const width = res.width || projectWidth;
     const height = res.height || projectHeight;
 
-    const ext = format === 'mov' ? 'mov' : format === 'webm' ? 'webm' : 'mp4';
+    const ext =
+      format === 'audio' ? 'm4a' : format === 'mov' ? 'mov' : format === 'webm' ? 'webm' : 'mp4';
 
     await window.palmier.export.start({
       outputPath: `output.${ext}`, // TODO: file dialog
@@ -85,8 +92,11 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       width,
       height,
       fps: projectFps,
+      ...(useRange && hasRange
+        ? { range: { start: rangeStart, end: rangeEnd } }
+        : {}),
     });
-  }, [format, quality, resIdx, projectWidth, projectHeight, projectFps]);
+  }, [format, quality, resIdx, projectWidth, projectHeight, projectFps, useRange, hasRange, rangeStart, rangeEnd]);
 
   const handleCancel = useCallback(async () => {
     await window.palmier.export.cancel();
@@ -106,10 +116,10 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             <div className="mb-4">
               <label className="block text-xs text-text-secondary mb-1.5">Format</label>
               <div className="flex gap-2">
-                {(['mp4', 'mov', 'webm'] as Format[]).map((f) => (
+                {(['mp4', 'mov', 'webm', 'audio'] as Format[]).map((f) => (
                   <OptionButton
                     key={f}
-                    label={f.toUpperCase()}
+                    label={f === 'audio' ? 'AUDIO' : f.toUpperCase()}
                     selected={format === f}
                     onClick={() => setFormat(f)}
                   />
@@ -149,6 +159,21 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 ))}
               </select>
             </div>
+
+            {/* Range (In/Out marks) */}
+            {hasRange && (
+              <div className="mb-4">
+                <label className="flex items-center gap-2 text-xs text-text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={useRange}
+                    onChange={(e) => setUseRange(e.target.checked)}
+                    className="accent-[var(--color-accent)]"
+                  />
+                  Export In/Out range only ({rangeStart}–{rangeEnd})
+                </label>
+              </div>
+            )}
 
             {/* Error message */}
             {error && (
@@ -214,7 +239,15 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 <p className="text-2xs text-text-muted truncate max-w-[280px]">{outputPath}</p>
               </div>
             </div>
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  if (outputPath) void window.palmier.export.reveal(outputPath);
+                }}
+                className="rounded border border-surface-3 px-4 py-2 text-sm text-text-secondary hover:bg-surface-3 transition"
+              >
+                Reveal in Explorer
+              </button>
               <button
                 onClick={onClose}
                   className="rounded bg-accent px-4 py-2 text-sm font-medium text-surface-0 hover:bg-accent-hover transition"

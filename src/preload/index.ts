@@ -112,6 +112,8 @@ const api = {
     start: (options: Record<string, unknown>) =>
       ipcRenderer.invoke('export:start', options),
     cancel: () => ipcRenderer.invoke('export:cancel'),
+    /** Show a finished export in Explorer (R2 delivery polish). */
+    reveal: (outputPath: string) => ipcRenderer.invoke('export:reveal', outputPath),
   },
 
   // ── Event subscriptions (main → renderer) ───────────────────────────────────

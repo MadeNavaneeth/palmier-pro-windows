@@ -232,4 +232,116 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(args.slice(audioCodecAt, audioCodecAt + 4)).toEqual(['-c:a', 'aac', '-b:a', '192k']);
     expect(args).toContain('-t');
   });
+
+  // ─── Range export (R2) ─────────────────────────────────────────────────────
+
+  function buildWithRange(project: Project, start: number, end: number): string[] {
+    return buildFfmpegArgs(
+      project,
+      {
+        outputPath: 'out.mp4',
+        format: 'mp4',
+        quality: 'normal',
+        range: { start, end },
+      },
+      1920,
+      1080,
+      30,
+      end - start,
+      () => GEOMETRY,
+    );
+  }
+
+  it('projects clips into the range: rebased starts and shifted source trims', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 5000 }],
+      // Clip spans [100, 300); range [150, 250) trims 50 off each side.
+      [
+        {
+          type: 'video',
+          assetId: 'v',
+          startFrame: 100,
+          durationFrames: 200,
+          inPoint: 10,
+          outPoint: 210,
+        },
+      ],
+    );
+
+    const graph = buildWithRange(project, 150, 250).find((arg) => arg.includes('trim='))!;
+    // Source window shifts by the 50-frame head offset.
+    expect(graph).toContain('trim=start=2.0000'); // (10+50)/30fps
+    // Overlay enable window is rebased to zero.
+    expect(graph).toContain("enable='between(t,0.0000,3.3333)'");
+  });
+
+  it('drops clips entirely outside the range', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 5000 }],
+      [
+        { type: 'video', assetId: 'v', startFrame: 0, durationFrames: 50 },
+        { type: 'video', assetId: 'v', startFrame: 450, durationFrames: 50 },
+        { type: 'video', assetId: 'v', startFrame: 900, durationFrames: 50 },
+      ],
+    );
+
+    const args = buildWithRange(project, 400, 600);
+    const graph = args.find((arg) => arg.includes('trim='))!;
+    // Only the middle clip survives; the canvas is mapped as the base.
+    expect(graph.match(/\[1:v\]trim=/g)).toHaveLength(1);
+  });
+
+  it('makes audio delays relative to the range start', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 1800 }],
+      [{ type: 'audio', assetId: 'a', startFrame: 300 }], // 10s absolute
+    );
+
+    const graph = buildWithRange(project, 150, 600).find((arg) => arg.includes('atrim'))!;
+    // Absolute delay would be 10s; inside a range starting at 5s → 5s.
+    expect(graph).toContain('adelay=5000:all=1');
+  });
+
+  it('audio-only exports omit the canvas and every video map', () => {
+    const project = projectWithMedia(
+      [
+        { id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 },
+        { id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 },
+      ],
+      [
+        { type: 'video', assetId: 'v', trackId: 'v1' },
+        { type: 'audio', assetId: 'a', trackId: 'a1' },
+      ],
+    );
+
+    const args = buildFfmpegArgs(
+      project,
+      { outputPath: 'out.m4a', format: 'audio', quality: 'normal' },
+      1920,
+      1080,
+      30,
+      100,
+      null,
+    );
+        expect(args.some((arg) => arg.startsWith('color='))).toBe(false);
+    expect(args).not.toContain('[vout]');
+    expect(args).not.toContain('libx264');
+    expect(args.join(' ')).toContain('aac');
+    const maps = args.filter((arg, i) => args[i - 1] === '-map');
+    expect(maps).toEqual(['[a0]']);
+  });
+
+  it('throws for audio-only with no eligible audio (#544 interplay)', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
+      [{ type: 'audio', assetId: 'a', trackId: 'a1', muted: true }],
+    );
+    expect(() =>
+      buildFfmpegArgs(
+        project,
+        { outputPath: 'out.m4a', format: 'audio', quality: 'normal' },
+        1920, 1080, 30, 10, null,
+      ),
+    ).toThrow(/No audio to export/i);
+  });
 });

@@ -4,7 +4,7 @@
  * Split out of main/media/exporter.ts so the graph construction is unit-testable
  * without Electron. One behavioral change against the pre-consolidation
  * builder: each unique source path becomes exactly ONE `-i` input, shared by
- * every clip referencing it — previously N clips from one source spawned N
+ * every clip referencing it â€” previously N clips from one source spawned N
  * full decodes. FFmpeg fans a single input out to multiple filter chains, so
  * per-clip trim/scale/overlay semantics are unchanged; audio `-map`s likewise
  * address the consolidated index.
@@ -23,8 +23,37 @@ import { selectExportClips } from '../../shared/media/export-eligibility';
 
 export interface ExportArgOptions {
   outputPath: string;
-  format: 'mp4' | 'mov' | 'webm';
+  format: 'mp4' | 'mov' | 'webm' | 'audio';
   quality: 'draft' | 'normal' | 'high';
+  /** Timeline range export: only frames in [start, end) are rendered. */
+  range?: { start: number; end: number };
+}
+
+/**
+ * Project the eligible clip list into a timeline range: clips are clipped to
+ * the span, source In/Out shifted proportionally for partial overlaps, and
+ * start frames rebased so the range begins at frame zero.
+ */
+function projectClipsIntoRange(
+  clips: Clip[],
+  range: { start: number; end: number },
+): Clip[] {
+  const out: Clip[] = [];
+  for (const clip of clips) {
+    const overlapStart = Math.max(clip.startFrame, range.start);
+    const overlapEnd = Math.min(clip.startFrame + clip.durationFrames, range.end);
+    if (overlapEnd <= overlapStart) continue;
+    const sourceOffset = overlapStart - clip.startFrame;
+    const localDuration = overlapEnd - overlapStart;
+    out.push({
+      ...clip,
+      startFrame: overlapStart - range.start,
+      durationFrames: localDuration,
+      inPoint: clip.inPoint + sourceOffset,
+      outPoint: clip.inPoint + sourceOffset + localDuration,
+    });
+  }
+  return out;
 }
 
 type GeometryFilterFn = (
@@ -35,6 +64,7 @@ type GeometryFilterFn = (
 ) => string;
 
 const PRESETS: Record<string, Record<string, string[]>> = {
+  audio: {}, // audio-only exports use the shared -c:a flags below
   mp4: {
     draft: ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28'],
     normal: ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20'],
@@ -60,23 +90,32 @@ export function buildFfmpegArgs(
   height: number,
   fps: number,
   totalFrames: number,
-  exportFilterGeometry: GeometryFilterFn | null,
+  /** Reserved: native pixel-exact geometry (see NOTE above -- not consumed yet). */
+  _exportFilterGeometry: GeometryFilterFn | null,
 ): string[] {
   const { outputPath } = options;
   // Same eligibility list as the extent calculation: a muted audio clip must
   // produce no input and no -map at all (upstream #544), not a zero-gain
   // stream some muxers choke on.
-  const clips = selectExportClips(project);
-  const duration = totalFrames / fps;
+  let eligible = selectExportClips(project);
+  let total = totalFrames;
+  if (options.range) {
+    if (options.range.end <= options.range.start) {
+      throw new Error('Export range end must be greater than start.');
+    }
+    eligible = projectClipsIntoRange(eligible, options.range);
+    total = options.range.end - options.range.start;
+  }
+  const duration = total / fps;
 
   // Sort clips by track order for proper layering.
-  const sortedClips = [...clips].sort((a, b) => {
+  const sortedClips = [...eligible].sort((a, b) => {
     const trackA = project.timeline.tracks.find((t) => t.id === a.trackId);
     const trackB = project.timeline.tracks.find((t) => t.id === b.trackId);
     return (trackA?.order || 0) - (trackB?.order || 0);
   });
 
-  const videoClips = sortedClips.filter((c) => c.type !== 'audio');
+  const videoClips = options.format === 'audio' ? [] : sortedClips.filter((c) => c.type !== 'audio');
   const audioClips = sortedClips.filter((c) => c.type === 'audio');
 
   // One input per unique source path, in first-use order (#546).
@@ -91,9 +130,16 @@ export function buildFfmpegArgs(
   const assetOf = (clip: Clip) => project.media.find((m) => m.id === clip.assetId);
 
   const args: string[] = ['-y']; // overwrite output
+  const audioOnly = options.format === 'audio';
 
-  // Input 0: blank canvas as base.
-  args.push('-f', 'lavfi', '-i', `color=c=black:s=${width}x${height}:d=${duration}:r=${fps}`);
+  if (audioOnly && audioClips.length === 0) {
+    throw new Error('No audio to export â€” every eligible audio clip is missing or muted.');
+  }
+
+  // Input 0: blank canvas as base (video exports only).
+  if (!audioOnly) {
+    args.push('-f', 'lavfi', '-i', `color=c=black:s=${width}x${height}:d=${duration}:r=${fps}`);
+  }
 
   // Register inputs in clip order so indices are deterministic.
   for (const clip of videoClips) {
@@ -108,15 +154,15 @@ export function buildFfmpegArgs(
     args.push('-i', inputPath);
   }
 
-  // Build filter_complex — one graph covering video chains and, when audio
+  // Build filter_complex â€” one graph covering video chains and, when audio
   // clips are eligible, the timed audio mix. Audio previously mapped raw
-  // full-source streams: no trim, no start offset, no volume — every music
+  // full-source streams: no trim, no start offset, no volume â€” every music
   // bed played from source zero over the whole export. The per-clip chain
   // below shares the video side's source-time mapping (#68), so export and
   // preview address a clip's audio identically.
   const filters: string[] = [];
   if (videoClips.length > 0) {
-    filters.push(buildFilterGraph(project, videoClips, width, height, fps, inputIndexByPath, exportFilterGeometry));
+    filters.push(buildFilterGraph(project, videoClips, width, height, fps, inputIndexByPath, _exportFilterGeometry));
   }
 
   let audioMap: string | null = null;
@@ -159,7 +205,10 @@ export function buildFfmpegArgs(
   if (filters.length > 0) {
     args.push('-filter_complex', filters.join(';'));
   }
-  if (videoClips.length > 0) {
+  if (audioOnly) {
+    // Audio-only: the mix chain is the whole output; the shared push below
+    // emits the single -map.
+  } else if (videoClips.length > 0) {
     args.push('-map', `[vout]`);
   } else {
     args.push('-map', '0:v');
@@ -169,8 +218,10 @@ export function buildFfmpegArgs(
   }
 
   // Output settings
-  const codecArgs = PRESETS[options.format]?.[options.quality] || PRESETS.mp4.normal;
-  args.push(...codecArgs);
+  if (!audioOnly) {
+    const codecArgs = PRESETS[options.format]?.[options.quality] || PRESETS.mp4.normal;
+    args.push(...codecArgs);
+  }
 
   // Audio codec
   if (options.format === 'webm') {
@@ -193,7 +244,7 @@ function buildFilterGraph(
   _canvasHeight: number,
   fps: number,
   inputIndexByPath: Map<string, number>,
-  exportFilterGeometry: GeometryFilterFn | null,
+  _exportFilterGeometry: GeometryFilterFn | null,
 ): string {
   const filters: string[] = [];
   let lastLabel = '0:v';
@@ -206,20 +257,13 @@ function buildFilterGraph(
     const inTime = clip.startFrame / fps;
     const outTime = (clip.startFrame + clip.durationFrames) / fps;
 
-    // Get the geometry filter from the Rust native addon
-    const geomFilter = exportFilterGeometry
-      ? exportFilterGeometry(
-          clip.x, clip.y,
-          clip.width, clip.height,
-          clip.rotation,
-          clip.scaleX, clip.scaleY,
-        )
-      : // Fallback: simple scale + overlay
-        (() => {
-          const sw = Math.round(clip.width * clip.scaleX);
-          const sh = Math.round(clip.height * clip.scaleY);
-          return `scale=${sw}:${sh},overlay=x=${Math.round(clip.x)}:y=${Math.round(clip.y)}`;
-        })();
+    // NOTE (tracked gap): the native addon exposes to_ffmpeg_filter with
+    // rotation support, but this graph never consumed it -- exports have
+    // used the inline scale+overlay below (rotation dropped) since before
+    // the #546 refactor. Wiring rotate= here requires reworking the
+    // per-chain frame sizing around rotw/roth; tracked as an R2
+    // conformance-fixture item so preview/export rotation parity gets a
+    // real test instead of a silent divergence.
 
     // Trim window in source seconds, through the shared mapping so export and
     // preview address the source identically (#68).
@@ -244,7 +288,7 @@ function buildFilterGraph(
     const scaledW = Math.round(clip.width * clip.scaleX);
     const scaledH = Math.round(clip.height * clip.scaleY);
 
-    // Transition fades — applied in the clip's own (0-based, post-setpts) time
+    // Transition fades â€” applied in the clip's own (0-based, post-setpts) time
     // so they match the preview's effective-opacity ramp exactly. alpha=1 makes
     // the fade affect transparency so it composites over the layers below.
     let fadeChain = '';

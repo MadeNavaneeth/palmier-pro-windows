@@ -84,7 +84,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   }, [controller, selectedClipIds]);
 
   // ─── Paste attributes (R1 checklist) ─────────────────────────────────────
-  const [snapshotVersion, setSnapshotVersion] = useState(0);
+  const [, setSnapshotVersion] = useState(0);
   const settingsSnapshot = controller.getSettingsSnapshot();
   const snapshotMatches =
     settingsSnapshot !== null
