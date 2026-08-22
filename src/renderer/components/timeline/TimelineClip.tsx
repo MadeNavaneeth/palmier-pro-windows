@@ -15,6 +15,8 @@ import {
 import { clipTrimSeconds } from '../../../shared/media/source-time';
 import { slicePeaks } from '../../../shared/audio/waveform';
 import { getWaveformPeaks } from '../../lib/waveform-cache';
+import { filmstripLayout } from '../../../shared/media/filmstrip';
+import { getFilmstrip } from '../../lib/filmstrip-cache';
 import { useMediaPanelStore } from '../../store/media-panel';
 
 interface TimelineClipProps {
@@ -87,8 +89,12 @@ export function TimelineClip({ clip }: TimelineClipProps) {
 
   // ─── Audio waveform (R1 lane states) ─────────────────────────────────────
   const WAVEFORM_BUCKETS = 256;
+  const FILMSTRIP_COUNT = 8;
   const [peaks, setPeaks] = useState<number[] | null>(null);
+  const [strip, setStrip] = useState<string[] | null>(null);
   const audioPath = clip.type === 'audio' && !isOffline ? asset?.path : undefined;
+  const videoPath = clip.type === 'video' && !isOffline ? asset?.path : undefined;
+
   useEffect(() => {
     if (!audioPath) {
       setPeaks(null);
@@ -111,6 +117,32 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       cancelled = true;
     };
   }, [audioPath]);
+
+  useEffect(() => {
+    if (!videoPath) {
+      setStrip(null);
+      return;
+    }
+    let cancelled = false;
+    const promise = getFilmstrip(videoPath, FILMSTRIP_COUNT);
+    if (!promise) {
+      setStrip(null);
+      return;
+    }
+    promise
+      .then((paths) => {
+        if (!cancelled) setStrip(paths);
+      })
+      .catch(() => {
+        if (!cancelled) setStrip(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [videoPath]);
+
+
+
 
   // ─── Paste attributes (R1 checklist) ─────────────────────────────────────
   const [, setSnapshotVersion] = useState(0);
@@ -141,6 +173,17 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   // Position and size
   const left = (clip.startFrame - viewport.scrollFrame) * viewport.pixelsPerFrame;
   const width = clip.durationFrames * viewport.pixelsPerFrame;
+
+  /** Visible filmstrip slots for the clip's trimmed window. */
+  const stripSlots = useMemo(() => {
+    if (clip.type !== 'video' || !strip || width < 24) return null;
+    const totalSeconds = asset ? Math.max(0.04, asset.duration / fps) : 1;
+    const startSec = clip.inPoint / fps;
+    const endSec = clip.outPoint / fps;
+    return filmstripLayout(strip.length, totalSeconds, startSec, endSec).map(
+      (slot) => ({ ...slot, src: strip[slot.index] }),
+    );
+  }, [clip.type, strip, width, asset, fps, clip.inPoint, clip.outPoint]);
 
   // Waveform bars for the clip's trimmed window (audio clips, R1).
   const waveformBars = useMemo(() => {
@@ -301,6 +344,25 @@ export function TimelineClip({ clip }: TimelineClipProps) {
               Offline
             </span>
           )}
+        </div>
+      )}
+
+      {/* Filmstrip thumbnails — video clips (R1 lane states) */}
+      {stripSlots && stripSlots.length > 0 && (
+        <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
+          {stripSlots.map((slot) => (
+            <img
+              key={slot.index}
+              src={`file://${slot.src}`}
+              alt=""
+              draggable={false}
+              className="absolute top-0 h-full object-cover opacity-90"
+              style={{
+                left: `${slot.leftRatio * 100}%`,
+                width: `${100 / stripSlots.length}%`,
+              }}
+            />
+          ))}
         </div>
       )}
 

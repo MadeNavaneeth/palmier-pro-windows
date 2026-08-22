@@ -9,6 +9,7 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
 import fsSync from 'fs';
+import crypto from 'crypto';
 
 const execFileAsync = promisify(execFile);
 
@@ -94,6 +95,60 @@ export function registerMediaHandlers(): void {
       (p): p is string => typeof p === 'string' && p.length > 0 && !fsSync.existsSync(p),
     );
     return { missing };
+  });
+
+  // ─── Filmstrip: evenly spaced thumbnails across a video source (R1) ─────────
+  ipcMain.handle('media:filmstrip', async (_event, filePath: unknown, count: unknown) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      return { success: false, error: 'Invalid source path' };
+    }
+    const frames = Math.min(12, Math.max(2, Math.floor(Number(count)) || 6));
+    try {
+      const stat = await fs.stat(filePath);
+      const key = crypto
+        .createHash('sha1')
+        .update(`${filePath}|${stat.size}|${stat.mtimeMs}|${frames}`)
+        .digest('hex')
+        .slice(0, 16);
+      const dir = path.join(app.getPath('userData'), 'filmstrips', key);
+      // Cached strips survive restarts; a complete strip short-circuits.
+      const existing = await Promise.all(
+        Array.from({ length: frames }, (_, i) =>
+          fs.access(path.join(dir, `${i}.jpg`)).then(() => true).catch(() => false),
+        ),
+      );
+      if (existing.every(Boolean)) {
+        return {
+          success: true,
+          paths: existing.map((_, i) => path.join(dir, `${i}.jpg`)),
+        };
+      }
+      await fs.mkdir(dir, { recursive: true });
+
+      const probe = await probeMedia(filePath);
+      const totalSec = Math.max(0.04, probe.duration || 0);
+      for (let i = 0; i < frames; i += 1) {
+        const at = ((i + 0.5) / frames) * totalSec;
+        const out = path.join(dir, `${i}.jpg`);
+        try {
+          await execFileAsync('ffmpeg', [
+            '-y', '-ss', at.toFixed(3), '-i', filePath,
+            '-frames:v', '1', '-vf', 'scale=96:-2', '-q:v', '6', out,
+          ]);
+        } catch {
+          // A single failed sample just leaves a gap in the strip.
+        }
+      }
+      const paths = Array.from({ length: frames }, (_, i) => path.join(dir, `${i}.jpg`));
+      const present = await Promise.all(paths.map((p) => fileExists(p)));
+      if (!present.some(Boolean)) {
+        return { success: false, error: 'Filmstrip generation produced no frames.' };
+      }
+      return { success: true, paths };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
   });
 
   // ─── Folder picker ───────────────────────────────────────────────────────────
