@@ -26,6 +26,7 @@
     "upstream:audit": "node scripts/upstream-audit.mjs",
     "upstream:audit:write": "node scripts/upstream-audit.mjs --write",
     "upstream:audit:check": "node scripts/upstream-audit.mjs --check",
+    "ui:probe": "node scripts/ui-probe.mjs",
     "clean": "rimraf dist out",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"

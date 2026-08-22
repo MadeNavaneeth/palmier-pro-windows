@@ -1,0 +1,25 @@
+{
+  "generatedAt": "2026-08-22T04:59:46.338Z",
+  "results": [
+    {
+      "width": 1600,
+      "height": 1000,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offenderCount": 0,
+      "offenders": [],
+      "token": ".625rem",
+      "textProbe": "10px"
+    },
+    {
+      "width": 1024,
+      "height": 680,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offenderCount": 0,
+      "offenders": [],
+      "token": ".625rem",
+      "textProbe": "10px"
+    }
+  ]
+}

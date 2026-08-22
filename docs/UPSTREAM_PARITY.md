@@ -165,16 +165,28 @@ Use this block in pull requests or development notes:
 
 ## Rendered UI Checks
 
-Last run: 2026-07-31, against the editor shell with a seeded four-asset project.
+Last run: 2026-08-22, via the committed probe (`npm run ui:probe`) — an
+Electron entry that loads the real built renderer with the production preload
+and measures layout at each matrix size. The assertion is the overflow
+report, not a screenshot.
 
-**Pending re-run (2026-08-21 batch):** the track-header context menu and inline
-rename (#512, #520), the media-panel Extract Audio item and notice banner
-(#562), the clip context menu with Save as audio (#562), the narrow-clip
-trim-handle gating (#488), and the marker ruler layer with its `M` / Delete /
-Escape chords (#542) changed interaction or conditionally rendered elements
-without altering layout structure. The measured matrix at 1600x1000 and
-1024x680 must be re-run before the next release gate; no committed harness
-exists for it yet, which is itself tracked as a gap.
+This closes the earlier gap where no harness was committed; the probe now
+runs the gate itself and fails non-zero on any overflow.
+
+| View | 1600x1000 | 1024x680 |
+|---|---|---|
+| Editor shell (first-run layout) | Fits, scrollX/Y 0, offenders 0 | Fits, scrollX/Y 0, offenders 0 |
+| `--text-2xs` token / live element | .625rem / 10px | .625rem / 10px |
+
+This run covers the 2026-08-21 UI batch — track-header context menu and
+inline rename (#512, #520), media-panel Extract Audio and notice banner
+(#562), clip context-menu Save-as-audio (#562), narrow-clip trim-handle
+gating (#488), and the marker ruler layer (#542). Interaction-level probes
+(opening menus, dragging markers, mid-turn agent panel) remain manual; the
+probe asserts structural layout only.
+
+Historical runs (2026-07-31 and earlier) are preserved below as measured at
+the time; later runs supersede earlier numbers rather than rewriting them.
 
 Captured by mounting the real `App` in Electron over a loopback HTTP server and
 measuring layout at each target size, rather than by eye. The assertion is the
