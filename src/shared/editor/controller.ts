@@ -457,6 +457,134 @@ export class EditorController {  private project: Project;
     return clip.id;
   }
 
+  /**
+   * Split every clip intersecting the given per-track spans and drop the
+   * covered middles, keeping head/tail fragments with correct source mapping
+   * and no ripple shift. Shared by clipboard paste and overwrite placement.
+   */
+  private clearTrackSpans(
+    clips: Clip[],
+    spansByTrack: Map<string, Array<{ start: Frame; end: Frame }>>,
+  ): Clip[] {
+    return clips.flatMap((clip) => {
+      const spans = spansByTrack.get(clip.trackId);
+      if (!spans) return [clip];
+      const intersections = spans
+        .map((span) => ({
+          start: Math.max(clip.startFrame, span.start),
+          end: Math.min(clip.startFrame + clip.durationFrames, span.end),
+        }))
+        .filter((span) => span.end > span.start);
+      if (intersections.length === 0) return [clip];
+
+      const kept: Array<{ start: Frame; end: Frame }> = [];
+      let cursor = clip.startFrame;
+      for (const intersection of intersections) {
+        if (intersection.start > cursor) kept.push({ start: cursor, end: intersection.start });
+        cursor = Math.max(cursor, intersection.end);
+      }
+      if (cursor < clip.startFrame + clip.durationFrames) {
+        kept.push({ start: cursor, end: clip.startFrame + clip.durationFrames });
+      }
+      // Head/tail fragments keep their source mapping; the covered middle goes.
+      return kept.map((segment) => {
+        const headKept = segment.start === clip.startFrame;
+        return {
+          ...clip,
+          startFrame: segment.start,
+          durationFrames: segment.end - segment.start,
+          inPoint: clip.inPoint + (segment.start - clip.startFrame),
+          outPoint: clip.inPoint + (segment.end - clip.startFrame),
+          fadeInFrames: headKept ? clip.fadeInFrames : 0,
+          fadeOutFrames:
+            segment.end === clip.startFrame + clip.durationFrames ? clip.fadeOutFrames : 0,
+        };
+      });
+    });
+  }
+
+  /**
+   * Place media with an explicit collision mode (roadmap R1; upstream pairs
+   * `add_clips`/`insert_clips`).
+   *
+   * - `overwrite` clears the destination span first (splitting survivors),
+   *   leaving other tracks untouched.
+   * - `insert` ripple-pushes the target track's later clips — plus any linked
+   *   partners of those clips on their own tracks — later by the placed
+   *   length, then lands at `startFrame`.
+   * - `append` lands after the last clip on the track.
+   *
+   * Video placements with embedded audio create a linked audio partner on a
+   * free lane exactly like `addClip`, atomically creating one when needed.
+   * Everything is one undoable step. Returns null for unknown/incompatible
+   * asset-track pairs and locked tracks.
+   */
+  placeClipWithMode(params: {
+    assetId: string;
+    trackId: string;
+    mode?: 'overwrite' | 'insert' | 'append';
+    startFrame?: Frame;
+    durationFrames?: Frame;
+  }): { clipIds: string[] } | null {
+    const asset = this.project.media.find((m) => m.id === params.assetId);
+    const track = this.project.timeline.tracks.find((t) => t.id === params.trackId);
+    if (!asset || !track || track.locked) return null;
+    if (!isMediaCompatibleWithTrack(asset.type, track.type)) return null;
+
+    const fps = this.project.settings.fps;
+    const duration = clampFrame(params.durationFrames || placementDuration(asset, fps), 1);
+    const mode = params.mode ?? 'overwrite';
+
+    let start: Frame;
+    if (mode === 'append') {
+      start = this.project.timeline.clips
+        .filter((c) => c.trackId === params.trackId)
+        .reduce((max, c) => Math.max(max, c.startFrame + c.durationFrames), 0);
+    } else {
+      start = clampFrame(params.startFrame ?? this.getPlayhead());
+    }
+
+    let clips = [...this.project.timeline.clips];
+    const newTracks: Track[] = [];
+
+    if (mode === 'overwrite') {
+      clips = this.clearTrackSpans(
+        clips,
+        new Map([[params.trackId, [{ start, end: start + duration }]]]),
+      );
+    } else if (mode === 'insert') {
+      const movingIds = new Set(this.expandLinkedClipIds(
+        clips.filter((c) => c.trackId === params.trackId && c.startFrame >= start).map((c) => c.id),
+      ));
+      clips = clips.map((clip) =>
+        movingIds.has(clip.id)
+          ? { ...clip, startFrame: clampFrame(clip.startFrame + duration) }
+          : clip,
+      );
+    }
+
+    const linkGroupId =
+      asset.type === 'video' && track.type === 'video' && hasEmbeddedAudio(asset)
+        ? nanoid()
+        : undefined;
+    const mainClip = this.createPlacedClip(asset, asset.type, params.trackId, start, duration, linkGroupId);
+    const createdClips = [mainClip];
+    let audioClip: Clip | undefined;
+    if (linkGroupId) {
+      const audioTrack = this.resolveAudioPlacementTrack(start, duration, createdClips, newTracks);
+      audioClip = this.createPlacedClip(asset, 'audio', audioTrack.id, start, duration, linkGroupId);
+      createdClips.push(audioClip);
+    }
+    const finalClips = [...clips, ...createdClips];
+
+    if (newTracks.length > 0) {
+      this.execute(new AddMediaAndClipsCommand([], finalClips, mode === 'insert' ? 'Insert clip' : 'Place clip', newTracks));
+    } else {
+      this.execute(new ReplaceClipsCommand(finalClips, mode === 'insert' ? 'Insert clip' : 'Place clip'));
+    }
+    return { clipIds: createdClips.map((clip) => clip.id) };
+  }
+
   removeClip(clipId: string): boolean {
     return this.removeClips([clipId]);
   }
@@ -1309,42 +1437,12 @@ export class EditorController {  private project: Project;
       spansByTrack.set(p.dstTrackId, list);
     }
 
-    const touchedTracks = new Set(spansByTrack.keys());
     const newIds: string[] = [];
-    const clips = this.project.timeline.clips.flatMap((clip) => {
-      if (!touchedTracks.has(clip.trackId)) return [clip];
-      const spans = spansByTrack.get(clip.trackId)!;
-      const intersections = spans
-        .map((span) => ({
-          start: Math.max(clip.startFrame, span.start),
-          end: Math.min(clip.startFrame + clip.durationFrames, span.end),
-        }))
-        .filter((span) => span.end > span.start);
-      if (intersections.length === 0) return [clip];
-
-      const kept: Array<{ start: Frame; end: Frame }> = [];
-      let cursor = clip.startFrame;
-      for (const intersection of intersections) {
-        if (intersection.start > cursor) kept.push({ start: cursor, end: intersection.start });
-        cursor = Math.max(cursor, intersection.end);
-      }
-      if (cursor < clip.startFrame + clip.durationFrames) {
-        kept.push({ start: cursor, end: clip.startFrame + clip.durationFrames });
-      }
-      // Head/tail fragments keep their source mapping; the covered middle goes.
-      return kept.map((segment) => {
-        const headKept = segment.start === clip.startFrame;
-        return {
-          ...clip,
-          startFrame: segment.start,
-          durationFrames: segment.end - segment.start,
-          inPoint: clip.inPoint + (segment.start - clip.startFrame),
-          outPoint: clip.inPoint + (segment.end - clip.startFrame),
-          fadeInFrames: headKept ? clip.fadeInFrames : 0,
-          fadeOutFrames: segment.end === clip.startFrame + clip.durationFrames ? clip.fadeOutFrames : 0,
-        };
-      });
-    });
+    // Overwrite via the shared span-clearing helper: split survivors, drop
+    // covered middles, no ripple shift.
+    const clips = [
+      ...this.clearTrackSpans(this.project.timeline.clips, spansByTrack),
+    ];
 
     for (const placement of placements) {
       const newId = nanoid();

@@ -65,6 +65,11 @@ export const tools = {
       trackId: z.string().describe('Target track ID.'),
       startFrame: frameSchema.describe('Frame position where the clip should start.'),
       durationFrames: durationSchema.optional().describe('Duration in frames. Defaults to asset duration.'),
+      mode: z.enum(['overwrite', 'insert', 'append']).optional().describe(
+        'Collision handling. overwrite (default) replaces whatever sits in the span; insert '
+        + 'pushes later clips on the track and their linked partners right by the placed length; '
+        + 'append ignores startFrame and lands after the last clip on the track.',
+      ),
     }),
   },
 

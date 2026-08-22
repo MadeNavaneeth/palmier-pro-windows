@@ -263,6 +263,24 @@ export class ToolExecutor {
 
       // ── Write operations ──────────────────────────────────────────────────
       case 'add_clip': {
+        if (args.mode !== undefined) {
+          const placed = this.editor.placeClipWithMode({
+            assetId: args.assetId,
+            trackId: args.trackId,
+            mode: args.mode,
+            ...(args.startFrame !== undefined ? { startFrame: clampFrame(args.startFrame) } : {}),
+            ...(args.durationFrames !== undefined
+              ? { durationFrames: clampFrame(args.durationFrames, 1) }
+              : {}),
+          });
+          if (!placed) {
+            return {
+              success: false,
+              error: `Cannot place ${String(args.assetId)} on track "${String(args.trackId)}": unknown ids, incompatible types, or the track is locked.`,
+            };
+          }
+          return { success: true, data: { clipIds: placed.clipIds } };
+        }
         const clipId = this.editor.addClip({
           assetId: args.assetId,
           trackId: args.trackId,
