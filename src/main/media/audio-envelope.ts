@@ -17,6 +17,7 @@ import {
   type SilentRange,
 } from '../../shared/audio/silence-detector';
 import { loadSilenceSettings, saveSilenceSettings } from './silence-settings';
+import { bucketPeaks } from '../../shared/audio/waveform';
 
 const SAMPLE_RATE = 16000;
 const DEFAULT_HOP_MS = 20;
@@ -124,6 +125,20 @@ export function registerAudioHandlers(): void {
     limits: SILENCE_LIMITS,
     defaults: DEFAULT_SILENCE_CONFIG,
   }));
+
+  // ─── Waveform peaks for timeline audio rendering (R1 lane states) ──────────
+  ipcMain.handle('audio:waveform', async (_event, filePath: unknown, buckets?: unknown) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      return { success: false, error: 'No media file supplied.' };
+    }
+    const count = Math.min(512, Math.max(8, Math.floor(Number(buckets)) || 128));
+    try {
+      const { envelope } = await extractRmsEnvelope(filePath);
+      return { success: true, peaks: bucketPeaks(envelope, count) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
 
   ipcMain.handle('audio:set-silence-settings', (_event, update?: Partial<SilenceConfig>) => ({
     success: true,

@@ -62,6 +62,8 @@ const api = {
     getSilenceSettings: () => ipcRenderer.invoke('audio:get-silence-settings'),
     setSilenceSettings: (update: Partial<SilenceConfig>) =>
       ipcRenderer.invoke('audio:set-silence-settings', update),
+    waveform: (filePath: string, buckets: number) =>
+      ipcRenderer.invoke('audio:waveform', filePath, buckets),
   },
 
   // ── System ───────────────────────────────────────────────────────────────────

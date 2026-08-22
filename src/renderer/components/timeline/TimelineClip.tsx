@@ -5,7 +5,7 @@
  * window into a standalone library asset, upstream PR #562).
  */
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Clip } from '../../../shared/types/project';
 import { useTimelineStore } from '../../store/timeline';
 import {
@@ -13,6 +13,8 @@ import {
   showsTrimHandles,
 } from '../../lib/timeline-clip-hit';
 import { clipTrimSeconds } from '../../../shared/media/source-time';
+import { slicePeaks } from '../../../shared/audio/waveform';
+import { getWaveformPeaks } from '../../lib/waveform-cache';
 import { useMediaPanelStore } from '../../store/media-panel';
 
 interface TimelineClipProps {
@@ -83,6 +85,33 @@ export function TimelineClip({ clip }: TimelineClipProps) {
     }
   }, [controller, selectedClipIds]);
 
+  // ─── Audio waveform (R1 lane states) ─────────────────────────────────────
+  const WAVEFORM_BUCKETS = 256;
+  const [peaks, setPeaks] = useState<number[] | null>(null);
+  const audioPath = clip.type === 'audio' && !isOffline ? asset?.path : undefined;
+  useEffect(() => {
+    if (!audioPath) {
+      setPeaks(null);
+      return;
+    }
+    let cancelled = false;
+    const promise = getWaveformPeaks(audioPath, WAVEFORM_BUCKETS);
+    if (!promise) {
+      setPeaks(null);
+      return;
+    }
+    promise
+      .then((curve) => {
+        if (!cancelled) setPeaks(curve);
+      })
+      .catch(() => {
+        if (!cancelled) setPeaks(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [audioPath]);
+
   // ─── Paste attributes (R1 checklist) ─────────────────────────────────────
   const [, setSnapshotVersion] = useState(0);
   const settingsSnapshot = controller.getSettingsSnapshot();
@@ -112,6 +141,20 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   // Position and size
   const left = (clip.startFrame - viewport.scrollFrame) * viewport.pixelsPerFrame;
   const width = clip.durationFrames * viewport.pixelsPerFrame;
+
+  // Waveform bars for the clip's trimmed window (audio clips, R1).
+  const waveformBars = useMemo(() => {
+    if (clip.type !== 'audio' || !peaks || width < 8) return null;
+    const totalSeconds = asset ? Math.max(1, asset.duration / fps) : 1;
+    const startRatio = clip.inPoint / fps / totalSeconds;
+    const endRatio = clip.outPoint / fps / totalSeconds;
+    return slicePeaks(
+      peaks,
+      startRatio,
+      endRatio,
+      Math.min(180, Math.max(8, Math.floor(width / 2))),
+    );
+  }, [clip.type, peaks, width, asset, fps, clip.inPoint, clip.outPoint]);
 
   // Color based on clip type
   const colorClass = CLIP_COLORS[clip.type] || CLIP_COLORS.video;
@@ -258,6 +301,19 @@ export function TimelineClip({ clip }: TimelineClipProps) {
               Offline
             </span>
           )}
+        </div>
+      )}
+
+      {/* Audio waveform — full-height bars under the label (R1) */}
+      {waveformBars && (
+        <div className="absolute inset-0 z-0 flex items-end gap-px overflow-hidden pointer-events-none opacity-50">
+          {waveformBars.map((peak: number, i: number) => (
+            <div
+              key={i}
+              className="flex-1 bg-white/70"
+              style={{ height: `${Math.max(4, peak * 100)}%`, minWidth: 1 }}
+            />
+          ))}
         </div>
       )}
 
