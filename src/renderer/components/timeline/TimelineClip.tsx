@@ -49,6 +49,37 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   // clip an absolutely-positioned menu on short clips.
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 
+  // ─── Detach / relink audio (#462 surface) ─────────────────────────────────
+  const controller = useTimelineStore((s) => s.controller);
+  const selectedCount = selectedClipIds.size;
+  const canDetach = clip.linkGroupId !== undefined;
+  const canRelink =
+    isSelected && selectedCount >= 2
+    && new Set(
+      controller
+        .getClips()
+        .filter((c) => selectedClipIds.has(c.id))
+        .map((c) => c.type),
+    ).size >= 2;
+
+  const handleDetachAudio = useCallback(() => {
+    setMenuPos(null);
+    try {
+      controller.unlinkClips([clip.id]);
+    } catch {
+      // Refusals (nothing linked, locked track) are non-actionable here.
+    }
+  }, [controller, clip.id]);
+
+  const handleLinkSelected = useCallback(() => {
+    setMenuPos(null);
+    try {
+      controller.linkClips([...selectedClipIds]);
+    } catch {
+      // Upstream's refusal messages do not belong in a toast on right-click.
+    }
+  }, [controller, selectedClipIds]);
+
   // Position and size
   const left = (clip.startFrame - viewport.scrollFrame) * viewport.pixelsPerFrame;
   const width = clip.durationFrames * viewport.pixelsPerFrame;
@@ -205,9 +236,10 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       )}
 
       {/* Context menu: Save as audio bakes this clip's trimmed source window
-          into a standalone library asset (#562). Fixed-positioned so the
-          clip's overflow-hidden body cannot clip it. */}
-      {menuPos && canSaveAudio && (
+          into a standalone library asset (#562); Detach/Link expose the #462
+          link management to the pointer. Fixed-positioned so the clip's
+          overflow-hidden body cannot clip it. */}
+      {menuPos && (canSaveAudio || canDetach || canRelink) && (
         <>
           {/* Click-away layer so the menu closes without a global listener. */}
           <div className="fixed inset-0 z-20" onClick={() => setMenuPos(null)} />
@@ -218,13 +250,33 @@ export function TimelineClip({ clip }: TimelineClipProps) {
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
-            <button
-              role="menuitem"
-              onClick={handleSaveAudio}
-              className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
-            >
-              Save as audio
-            </button>
+            {canSaveAudio && (
+              <button
+                role="menuitem"
+                onClick={handleSaveAudio}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Save as audio
+              </button>
+            )}
+            {canDetach && (
+              <button
+                role="menuitem"
+                onClick={handleDetachAudio}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Detach audio (unlink)
+              </button>
+            )}
+            {canRelink && (
+              <button
+                role="menuitem"
+                onClick={handleLinkSelected}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Link selected clips
+              </button>
+            )}
           </div>
         </>
       )}

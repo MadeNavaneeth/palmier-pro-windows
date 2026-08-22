@@ -562,6 +562,52 @@ export class ReplaceProjectCommand implements Command {
 }
 
 /**
+ * Replace one media asset entry in one undoable step — the offline-relink
+ * primitive (upstream EditorViewModel+Relink): only the repointed asset's
+ * path-bearing entry changes; every other asset passes through by reference.
+ */
+export class ReplaceMediaCommand implements Command {
+  readonly name = 'replaceMedia';
+  private previousAsset: MediaAsset | null = null;
+  private captured = false;
+
+  constructor(
+    private nextAsset: MediaAsset,
+    private label: string,
+  ) {}
+
+  execute(project: Project): Project {
+    if (!this.captured) {
+      this.previousAsset =
+        project.media.find((asset) => asset.id === this.nextAsset.id) ?? null;
+      this.captured = true;
+    }
+    return {
+      ...project,
+      media: project.media.map((asset) =>
+        asset.id === this.nextAsset.id ? this.nextAsset : asset,
+      ),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  undo(project: Project): Project {
+    if (!this.previousAsset) return project;
+    return {
+      ...project,
+      media: project.media.map((asset) =>
+        asset.id === this.previousAsset!.id ? this.previousAsset! : asset,
+      ),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  describe(): string {
+    return this.label;
+  }
+}
+
+/**
  * Replace the timeline marker array in one undoable step
  * (upstream PR #542). Snapshotting the whole array mirrors upstream's
  * `registerTimelineMarkerSwap`: markers are few, and whole-array swap makes
