@@ -19,13 +19,18 @@ import { useProjectStore } from '../../store/project';
 interface TimelineTrackProps {
   track: Track;
   clips: Clip[];
+  /**
+   * Lane-background drag starts a rubber-band marquee (R1). The parent owns
+   * the geometry because the band can span tracks; scrubbing stays on the
+   * ruler, and a plain click still seeks via handleTrackClick.
+   */
+  onLaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
 }
 
-export function TimelineTrack({ track, clips }: TimelineTrackProps) {
+export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackProps) {
   const viewport = useTimelineStore((s) => s.viewport);
   const setPlayhead = useTimelineStore((s) => s.setPlayhead);
   const deselectAll = useTimelineStore((s) => s.deselectAll);
-  const startDrag = useTimelineStore((s) => s.startDrag);
   const placeAssets = useTimelineStore((s) => s.placeAssets);
   const importAndPlaceAssets = useTimelineStore((s) => s.importAndPlaceAssets);
   const snapFrame = useTimelineStore((s) => s.snapFrame);
@@ -60,10 +65,9 @@ export function TimelineTrack({ track, clips }: TimelineTrackProps) {
   const handleTrackMouseDown = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (e.target !== e.currentTarget) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      startDrag('playhead', null, e.clientX, frameFromClientX(e.clientX, rect));
+      onLaneMouseDown?.(e);
     },
-    [frameFromClientX, startDrag],
+    [onLaneMouseDown],
   );
 
   // ─── Drop-to-add from the media bin ─────────────────────────────────────────

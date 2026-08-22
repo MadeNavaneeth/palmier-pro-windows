@@ -1,5 +1,5 @@
 /**
- * Timeline — the main timeline panel assembling ruler, tracks, clips,
+ * Timeline â€” the main timeline panel assembling ruler, tracks, clips,
  * playhead, snap lines, and toolbar. Uses the new timeline store and
  * drag/keyboard hooks.
  */
@@ -28,9 +28,69 @@ export function Timeline({ fill = false }: { fill?: boolean } = {}) {
   const viewport = useTimelineStore((s) => s.viewport);
   const scrollTo = useTimelineStore((s) => s.scrollTo);
   const setViewportWidth = useTimelineStore((s) => s.setViewportWidth);
+  const beginMarquee = useTimelineStore((s) => s.beginMarquee);
+  const applyMarqueeRegion = useTimelineStore((s) => s.applyMarqueeRegion);
+  const endMarquee = useTimelineStore((s) => s.endMarquee);
 
   const tracksContainerRef = useRef<HTMLDivElement>(null);
+  const lanesRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(800);
+
+  // Sort tracks: video (higher order on top), audio at bottom. Display order
+  // is what marquee row math maps against.
+  const sortedTracks = [...tracks].sort((a, b) => b.order - a.order);
+  /** Lane row height â€” must match the h-12 track rows. */
+  const TRACK_ROW_HEIGHT = 48;
+
+  // Rubber-band marquee state in client coordinates; the band can cross
+  // tracks, so geometry lives here rather than in a single lane.
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const marqueeRef = useRef(marquee);
+  marqueeRef.current = marquee;
+  const marqueeGeometry = useRef({ pixelsPerFrame: viewport.pixelsPerFrame, scrollFrame: viewport.scrollFrame });
+  marqueeGeometry.current = { pixelsPerFrame: viewport.pixelsPerFrame, scrollFrame: viewport.scrollFrame };
+
+  const handleLaneMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      beginMarquee(e.shiftKey);
+      setMarquee({ x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY });
+
+      const applyRegion = (m: { x0: number; y0: number; x1: number; y1: number }) => {
+        const container = lanesRef.current?.getBoundingClientRect();
+        if (!container) return;
+        const { pixelsPerFrame, scrollFrame } = marqueeGeometry.current;
+        const frameOf = (clientX: number) =>
+          Math.max(0, Math.round((clientX - container.left) / pixelsPerFrame) + scrollFrame);
+        const startFrame = Math.min(frameOf(m.x0), frameOf(m.x1));
+        const endFrame = Math.max(frameOf(m.x0), frameOf(m.x1));
+        const rowIndex = (clientY: number) =>
+          Math.floor((clientY - container.top) / TRACK_ROW_HEIGHT);
+        const from = Math.min(rowIndex(m.y0), rowIndex(m.y1));
+        const to = Math.max(rowIndex(m.y0), rowIndex(m.y1));
+        const trackIds = new Set(
+          sortedTracks.slice(Math.max(0, from), to + 1).map((track) => track.id),
+        );
+        applyMarqueeRegion(startFrame, Math.max(startFrame + 1, endFrame), trackIds);
+      };
+
+      const onMove = (event: MouseEvent) => {
+        const next = { ...marqueeRef.current!, x1: event.clientX, y1: event.clientY };
+        setMarquee(next);
+        applyRegion(next);
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        endMarquee();
+        setMarquee(null);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [beginMarquee, applyMarqueeRegion, endMarquee, sortedTracks],
+  );
 
   // Activate global hooks
   useDragHandler();
@@ -76,9 +136,6 @@ export function Timeline({ fill = false }: { fill?: boolean } = {}) {
     },
     [viewport, scrollTo],
   );
-
-  // Sort tracks: video (higher order on top), audio at bottom
-  const sortedTracks = [...tracks].sort((a, b) => b.order - a.order);
 
   return (
     // `min-h-*` comes from exactly one branch: Tailwind resolves duplicate
@@ -132,14 +189,29 @@ export function Timeline({ fill = false }: { fill?: boolean } = {}) {
           <TimelineRuler width={containerWidth} />
 
           {/* Track lanes */}
-          <div className="relative">
+          <div ref={lanesRef} className="relative">
             {sortedTracks.map((track) => (
               <TimelineTrack
                 key={track.id}
                 track={track}
                 clips={clips.filter((c) => c.trackId === track.id)}
+                onLaneMouseDown={handleLaneMouseDown}
               />
             ))}
+
+            {/* Rubber-band selection rect (R1 marquee). */}
+            {marquee && lanesRef.current && (
+              <div
+                data-marquee-rect
+                className="absolute z-20 border border-accent/80 bg-accent/10 pointer-events-none"
+                style={{
+                  left: Math.min(marquee.x0, marquee.x1) - lanesRef.current.getBoundingClientRect().left,
+                  top: Math.min(marquee.y0, marquee.y1) - lanesRef.current.getBoundingClientRect().top,
+                  width: Math.abs(marquee.x1 - marquee.x0),
+                  height: Math.abs(marquee.y1 - marquee.y0),
+                }}
+              />
+            )}
 
             {/* Playhead (spans all tracks) */}
             <PlayheadIndicator />

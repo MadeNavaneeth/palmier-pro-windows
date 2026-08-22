@@ -175,6 +175,22 @@ export interface TimelineState {
   /** Keyboard paste: anchor at the playhead on its source/compatible track. */
   pasteClipsAtPlayhead: () => string[];
 
+  // Marquee (R1 selection model)
+  /** Additive base captured when a rubber band starts; null when idle. */
+  marqueeBaseIds: ReadonlySet<string> | null;
+  /** Snapshot the current selection as the additive base for a rubber band. */
+  beginMarquee: (additive: boolean) => void;
+  /**
+   * Select every clip intersecting the frame range on any of the given
+   * tracks, unioned with the additive base captured by beginMarquee.
+   */
+  applyMarqueeRegion: (
+    startFrame: Frame,
+    endFrame: Frame,
+    trackIds: ReadonlySet<string>,
+  ) => void;
+  endMarquee: () => void;
+
   // Editing
   addClip: (assetId: string, trackId: string, startFrame: Frame, durationFrames?: Frame) => string;
   placeAssets: (assetIds: string[], trackId: string, startFrame: Frame) => string[];
@@ -311,6 +327,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     hoveredClipId: null,
     selectedGap: null,
     selectedMarkerIds: new Set(),
+    marqueeBaseIds: null,
 
     isPlaying: false,
     playbackRate: 1,
@@ -532,6 +549,33 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     }
     return newIds;
   },
+
+  // ─── Marquee (R1) ──────────────────────────────────────────────────────
+  beginMarquee: (additive) => {
+    set((state) => ({
+      marqueeBaseIds: additive ? state.selectedClipIds : new Set<string>(),
+      selectedGap: null,
+      selectedMarkerIds: new Set(),
+    }));
+  },
+
+  applyMarqueeRegion: (startFrame, endFrame, trackIds) => {
+    set((state) => {
+      const next = new Set(state.marqueeBaseIds ?? new Set<string>());
+      for (const clip of state.getClips()) {
+        if (
+          trackIds.has(clip.trackId)
+          && clip.startFrame < endFrame
+          && clip.startFrame + clip.durationFrames > startFrame
+        ) {
+          next.add(clip.id);
+        }
+      }
+      return { selectedClipIds: next };
+    });
+  },
+
+  endMarquee: () => set({ marqueeBaseIds: null }),
 
     // ─── Editing ───────────────────────────────────────────────────────────
     addClip: (assetId, trackId, startFrame, durationFrames) => {
