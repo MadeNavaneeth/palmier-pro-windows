@@ -85,8 +85,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     const ext =
       format === 'audio' ? 'm4a' : format === 'mov' ? 'mov' : format === 'webm' ? 'webm' : 'mp4';
 
-    await window.palmier.export.start({
-      outputPath: `output.${ext}`, // TODO: file dialog
+    const startRes = await window.palmier.export.start({
+      outputPath: `output.${ext}`, // resolved by a save dialog in the main process
       format,
       quality,
       width,
@@ -96,6 +96,9 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         ? { range: { start: rangeStart, end: rangeEnd } }
         : {}),
     });
+    if (startRes && !startRes.success && startRes.canceled) {
+      setIsExporting(false); // user closed the save dialog; not an error
+    }
   }, [format, quality, resIdx, projectWidth, projectHeight, projectFps, useRange, hasRange, rangeStart, rangeEnd]);
 
   const handleCancel = useCallback(async () => {

@@ -11,7 +11,8 @@
 
 import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
-import { ipcMain, BrowserWindow, shell } from 'electron';
+import { ipcMain, BrowserWindow, shell, dialog } from 'electron';
+import path from 'path';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import type { Project } from '../../shared/types/project';
@@ -257,9 +258,40 @@ export function registerExportHandlers(getProject: () => Project | null): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return { success: false, error: 'No window' };
 
+    // Resolve the destination: an absolute path from the caller (agent/MCP)
+    // is honored as-is; otherwise ask the user where to save.
+    let outputPath = typeof options.outputPath === 'string' ? options.outputPath : '';
+    if (!path.isAbsolute(outputPath)) {
+      const ext = options.format === 'audio'
+        ? 'm4a'
+        : options.format === 'mov'
+          ? 'mov'
+          : options.format === 'webm'
+            ? 'webm'
+            : 'mp4';
+      const safeName = (project.name || 'export').replace(/[\\/:*?"<>|]/g, '_');
+      const result = await dialog.showSaveDialog(win, {
+        title: 'Export media',
+        defaultPath: `${safeName}.${ext}`,
+        filters:
+          options.format === 'audio'
+            ? [{ name: 'M4A audio', extensions: ['m4a'] }]
+            : options.format === 'mov'
+              ? [{ name: 'MOV video', extensions: ['mov'] }]
+              : options.format === 'webm'
+                ? [{ name: 'WebM video', extensions: ['webm'] }]
+                : [{ name: 'MP4 video', extensions: ['mp4'] }],
+      });
+      if (result.canceled || !result.filePath) {
+        return { success: false, canceled: true };
+      }
+      outputPath = result.filePath;
+      options.outputPath = outputPath;
+    }
+
     try {
       await exporter.export(project, options, win);
-      return { success: true };
+      return { success: true, outputPath };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
