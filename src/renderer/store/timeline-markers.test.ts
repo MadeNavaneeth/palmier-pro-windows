@@ -93,4 +93,35 @@ describe('marker store surface (#542)', () => {
       .map((point) => point.frame);
     expect(sources).toEqual(expect.arrayContaining([100, 150]));
   });
+
+  it('navigates next/previous and selects the destination marker (R1)', () => {
+    const { store, controller } = storeWithClips();
+    controller.changeTimelineMarkers({
+      creates: [
+        { name: 'A', startFrame: 100 },
+        { name: 'B', startFrame: 300 },
+      ],
+    });
+    store.getState().setPlayhead(50);
+
+    expect(store.getState().goToNextMarker()).toBe(true);
+    expect(store.getState().getPlayhead()).toBe(100);
+    const firstId = controller.getMarkers().find((m) => m.name === 'A')!.id;
+    expect(store.getState().selectedMarkerIds.has(firstId)).toBe(true);
+
+    // A marker the playhead sits ON is not its own "next".
+    expect(store.getState().goToNextMarker()).toBe(true);
+    expect(store.getState().getPlayhead()).toBe(300);
+
+    // End of list: no-op.
+    expect(store.getState().goToNextMarker()).toBe(false);
+
+    expect(store.getState().goToPreviousMarker()).toBe(true);
+    expect(store.getState().getPlayhead()).toBe(100);
+
+    // Before the first marker: no-op.
+    store.getState().setPlayhead(40);
+    expect(store.getState().goToPreviousMarker()).toBe(false);
+    expect(store.getState().getPlayhead()).toBe(40);
+  });
 });

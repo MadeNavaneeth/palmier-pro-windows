@@ -164,6 +164,16 @@ export interface TimelineState {
     markerId: string,
     patch: { name?: string; startFrame?: Frame; durationFrames?: Frame },
   ) => boolean;
+  /** Jump to the nearest marker start after the playhead; selects it. */
+  goToNextMarker: () => boolean;
+  /** Jump to the nearest marker start before the playhead; selects it. */
+  goToPreviousMarker: () => boolean;
+
+  // Clipboard (R1)
+  copySelectedClips: () => number;
+  cutSelectedClips: () => number;
+  /** Keyboard paste: anchor at the playhead on its source/compatible track. */
+  pasteClipsAtPlayhead: () => string[];
 
   // Editing
   addClip: (assetId: string, trackId: string, startFrame: Frame, durationFrames?: Frame) => string;
@@ -455,17 +465,73 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       }
     },
 
-    updateMarker: (markerId, patch) => {
-      try {
-        const receipt = get().controller.changeTimelineMarkers(
-          { updates: [{ id: markerId, ...patch }] },
-          'Update marker',
-        );
-        return receipt !== null;
-      } catch {
-        return false;
-      }
-    },
+  updateMarker: (markerId, patch) => {
+    try {
+      const receipt = get().controller.changeTimelineMarkers(
+        { updates: [{ id: markerId, ...patch }] },
+        'Update marker',
+      );
+      return receipt !== null;
+    } catch {
+      return false;
+    }
+  },
+
+  goToNextMarker: () => {
+    const playhead = get().getPlayhead();
+    const next = get()
+      .controller.getMarkers()
+      .map((marker) => marker.startFrame)
+      .filter((frame) => frame > playhead)
+      .sort((a, b) => a - b)[0];
+    if (next === undefined) return false;
+    get().setPlayhead(next);
+    // Land with the destination marker selected so Delete acts on it.
+    const hit = get().controller.getMarkers().find((m) => m.startFrame === next);
+    set({ selectedMarkerIds: hit ? new Set([hit.id]) : new Set() });
+    return true;
+  },
+
+  goToPreviousMarker: () => {
+    const playhead = get().getPlayhead();
+    const previous = get()
+      .controller.getMarkers()
+      .map((marker) => marker.startFrame)
+      .filter((frame) => frame < playhead)
+      .sort((a, b) => b - a)[0];
+    if (previous === undefined) return false;
+    get().setPlayhead(previous);
+    const hit = get().controller.getMarkers().find((m) => m.startFrame === previous);
+    set({ selectedMarkerIds: hit ? new Set([hit.id]) : new Set() });
+    return true;
+  },
+
+  copySelectedClips: () => {
+    const count = get().controller.copyClips(get().selectedClipIds);
+    return count;
+  },
+
+  cutSelectedClips: () => {
+    const ids = [...get().selectedClipIds];
+    const copied = get().controller.copyClips(ids);
+    if (copied > 0 && get().controller.removeClips(ids)) {
+      set({ selectedClipIds: new Set() });
+    }
+    return copied;
+  },
+
+  pasteClipsAtPlayhead: () => {
+    const newIds = get().controller.pasteClips();
+    if (newIds.length > 0) {
+      // Pasted clips arrive selected, matching upstream.
+      set({
+        selectedClipIds: new Set(newIds),
+        selectedGap: null,
+        selectedMarkerIds: new Set(),
+      });
+    }
+    return newIds;
+  },
 
     // ─── Editing ───────────────────────────────────────────────────────────
     addClip: (assetId, trackId, startFrame, durationFrames) => {

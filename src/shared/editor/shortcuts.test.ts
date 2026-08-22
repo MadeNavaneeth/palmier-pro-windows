@@ -118,11 +118,21 @@ describe('matchShortcut', () => {
     expect(matchShortcut({ key: 'F9' })).toBeUndefined();
   });
 
-  it('leaves common browser and OS chords alone', () => {
-    // Anything the editor claims here would shadow copy/paste/cut/find.
-    for (const key of ['c', 'v', 'x', 'f', 'p', 'w', 'r', 't']) {
+  it('leaves browser-only chords alone', () => {
+    // Find/print/close-tab/reload/new-tab stay with the browser. Ctrl+C/V/X
+    // are now editor clipboard commands: the keyboard hook ignores events
+    // originating in editable fields, so text fields keep native behavior.
+    for (const key of ['f', 'p', 'w', 'r', 't']) {
       const hit = matchShortcut({ key, ctrlKey: true });
       expect(hit).toBeUndefined();
+    }
+    for (const [key, id] of [
+      ['c', 'copySelected'],
+      ['v', 'pasteAtPlayhead'],
+      ['x', 'cutSelected'],
+    ] as const) {
+      const hit = matchShortcut({ key, ctrlKey: true });
+      expect(hit?.id, `${key}`).toBe(id);
     }
   });
 });

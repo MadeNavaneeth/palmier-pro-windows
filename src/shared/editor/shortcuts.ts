@@ -62,6 +62,11 @@ export type ShortcutId =
   | 'markSelectedClip'
   | 'clearMarkedRange'
   | 'addMarker'
+  | 'nextMarker'
+  | 'previousMarker'
+  | 'copySelected'
+  | 'cutSelected'
+  | 'pasteAtPlayhead'
   | 'selectAll'
   | 'deselectAll'
   | 'zoomIn'
@@ -116,6 +121,18 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   },
   { id: 'undo', label: 'Undo', category: 'Editing', bindings: [{ key: 'z', ctrl: true }] },
   {
+    id: 'cutSelected',
+    label: 'Cut selected clips',
+    category: 'Editing',
+    bindings: [{ key: 'x', ctrl: true }],
+  },
+  {
+    id: 'copySelected',
+    label: 'Copy selected clips',
+    category: 'Editing',
+    bindings: [{ key: 'c', ctrl: true }],
+  },
+  { id: 'pasteAtPlayhead', label: 'Paste clips at the playhead', category: 'Editing', bindings: [{ key: 'v', ctrl: true }] },  {
     id: 'redo',
     label: 'Redo',
     category: 'Editing',
@@ -130,6 +147,8 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   { id: 'markSelectedClip', label: 'Mark the selected clip', category: 'Marking', bindings: [{ key: 'x' }] },
   { id: 'clearMarkedRange', label: 'Clear in and out points', category: 'Marking', bindings: [{ key: 'x', ctrl: true, shift: true }] },
   { id: 'addMarker', label: 'Add marker at the playhead', category: 'Marking', bindings: [{ key: 'm' }] },
+  { id: 'nextMarker', label: 'Go to next marker', category: 'Marking', bindings: [{ key: 'ArrowRight', alt: true }] },
+  { id: 'previousMarker', label: 'Go to previous marker', category: 'Marking', bindings: [{ key: 'ArrowLeft', alt: true }] },
 
   // ── Selection ──────────────────────────────────────────────────────────────
   { id: 'selectAll', label: 'Select all clips', category: 'Selection', bindings: [{ key: 'a', ctrl: true }] },

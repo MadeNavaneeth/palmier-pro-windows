@@ -124,6 +124,15 @@ export function useKeyboardShortcuts() {
           timeline.removeSelectedClips();
         }
         return;
+      case 'copySelected':
+        timeline.copySelectedClips();
+        return;
+      case 'cutSelected':
+        timeline.cutSelectedClips();
+        return;
+      case 'pasteAtPlayhead':
+        timeline.pasteClipsAtPlayhead();
+        return;
       case 'rippleDeleteSelected':
         timeline.rippleDelete();
         return;
@@ -158,6 +167,12 @@ export function useKeyboardShortcuts() {
         return;
       case 'addMarker':
         timeline.addMarkerAtPlayhead();
+        return;
+      case 'nextMarker':
+        timeline.goToNextMarker();
+        return;
+      case 'previousMarker':
+        timeline.goToPreviousMarker();
         return;
 
       // ── Selection ──────────────────────────────────────────────────────────

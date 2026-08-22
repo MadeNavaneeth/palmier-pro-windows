@@ -1,5 +1,5 @@
 /**
- * EditorController — the single command surface for all editing operations.
+ * EditorController ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the single command surface for all editing operations.
  *
  * The UI, the AI agent, and the MCP server all call these methods.
  * Every mutation goes through execute(), making it undoable and auditable.
@@ -44,6 +44,19 @@ import {
   type TimelineMarker,
 } from './markers';
 import { hasEmbeddedAudio, isMediaCompatibleWithTrack, placementDuration } from './placement';
+
+/**
+ * One copied clip and its position relative to the copy anchor ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
+ * Windows translation of upstream's `ClipClipboardEntry` (R1 clipboard).
+ */
+interface ClipClipboardEntry {
+  clip: Clip;
+  /** Array-index distance from the topmost copied track. */
+  trackOffset: number;
+  /** Frame distance from the earliest copied start. */
+  frameOffset: number;
+  sourceTrackId: string;
+}
 import { computeRippleShifts, mergeRippleRanges, type RippleRange } from './ripple';
 
 export type StateChangeListener = (project: Project) => void;
@@ -82,7 +95,7 @@ export interface ProjectSettingsReport {
  *
  * `changedClipIds` are the clips actually written (all in one undo step);
  * `skippedClipIds` are requested ids that did not resolve to a clip or that the
- * property is not valid for — e.g. a blend mode aimed at an audio clip. A
+ * property is not valid for ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â e.g. a blend mode aimed at an audio clip. A
  * request that resolves but changes nothing appears in neither list.
  */
 export interface BulkClipPropertyReport {
@@ -255,20 +268,22 @@ export class EditorController {  private project: Project;
   private listeners: Set<StateChangeListener> = new Set();
   /**
    * Clip lookups by id, valid only for the exact project object it was built
-   * from (upstream PR #486). Every mutation — command execution, undo, redo,
-   * restore — replaces `this.project` wholesale, so reference identity is a
+   * from (upstream PR #486). Every mutation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â command execution, undo, redo,
+   * restore ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â replaces `this.project` wholesale, so reference identity is a
    * complete invalidation signal and no revision counter is needed. First
    * occurrence wins per id, matching what the linear `Array.find` it replaced
    * returned.
    */
   private clipByIdCache?: { project: Project; byId: Map<string, Clip> };
+  /** In-app clipboard for copy/cut/paste (R1). Not OS-shared by design. */
+  private clipClipboard: ClipClipboardEntry[] = [];
 
   constructor(project?: Project) {
     this.project = project || createEmptyProject();
     this.history = new CommandHistory();
   }
 
-  // ─── State access ──────────────────────────────────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ State access ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   getProject(): Project {
     return this.project;
@@ -334,7 +349,7 @@ export class EditorController {  private project: Project;
     return this.project.timeline.playheadFrame;
   }
 
-  // ─── Command execution ─────────────────────────────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Command execution ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   execute(command: Command): void {
     this.project = this.history.execute(command, this.project);
@@ -369,7 +384,7 @@ export class EditorController {  private project: Project;
     return this.history.canRedo();
   }
 
-  // ─── High-level editing API (used by UI, agent, MCP) ──────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ High-level editing API (used by UI, agent, MCP) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   addClip(params: {
     assetId: string;
@@ -389,7 +404,7 @@ export class EditorController {  private project: Project;
     // Refuse an unknown track rather than placing a clip nothing can reach.
     // Tracks are what the timeline, the compositor and the exporter all iterate,
     // so a clip naming a track that does not exist is invisible everywhere while
-    // still counting in the clip list and toward the project duration — and the
+    // still counting in the clip list and toward the project duration ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and the
     // caller was told the placement succeeded. An agent inventing a track id is
     // the realistic way in, which is the mis-targeting class upstream closed in
     // PR #307 (#302).
@@ -977,7 +992,7 @@ export class EditorController {  private project: Project;
    * (upstream PR #520's `manage_tracks` surface).
    *
    * Every entry addresses a track by exactly one of `trackId` or current
-   * `index` — never both (the #302 mis-targeting class). Reorder destinations
+   * `index` ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never both (the #302 mis-targeting class). Reorder destinations
    * must stay inside the track's type zone. `muted` and `hidden` fold onto
    * this port's single `visible` toggle (`visible === false` means muted on
    * audio tracks). A `name` key present with an empty string restores the
@@ -1003,7 +1018,7 @@ export class EditorController {  private project: Project;
   } | null {
     const hasWork = (op.reorder?.length ?? 0) + (op.set?.length ?? 0) + (op.remove?.length ?? 0) > 0;
     if (!hasWork) {
-      throw new Error('Nothing to do — pass at least one of reorder, set, remove.');
+      throw new Error('Nothing to do ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pass at least one of reorder, set, remove.');
     }
 
     // All selectors resolve against the current track list, up front.
@@ -1064,7 +1079,7 @@ export class EditorController {  private project: Project;
       ).id,
     );
 
-    // ── Apply: reorders → sets → removes, mirroring upstream's order ──
+    // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Apply: reorders ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ sets ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ removes, mirroring upstream's order ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     let working = [...this.project.timeline.tracks];
     const reordered: Array<{ trackId: string; from: number; to: number; changed: boolean }> = [];
     for (const r of reorders) {
@@ -1114,7 +1129,7 @@ export class EditorController {  private project: Project;
       const clipCount = this.project.timeline.clips.filter((clip) => clip.trackId === id).length;
       if (clipCount > 0) {
         throw new Error(
-          `"${track.name}" still has ${clipCount} clip(s) — move or remove them first.`,
+          `"${track.name}" still has ${clipCount} clip(s) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â move or remove them first.`,
         );
       }
     }
@@ -1130,7 +1145,7 @@ export class EditorController {  private project: Project;
     working = working.filter((track) => !removeSet.has(track.id));
 
     // Renumber render orders per type zone: each zone's existing order values
-    // are reassigned (descending — array head is the top compositing layer)
+    // are reassigned (descending ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â array head is the top compositing layer)
     // along the new array sequence, so reordered tracks restack correctly
     // while untouched zones keep their exact original values. A global
     // renumber here would flip cross-type defaults (the seeded project has
@@ -1182,7 +1197,177 @@ export class EditorController {  private project: Project;
     };
   }
 
-  // ─── Timeline markers (upstream PRs #542 / #560) ──────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Clipboard: copy / cut / paste (R1, upstream EditorViewModel+Clipboard) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+
+  /** Snapshot the given clips into the in-app clipboard; returns the count. */
+  copyClips(clipIds: Iterable<string>): number {
+    const requested = new Set(clipIds);
+    const tracks = this.project.timeline.tracks;
+    const captures = this.project.timeline.clips
+      .filter((clip) => requested.has(clip.id))
+      .map((clip) => ({
+        clip,
+        trackIndex: tracks.findIndex((track) => track.id === clip.trackId),
+      }))
+      .filter(({ trackIndex }) => trackIndex !== -1)
+      .sort((a, b) =>
+        a.trackIndex - b.trackIndex
+        || a.clip.startFrame - b.clip.startFrame
+        || (a.clip.id < b.clip.id ? -1 : 1),
+      );
+    if (captures.length === 0) return 0;
+
+    const minTrack = captures[0].trackIndex;
+    const minStart = Math.min(...captures.map((c) => c.clip.startFrame));
+    this.clipClipboard = captures.map(({ clip, trackIndex }) => ({
+      clip,
+      trackOffset: trackIndex - minTrack,
+      frameOffset: clip.startFrame - minStart,
+      sourceTrackId: clip.trackId,
+    }));
+    return this.clipClipboard.length;
+  }
+
+  hasClipboard(): boolean {
+    return this.clipClipboard.length > 0;
+  }
+
+  /** Copy then remove; one visible delete step plus the clipboard snapshot. */
+  cutClips(clipIds: Iterable<string>): number {
+    const ids = [...clipIds];
+    const copied = this.copyClips(ids);
+    if (copied === 0) return 0;
+    if (!this.removeClips(ids)) return 0;
+    return copied;
+  }
+
+  /**
+   * Paste the clipboard. Without arguments this is keyboard paste: the anchor
+   * lands on its source track when that still exists and stays compatible
+   * (first compatible track otherwise), at the playhead. Entries whose
+   * offset track falls outside the timeline or is incompatible are skipped,
+   * matching upstream. Pasting overwrites: intersecting clips on each
+   * destination track are split and their covered middles removed, with no
+   * ripple shift. New link groups are minted for copied group members.
+   */
+  pasteClips(options?: { trackId?: string; startFrame?: Frame }): string[] {
+    if (this.clipClipboard.length === 0) return [];
+    const tracks = this.project.timeline.tracks;
+
+    // Title/generated clips are visual media for placement purposes.
+    const mediaKindOf = (clip: Clip): 'video' | 'audio' | 'image' =>
+      clip.type === 'audio' ? 'audio' : clip.type === 'image' ? 'image' : 'video';
+
+    let destIndex: number;
+    if (options?.trackId !== undefined) {
+      destIndex = tracks.findIndex((track) => track.id === options.trackId);
+      if (destIndex === -1) return [];
+    } else {
+      const anchor = this.clipClipboard[0];
+      const sourceTrack = tracks.find((track) => track.id === anchor.sourceTrackId);
+      const compatible = (index: number) =>
+        index >= 0 && index < tracks.length
+        && isMediaCompatibleWithTrack(mediaKindOf(anchor.clip), tracks[index].type);
+      destIndex = sourceTrack && compatible(tracks.indexOf(sourceTrack))
+        ? tracks.indexOf(sourceTrack)
+        : tracks.findIndex((_, index) => compatible(index));
+      if (destIndex === -1) return [];
+    }
+
+    const baseFrame = Math.max(0, Math.round(options?.startFrame ?? this.getPlayhead()));
+
+    type Placement = { clip: Clip; dstTrackId: string; dstStart: Frame };
+    const placements: Placement[] = [];
+    for (const entry of this.clipClipboard) {
+      const target = tracks[destIndex + entry.trackOffset];
+      if (!target || !isMediaCompatibleWithTrack(mediaKindOf(entry.clip), target.type)) continue;
+      placements.push({
+        clip: entry.clip,
+        dstTrackId: target.id,
+        dstStart: baseFrame + entry.frameOffset,
+      });
+    }
+    if (placements.length === 0) return [];
+
+    // Fresh link-group ids per copied group (a singleton copy still gets a
+    // fresh id, matching upstream's group remapping).
+    const groupCounts = new Map<string, number>();
+    for (const placement of placements) {
+      if (placement.clip.linkGroupId) {
+        groupCounts.set(placement.clip.linkGroupId, (groupCounts.get(placement.clip.linkGroupId) ?? 0) + 1);
+      }
+    }
+    const newGroupId = new Map<string, string>();
+    for (const groupId of groupCounts.keys()) newGroupId.set(groupId, nanoid());
+
+    // Overwrite: split every destination-track clip intersecting a pasted
+    // span and drop the covered middle ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â clearRegion without ripple shift.
+    const spansByTrack = new Map<string, Array<{ start: Frame; end: Frame }>>();
+    for (const p of placements) {
+      const list = spansByTrack.get(p.dstTrackId) ?? [];
+      list.push({ start: p.dstStart, end: p.dstStart + p.clip.durationFrames });
+      spansByTrack.set(p.dstTrackId, list);
+    }
+
+    const touchedTracks = new Set(spansByTrack.keys());
+    const newIds: string[] = [];
+    const clips = this.project.timeline.clips.flatMap((clip) => {
+      if (!touchedTracks.has(clip.trackId)) return [clip];
+      const spans = spansByTrack.get(clip.trackId)!;
+      const intersections = spans
+        .map((span) => ({
+          start: Math.max(clip.startFrame, span.start),
+          end: Math.min(clip.startFrame + clip.durationFrames, span.end),
+        }))
+        .filter((span) => span.end > span.start);
+      if (intersections.length === 0) return [clip];
+
+      const kept: Array<{ start: Frame; end: Frame }> = [];
+      let cursor = clip.startFrame;
+      for (const intersection of intersections) {
+        if (intersection.start > cursor) kept.push({ start: cursor, end: intersection.start });
+        cursor = Math.max(cursor, intersection.end);
+      }
+      if (cursor < clip.startFrame + clip.durationFrames) {
+        kept.push({ start: cursor, end: clip.startFrame + clip.durationFrames });
+      }
+      // Head/tail fragments keep their source mapping; the covered middle goes.
+      return kept.map((segment) => {
+        const headKept = segment.start === clip.startFrame;
+        return {
+          ...clip,
+          startFrame: segment.start,
+          durationFrames: segment.end - segment.start,
+          inPoint: clip.inPoint + (segment.start - clip.startFrame),
+          outPoint: clip.inPoint + (segment.end - clip.startFrame),
+          fadeInFrames: headKept ? clip.fadeInFrames : 0,
+          fadeOutFrames: segment.end === clip.startFrame + clip.durationFrames ? clip.fadeOutFrames : 0,
+        };
+      });
+    });
+
+    for (const placement of placements) {
+      const newId = nanoid();
+      newIds.push(newId);
+      clips.push({
+        ...placement.clip,
+        id: newId,
+        trackId: placement.dstTrackId,
+        startFrame: placement.dstStart,
+        ...(placement.clip.linkGroupId
+          ? { linkGroupId: newGroupId.get(placement.clip.linkGroupId) }
+          : {}),
+      });
+    }
+    const ordered = clips.sort((a, b) => a.startFrame - b.startFrame);
+    this.execute(new ReplaceClipsCommand(
+      ordered,
+      placements.length > 1 ? 'Paste clips' : 'Paste clip',
+    ));
+    return newIds;
+  }
+
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Timeline markers (upstream PRs #542 / #560) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   getMarkers(): TimelineMarker[] {
     return this.project.timeline.markers ?? [];
@@ -1269,7 +1454,7 @@ export class EditorController {  private project: Project;
     return mapMarkersThroughClosingHoles(this.getMarkers(), trackHoles);
   }
 
-  // ─── Manual clip linking (upstream PR #462) ───────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Manual clip linking (upstream PR #462) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   /**
    * Resolve the clips a link/unlink request acts on: the requested ids plus
@@ -1348,16 +1533,16 @@ export class EditorController {  private project: Project;
     return { unlinkedClipIds: [...targetIds] };
   }
 
-  // ─── Clip media source swapping (upstream PR #500) ────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Clip media source swapping (upstream PR #500) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   /**
-   * Replace a clip's source media while keeping its edit state — timeline
-   * position, duration, framing, fades — intact.
+   * Replace a clip's source media while keeping its edit state ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â timeline
+   * position, duration, framing, fades ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â intact.
    *
    * Every linked partner sharing the anchor's source swaps with it, as one
    * undoable step. The replacement must be compatible: same media kind as
    * every target, long enough to cover each target's trimmed source window,
-   * and — for video without an audio stream — never backing an audio clip.
+   * and ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â for video without an audio stream ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never backing an audio clip.
    * A longer replacement simply leaves trim headroom: the user can extend
    * the clip into the surplus later, because `outPoint` remains free up to
    * the new asset's duration (the Windows rendering of upstream's
@@ -1391,8 +1576,8 @@ export class EditorController {  private project: Project;
       if (target.type === 'title' || target.type === 'generated') {
         throw new Error('This clip\'s source cannot be swapped.');
       }
-      // Checked before the generic kind mismatch so the common real case —
-      // swapping a picture-plus-linked-audio pair to a silent video — gets
+      // Checked before the generic kind mismatch so the common real case ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+      // swapping a picture-plus-linked-audio pair to a silent video ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â gets
       // the precise reason instead of "video vs audio".
       if (
         target.type === 'audio'
@@ -1493,7 +1678,7 @@ export class EditorController {  private project: Project;
    * Set both marks at once, normalized so in <= out.
    *
    * Marking a clip is one user action, so it is one mutation and one
-   * notification — setting the marks separately would publish an intermediate
+   * notification ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â setting the marks separately would publish an intermediate
    * state where out still belongs to the previously marked range, and every
    * consumer guards `out > in` by discarding the range.
    */
@@ -1670,7 +1855,7 @@ export class EditorController {  private project: Project;
   }
 
   /**
-   * Set a clip's layer blend mode. Only valid for visual clips —
+   * Set a clip's layer blend mode. Only valid for visual clips ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
    * audio clips have no compositing stage, so this is a no-op for them
    * (returns false), matching upstream behaviour (#203).
    */
@@ -1695,7 +1880,7 @@ export class EditorController {  private project: Project;
     });
   }
 
-  /** Set a clip's opacity (0–1). Valid for any visual clip. */
+  /** Set a clip's opacity (0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“1). Valid for any visual clip. */
   setClipOpacity(clipId: string, opacity: number): boolean {
     return this.setClipsOpacity([clipId], opacity).skippedClipIds.length === 0;
   }
@@ -1747,7 +1932,7 @@ export class EditorController {  private project: Project;
   }
 
   /**
-   * Batched clip-property edit — the one path every property mutation takes,
+   * Batched clip-property edit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the one path every property mutation takes,
    * for a single clip or a whole selection (upstream PR #419).
    *
    * `mutate` receives a copy of each resolved clip and returns false to reject
@@ -1817,7 +2002,7 @@ export class EditorController {  private project: Project;
 
   /**
    * Set or clear a geometric in-transition (wipe/slide) on a clip.
-   * Pass `transition` as null to clear. Not undoable via a dedicated command —
+   * Pass `transition` as null to clear. Not undoable via a dedicated command ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
    * uses a project replace so it's a single undo step.
    */
   setClipTransition(clipId: string, transition: ClipTransition | null): boolean {
@@ -1941,7 +2126,7 @@ export class EditorController {  private project: Project;
     return silentRangesSec.length;
   }
 
-  // ─── Project settings ──────────────────────────────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Project settings ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   /**
    * Change frame rate and/or canvas size as one undoable edit (upstream #417).
@@ -2017,7 +2202,7 @@ export class EditorController {  private project: Project;
     return { fps, width, height, changed };
   }
 
-  // ─── Media management (not undoable — these mutate the asset library) ──────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Media management (not undoable ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â these mutate the asset library) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   addMedia(asset: MediaAsset): void {
     this.project = {
@@ -2043,7 +2228,7 @@ export class EditorController {  private project: Project;
    *
    * Deleting an asset while clips still point at it would leave the timeline
    * referencing media that no longer exists, so dependents go with it. Refuses
-   * the whole request when a dependent clip sits on a locked track — a locked
+   * the whole request when a dependent clip sits on a locked track ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a locked
    * track must not lose clips through the media panel.
    *
    * Returns null when nothing matched or the request was refused.
@@ -2083,7 +2268,7 @@ export class EditorController {  private project: Project;
     return { removedAssetIds, removedClipIds };
   }
 
-  // ─── Project lifecycle ─────────────────────────────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Project lifecycle ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   loadProject(project: Project): void {
     this.project = project;
@@ -2116,7 +2301,7 @@ export class EditorController {  private project: Project;
     this.notify();
   }
 
-  // ─── Subscriptions ─────────────────────────────────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Subscriptions ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   subscribe(listener: StateChangeListener): () => void {
     this.listeners.add(listener);
@@ -2129,7 +2314,7 @@ export class EditorController {  private project: Project;
     }
   }
 
-  // ─── Serialization ─────────────────────────────────────────────────────────
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Serialization ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   serialize(): string {
     return JSON.stringify(this.project, null, 2);
