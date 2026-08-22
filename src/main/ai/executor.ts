@@ -202,6 +202,72 @@ export class ToolExecutor {
         }
       }
 
+      case 'copy_clip_settings': {
+        try {
+          let targetClipIds: string[];
+          let targetTrackSelection: Record<string, unknown> | undefined;
+          if (args.targetClipIds !== undefined) {
+            const seen = new Set<string>();
+            targetClipIds = args.targetClipIds.filter((id: string) => !seen.has(id) && seen.add(id));
+            if (targetClipIds.length === 0) {
+              return { success: false, error: "Provide a non-empty 'targetClipIds' array" };
+            }
+          } else {
+            const track = this.editor
+              .getTracks()
+              .find((t) => t.id === args.targetTrack?.trackId);
+            if (!track) {
+              return {
+                success: false,
+                error: `Track not found: ${String(args.targetTrack?.trackId)}`,
+              };
+            }
+            const source = this.editor.getClips().find((c) => c.id === args.sourceClipId);
+            if (!source) {
+              return { success: false, error: `Clip not found: ${String(args.sourceClipId)}` };
+            }
+            const range = args.targetTrack.range;
+            const scoped = this.editor
+              .getClips()
+              .filter(
+                (clip) =>
+                  clip.trackId === track.id
+                  && clip.type === source.type
+                  && clip.id !== source.id
+                  && (!range || (clip.startFrame < range[1] && clip.startFrame + clip.durationFrames > range[0])),
+              );
+            targetClipIds = scoped.map((clip) => clip.id);
+            targetTrackSelection = {
+              trackId: track.id,
+              ...(range ? { range } : {}),
+            };
+            if (targetClipIds.length === 0) {
+              return {
+                success: false,
+                error: `No ${source.type} clips matched targetTrack ${track.id}`,
+              };
+            }
+          }
+
+          const receipt = this.editor.transferClipSettings(args.sourceClipId, targetClipIds);
+          return {
+            success: true,
+            data: {
+              ...receipt,
+              changed: receipt.changedClipIds.length > 0,
+              sourceClipId: args.sourceClipId,
+              mediaType: this.editor.getClips().find((c) => c.id === args.sourceClipId)?.type,
+              ...(targetTrackSelection ? { targetTrack: targetTrackSelection } : {}),
+            },
+          };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Settings transfer failed.',
+          };
+        }
+      }
+
       case 'manage_markers': {
         try {
           if (args.action === 'create') {

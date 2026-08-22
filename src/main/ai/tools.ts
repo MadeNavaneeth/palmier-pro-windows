@@ -302,6 +302,27 @@ export const tools = {
   },
 
   // ── Export ───────────────────────────────────────────────────────────────────
+  copyClipSettings: {
+    name: 'copy_clip_settings',
+    description:
+      'Copy one clip\'s presentation settings (audio: volume; visual: opacity, position, '
+      + 'rotation, scale, blend mode) onto other clips of the same media kind. Timing, trims '
+      + 'and source stay untouched. Provide exactly one of targetClipIds or targetTrack.',
+    parameters: z.object({
+      sourceClipId: z.string().describe('Clip whose settings are copied.'),
+      targetClipIds: z.array(z.string().min(1)).optional()
+        .describe('Explicit target clip IDs.'),
+      targetTrack: z.object({
+        trackId: z.string(),
+        range: z.tuple([frameSchema, frameSchema]).optional()
+          .describe('[startFrame, endFrame) — only clips intersecting the range.'),
+      }).optional().describe('Apply to every same-kind clip on a track (source excluded).'),
+    }).refine(
+      (op) => op.targetClipIds !== undefined !== (op.targetTrack !== undefined),
+      { message: 'Provide exactly one of targetClipIds or targetTrack' },
+    ),
+  },
+
   manageTracks: {
     name: 'manage_tracks',
     description:

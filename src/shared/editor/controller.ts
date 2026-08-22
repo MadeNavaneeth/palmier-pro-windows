@@ -1469,7 +1469,100 @@ export class EditorController {  private project: Project;
 
   //  Timeline markers (upstream PRs #542 / #560) 
 
-  // ─── Offline media relink (upstream EditorViewModel+Relink) ──────────────
+  // ─── Clip settings transfer / paste attributes (R1; upstream #515) ────────
+
+  /**
+   * Copy one clip's presentation settings onto every target clip in a single
+   * undoable step (upstream `applyClipSettings`). Only presentation fields
+   * transfer — timing, trims, source, linkage, and fades stay the target's:
+   *
+   * - audio targets receive `volume`;
+   * - visual targets receive opacity, position, rotation, scale, and blend
+   *   mode (this port has no crop/effect stack yet, so those upstream fields
+   *   have no counterpart);
+   * - title/generated targets count as visual.
+   *
+   * Targets must be the same media kind as the source; refusals carry
+   * upstream's message shape. Unchanged targets are reported rather than
+   * silently skipped, and a call whose targets all match already adds no
+   * history entry.
+   */
+  transferClipSettings(
+    sourceClipId: string,
+    targetClipIds: Iterable<string>,
+    actionName = 'Paste clip settings',
+  ): { changedClipIds: string[]; unchangedClipIds: string[] } {
+    const seen = new Set<string>();
+    const targets = [...targetClipIds].filter((id) => !seen.has(id) && seen.add(id));
+    if (targets.length === 0) throw new Error('Provide at least one target clip.');
+
+    const source = this.findClipById(sourceClipId);
+    if (!source) throw new Error(`Clip not found: ${sourceClipId}`);
+
+    const replacements = new Map<string, Clip>();
+    for (const id of targets) {
+      const target = this.findClipById(id);
+      if (!target) throw new Error(`Clip not found: ${id}`);
+      if (target.type !== source.type) {
+        throw new Error(
+          `Clip ${id} is ${target.type}; copied settings require ${source.type} clips.`,
+        );
+      }
+      let next = target;
+      if (id !== sourceClipId) {
+        next =
+          target.type === 'audio'
+            ? { ...target, volume: source.volume }
+            : {
+                ...target,
+                opacity: source.opacity,
+                x: source.x,
+                y: source.y,
+                rotation: source.rotation,
+                scaleX: source.scaleX,
+                scaleY: source.scaleY,
+                ...(source.blendMode !== undefined || target.blendMode !== undefined
+                  ? { blendMode: source.blendMode }
+                  : {}),
+              };
+      }
+      replacements.set(id, next);
+    }
+
+    // Value comparison on the transferred fields only — a rebuilt-but-
+    // identical clip must count as unchanged (upstream compares Equatable).
+    const settingsDiffer = (a: Clip, b: Clip): boolean => {
+      if (a.type === 'audio') return a.volume !== b.volume;
+      return (
+        a.opacity !== b.opacity
+        || a.x !== b.x
+        || a.y !== b.y
+        || a.rotation !== b.rotation
+        || a.scaleX !== b.scaleX
+        || a.scaleY !== b.scaleY
+        || (a.blendMode ?? null) !== (b.blendMode ?? null)
+      );
+    };
+
+    const changedClipIds = targets.filter((id) => {
+      const current = this.findClipById(id)!;
+      const replacement = replacements.get(id)!;
+      return settingsDiffer(current, replacement);
+    });
+    if (changedClipIds.length === 0) {
+      return { changedClipIds: [], unchangedClipIds: [...targets] };
+    }
+
+    const changedSet = new Set(changedClipIds);
+    const clips = this.project.timeline.clips.map((clip) =>
+      changedSet.has(clip.id) ? replacements.get(clip.id)! : clip,
+    );
+    this.execute(new ReplaceClipsCommand(clips, actionName));
+    return {
+      changedClipIds,
+      unchangedClipIds: targets.filter((id) => !changedSet.has(id)),
+    };
+  }
 
   /**
    * Repoint assets at relocated source files in one undoable step per asset.
@@ -1478,6 +1571,8 @@ export class EditorController {  private project: Project;
    * extension. Unknown ids are refused by name, and a bad entry leaves every
    * earlier relink in the call untouched-but-committed (each is its own undo).
    */
+  // ─── Offline media relink (upstream EditorViewModel+Relink) ──────────────
+
   relinkAsset(assetId: string, newPath: string): boolean {
     const asset = this.project.media.find((a) => a.id === assetId);
     if (!asset) throw new Error(`No media asset "${assetId}" in this project.`);
