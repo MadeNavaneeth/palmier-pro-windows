@@ -38,6 +38,13 @@ const api = {
     probe: (filePath: string) => ipcRenderer.invoke('media:probe', filePath),
     /** Which of these paths no longer exist on disk (offline media, R1). */
     checkOffline: (paths: string[]) => ipcRenderer.invoke('media:check-offline', paths),
+    chooseFolder: () => ipcRenderer.invoke('media:choose-folder'),
+    /**
+     * Offline-relink scan: match the given filenames (case-insensitive,
+     * recursive) under folder; returns filename -> found path.
+     */
+    scanRelink: (filenames: string[], folder: string) =>
+      ipcRenderer.invoke('media:scan-relink', filenames, folder),
     /**
      * Extract a video's audio into a standalone library asset (upstream PR
      * #562). The optional window bakes a source range in (timeline clip entry).

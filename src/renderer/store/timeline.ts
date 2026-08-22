@@ -31,6 +31,8 @@ export interface DragState {
   originalOutPoint?: Frame;
   originalDuration?: Frame;
   ripple?: boolean;
+  /** Alt-trim: scope to the grabbed half of a linked pair (J/L affordance). */
+  singleHalf?: boolean;
   hasAppliedEdit?: boolean;
 }
 
@@ -295,6 +297,7 @@ export interface TimelineState {
     startX: number,
     startFrame: Frame,
     ripple?: boolean,
+    singleHalf?: boolean,
   ) => void;
   updateDrag: (currentX: number) => void;
   endDrag: () => void;
@@ -955,7 +958,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     // ─── Drag Operations ───────────────────────────────────────────────────
-    startDrag: (mode, clipId, startX, startFrame, ripple = false) => {
+    startDrag: (mode, clipId, startX, startFrame, ripple = false, singleHalf = false) => {
       const clip = clipId ? get().getClips().find((c) => c.id === clipId) : null;
       set({
         drag: {
@@ -968,6 +971,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
           originalOutPoint: clip?.outPoint,
           originalDuration: clip?.durationFrames,
           ripple,
+          singleHalf,
           hasAppliedEdit: false,
         },
       });
@@ -991,9 +995,9 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         controller.moveClip(drag.clipId, newStart);
         applied = true;
       } else if (drag.mode === 'trim-left') {
-        applied = controller.trimClipEdge(drag.clipId, 'left', deltaFrames, drag.ripple) !== null;
+        applied = controller.trimClipEdge(drag.clipId, 'left', deltaFrames, drag.ripple, drag.singleHalf ? 'single' : 'linked') !== null;
       } else if (drag.mode === 'trim-right') {
-        applied = controller.trimClipEdge(drag.clipId, 'right', deltaFrames, drag.ripple) !== null;
+        applied = controller.trimClipEdge(drag.clipId, 'right', deltaFrames, drag.ripple, drag.singleHalf ? 'single' : 'linked') !== null;
       }
       set((state) => ({
         drag: {

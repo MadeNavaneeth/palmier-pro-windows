@@ -96,6 +96,60 @@ export function registerMediaHandlers(): void {
     return { missing };
   });
 
+  // ─── Folder picker ───────────────────────────────────────────────────────────
+  ipcMain.handle('media:choose-folder', async () => {
+    const win = BrowserWindow.getFocusedWindow();
+    const result = await dialog.showOpenDialog(win!, {
+      title: 'Choose a folder to scan for media',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { success: false, folder: '' };
+    return { success: true, folder: result.filePaths[0] };
+  });
+
+  /**
+   * Offline-relink scan (upstream EditorViewModel+Relink): walk `folder`
+   * recursively and match each given filename case-insensitively, first
+   * match wins. Bounded walk so a huge tree cannot hang the main process.
+   */
+  ipcMain.handle('media:scan-relink', async (_event, filenames: unknown, folder: unknown) => {
+    if (!Array.isArray(filenames) || typeof folder !== 'string' || folder.length === 0) {
+      return { success: false, error: 'Invalid scan request', matches: {} };
+    }
+    const index = new Map<string, string>();
+    let visited = 0;
+    const MAX_ENTRIES = 20_000;
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (depth > 8 || visited > MAX_ENTRIES) return;
+      let entries;
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        visited += 1;
+        if (visited > MAX_ENTRIES) return;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full, depth + 1);
+        else if (entry.isFile()) {
+          const key = entry.name.toLowerCase();
+          if (!index.has(key)) index.set(key, full);
+        }
+      }
+    };
+    await walk(folder, 0);
+
+    const matches: Record<string, string> = {};
+    for (const raw of filenames) {
+      if (typeof raw !== 'string' || raw.length === 0) continue;
+      const hit = index.get(raw.toLowerCase());
+      if (hit) matches[raw] = hit;
+    }
+    return { success: true, matches };
+  });
+
+
   // ─── Extract audio from a video into a library asset (upstream PR #562) ─────
   // An optional `window` bakes a source range into the extracted file, which
   // is how the timeline clip entry ("Save as audio") captures the clip's

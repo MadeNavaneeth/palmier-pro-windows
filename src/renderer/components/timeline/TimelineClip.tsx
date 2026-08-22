@@ -110,11 +110,11 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       // the clip is move-only (#488); zoom in to trim precisely.
       const zone = resolveClipHitZone(localX, rect.width);
       if (zone === 'trim-left') {
-        // Left trim handle
-        startDrag('trim-left', clip.id, e.clientX, clip.startFrame, e.shiftKey);
+        // Left trim handle — Alt scopes to this half only (J/L cuts)
+        startDrag('trim-left', clip.id, e.clientX, clip.startFrame, e.shiftKey, e.altKey);
       } else if (zone === 'trim-right') {
         // Right trim handle
-        startDrag('trim-right', clip.id, e.clientX, clip.startFrame, e.shiftKey);
+        startDrag('trim-right', clip.id, e.clientX, clip.startFrame, e.shiftKey, e.altKey);
       } else {
         // Body — move or select
         if (!isSelected) {
@@ -191,7 +191,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       {showsTrimHandles(width) && (
         <div
           className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize bg-white/20 opacity-0 hover:opacity-100 transition-opacity"
-          title="Trim start (hold Shift to ripple)"
+          title="Trim start (Shift ripple, Alt this half only)"
         />
       )}
 
@@ -253,7 +253,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       {showsTrimHandles(width) && (
         <div
           className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize bg-white/20 opacity-0 hover:opacity-100 transition-opacity"
-          title="Trim end (hold Shift to ripple)"
+          title="Trim end (Shift ripple, Alt this half only)"
         />
       )}
 

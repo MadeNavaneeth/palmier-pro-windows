@@ -41,6 +41,45 @@ const panelTabs = [
 
 export function MediaBin() {
   const project = useTimelineStore((state) => state.project);
+  const controller = useTimelineStore((state) => state.controller);
+  const offlinePaths = useTimelineStore((state) => state.offlinePaths);
+  const refreshOfflineStatus = useTimelineStore((state) => state.refreshOfflineStatus);
+  const offlineAssets = useMemo(
+    () => project.media.filter((asset) => offlinePaths.has(asset.path)),
+    [project.media, offlinePaths],
+  );
+  const [scanning, setScanning] = useState(false);
+
+  async function handleScanRelink() {
+    if (offlineAssets.length === 0) return;
+    setScanning(true);
+    try {
+      const folderRes = await window.palmier.media.chooseFolder();
+      if (!folderRes.success || !folderRes.folder) return;
+      const scan = await window.palmier.media.scanRelink(
+        offlineAssets.map((a) => a.filename),
+        folderRes.folder,
+      );
+      const byId: Record<string, string> = {};
+      for (const asset of offlineAssets) {
+        const found = scan.matches[asset.filename];
+        if (found) byId[asset.id] = found;
+      }
+      const matched = Object.keys(byId).length;
+      if (matched === 0) {
+        useMediaPanelStore.getState().setNotice('No matching files found in that folder.');
+        return;
+      }
+      controller.relinkAssetsBatch(byId);
+      await refreshOfflineStatus();
+      useMediaPanelStore
+        .getState()
+        .setNotice(`Relinked ${matched} of ${offlineAssets.length} offline items.`);
+    } finally {
+      setScanning(false);
+    }
+  }
+
   const importAssets = useTimelineStore((state) => state.importAssets);
   const fps = project.settings.fps;
   const [activeTab, setActiveTab] = useState<PanelTab>('media');
@@ -167,7 +206,22 @@ export function MediaBin() {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {importError && (
+            {offlineAssets.length > 0 && (
+            <div className="mb-2 flex items-center gap-2 border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-200">
+              <span className="min-w-0 flex-1 truncate">
+                {offlineAssets.length} media offline
+              </span>
+              <button
+                type="button"
+                onClick={handleScanRelink}
+                disabled={scanning}
+                className="shrink-0 rounded border border-amber-400/50 px-1.5 py-0.5 text-[9px] font-medium hover:bg-amber-400/10 disabled:opacity-60"
+              >
+                {scanning ? 'Scanning…' : 'Scan folder to relink'}
+              </button>
+            </div>
+          )}
+          {importError && (
               <div className="mb-2 border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-300">
                 {importError}
               </div>

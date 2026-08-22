@@ -949,12 +949,16 @@ export class EditorController {  private project: Project;
     edge: TrimEdge,
     deltaFrames: Frame,
     ripple = false,
+    scope: 'linked' | 'single' = 'linked',
   ): RippleTrimReport | null {
     const lead = this.findClipById(clipId);
     const requestedDelta = Math.round(deltaFrames);
     if (!lead || !Number.isFinite(requestedDelta) || requestedDelta === 0) return null;
 
-    const targetIds = new Set(this.expandLinkedClipIds([clipId]));
+    // J/L affordance: Alt-trim scopes to the grabbed half only, so the audio
+    // side of a linked pair can extend past the picture (or vice versa) while
+    // the pair keeps moving together afterwards.
+    const targetIds = new Set(scope === 'single' ? [clipId] : this.expandLinkedClipIds([clipId]));
     if (!this.canEditClipIds(targetIds)) return null;
     const targets = this.project.timeline.clips.filter((clip) => targetIds.has(clip.id));
     const durationDeltaRequested = edge === 'right' ? requestedDelta : -requestedDelta;
@@ -1629,6 +1633,38 @@ export class EditorController {  private project: Project;
     const relinked: MediaAsset = { ...asset, path: newPath };
     this.execute(new ReplaceMediaCommand(relinked, `Relink "${asset.filename}"`));
     return true;
+  }
+
+  /**
+   * Batch relink in ONE undoable step — the folder-scan flow hands back a
+   * mapping built by the main process. Kind validation runs for every entry
+   * before anything is committed; any refusal leaves all paths untouched.
+   */
+  relinkAssetsBatch(mapping: Record<string, string>): { relinkedAssetIds: string[] } {
+    const ids = Object.keys(mapping);
+    if (ids.length === 0) return { relinkedAssetIds: [] };
+    for (const id of ids) {
+      const asset = this.project.media.find((a) => a.id === id);
+      if (!asset) throw new Error(`No media asset "${id}" in this project.`);
+      const kind = fileKindOf(mapping[id]);
+      if (kind === null || kind !== asset.type) {
+        throw new Error(
+          `"${mapping[id]}" is ${kind ?? 'an unsupported file type'}; "${asset.filename}" requires ${asset.type} media.`,
+        );
+      }
+    }
+
+    const idSet = new Set(ids);
+    const nextMedia = this.project.media.map((asset) =>
+      idSet.has(asset.id) ? { ...asset, path: mapping[asset.id] } : asset,
+    );
+    this.execute(
+      new ReplaceProjectCommand(
+        { ...this.project, media: nextMedia },
+        ids.length === 1 ? 'Relink media' : `Relink ${ids.length} media`,
+      ),
+    );
+    return { relinkedAssetIds: ids };
   }
 
   /** True when the clip's link group has another member (detach candidate). */
