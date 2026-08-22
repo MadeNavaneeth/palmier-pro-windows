@@ -7,6 +7,8 @@
  */
 
 import type { Project, Clip, Track, Frame, MediaAsset } from '../types/project';
+import type { TimelineMarker } from './markers';
+import type { Timeline } from '../types/project';
 
 // ─── Command interface ───────────────────────────────────────────────────────
 
@@ -493,8 +495,7 @@ export class ReplaceClipsCommand implements Command {
  * same command history as timeline edits, so UI, Agent, and MCP state cannot
  * diverge.
  */
-export class ReplaceTracksCommand implements Command {
-  readonly name = 'replaceTracks';
+export class ReplaceTracksCommand implements Command {  readonly name = 'replaceTracks';
   private previousTracks: Track[] = [];
   private captured = false;
 
@@ -553,6 +554,49 @@ export class ReplaceProjectCommand implements Command {
 
   undo(_project: Project): Project {
     return this.previousProject!;
+  }
+
+  describe(): string {
+    return this.label;
+  }
+}
+
+/**
+ * Replace the timeline marker array in one undoable step
+ * (upstream PR #542). Snapshotting the whole array mirrors upstream's
+ * `registerTimelineMarkerSwap`: markers are few, and whole-array swap makes
+ * create/update/delete mixes trivially reversible.
+ */
+export class ReplaceMarkersCommand implements Command {
+  readonly name = 'replaceMarkers';
+  private previousMarkers: TimelineMarker[] | undefined;
+  private captured = false;
+
+  constructor(
+    private nextMarkers: TimelineMarker[],
+    private label: string,
+  ) {}
+
+  execute(project: Project): Project {
+    if (!this.captured) {
+      this.previousMarkers = project.timeline.markers;
+      this.captured = true;
+    }
+    return {
+      ...project,
+      timeline: { ...project.timeline, markers: this.nextMarkers },
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  undo(project: Project): Project {
+    const timeline: Timeline = { ...project.timeline, markers: this.previousMarkers };
+    if (this.previousMarkers === undefined) delete timeline.markers;
+    return {
+      ...project,
+      timeline,
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   describe(): string {

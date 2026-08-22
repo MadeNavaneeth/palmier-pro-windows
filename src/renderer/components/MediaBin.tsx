@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { useProjectStore } from '../store/project';
 import { useTimelineStore } from '../store/timeline';
-import { useMediaPanelStore } from '../store/media-panel';
+import { canExtractAudio, useMediaPanelStore } from '../store/media-panel';
 import { selectionModeFromModifiers } from '../../shared/media-panel/selection';
 import type { MediaAsset } from '../../shared/types/project';
 import { formatDuration } from '../../shared/utils/time';
@@ -172,6 +172,7 @@ export function MediaBin() {
                 {importError}
               </div>
             )}
+            <PanelNotice />
             {mediaItems.length === 0 ? (
               <div className="flex h-full min-h-44 flex-col items-center justify-center px-5 text-center">
                 <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-surface-2 text-text-muted">
@@ -332,8 +333,24 @@ function MediaGrid({ items, fps }: { items: MediaAsset[]; fps: number }) {
   );
 }
 
-function PanelPlaceholder({ tab }: { tab: Exclude<PanelTab, 'media'> }) {
-  const Icon = tab === 'captions' ? Subtitles : AudioLines;
+/** One-line status for panel actions; click to dismiss. */
+function PanelNotice() {
+  const notice = useMediaPanelStore((state) => state.notice);
+  const setNotice = useMediaPanelStore((state) => state.setNotice);
+  if (!notice) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setNotice(null)}
+      title="Click to dismiss"
+      className="mb-2 block w-full border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-left text-[10px] text-amber-200"
+    >
+      {notice}
+    </button>
+  );
+}
+
+function PanelPlaceholder({ tab }: { tab: Exclude<PanelTab, 'media'> }) {  const Icon = tab === 'captions' ? Subtitles : AudioLines;
   const title = tab === 'captions' ? 'Captions' : 'Audio';
   return (
     <div className="flex min-w-0 flex-1 flex-col">
@@ -352,12 +369,43 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
   const TypeIcon = item.type === 'video' ? Film : item.type === 'audio' ? Music2 : ImageIcon;
   const selectItem = useMediaPanelStore((state) => state.selectItem);
   const deleteSelection = useMediaPanelStore((state) => state.deleteSelection);
+  const extractAudioSelection = useMediaPanelStore((state) => state.extractAudioSelection);
   const isSelected = useMediaPanelStore((state) => state.selection.selectedIds.includes(item.id));
+  const selectedIds = useMediaPanelStore((state) => state.selection.selectedIds);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+
+  const project = useTimelineStore((state) => state.project);
 
   const selectedCount = useMediaPanelStore((state) => state.selection.selectedIds.length);
   const deleteLabel =
     isSelected && selectedCount > 1 ? `Delete ${selectedCount} items` : 'Delete';
+
+  // Extraction acts on the whole selection when the right-clicked tile is part
+  // of it, mirroring the delete targeting rule.
+  const extractTargets = useMemo(() => {
+    const ids = isSelected && selectedCount > 1 ? [...selectedIds] : [item.id];
+    return ids
+      .map((id) => project.media.find((asset) => asset.id === id))
+      .filter((asset): asset is MediaAsset => Boolean(asset))
+      .filter(canExtractAudio);
+  }, [isSelected, selectedCount, selectedIds, item.id, project.media]);
+  const extractLabel =
+    extracting
+      ? 'Extracting audio…'
+      : extractTargets.length > 1
+        ? `Extract audio from ${extractTargets.length} items`
+        : 'Extract audio';
+
+  async function handleExtractAudio() {
+    setMenuOpen(false);
+    setExtracting(true);
+    try {
+      await extractAudioSelection(item.id);
+    } finally {
+      setExtracting(false);
+    }
+  }
 
   return (
     <div
@@ -421,6 +469,16 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
             role="menu"
             className="absolute left-1 top-1 z-30 min-w-28 rounded border border-white/15 bg-surface-2 py-0.5 shadow-lg"
           >
+            {canExtractAudio(item) && (
+              <button
+                role="menuitem"
+                disabled={extracting}
+                onClick={handleExtractAudio}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:text-text-muted"
+              >
+                {extractLabel}
+              </button>
+            )}
             <button
               role="menuitem"
               onClick={() => {

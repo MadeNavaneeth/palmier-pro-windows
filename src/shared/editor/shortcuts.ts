@@ -61,6 +61,7 @@ export type ShortcutId =
   | 'goToOutPoint'
   | 'markSelectedClip'
   | 'clearMarkedRange'
+  | 'addMarker'
   | 'selectAll'
   | 'deselectAll'
   | 'zoomIn'
@@ -128,6 +129,7 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   { id: 'goToOutPoint', label: 'Go to out point', category: 'Marking', bindings: [{ key: 'o', shift: true }] },
   { id: 'markSelectedClip', label: 'Mark the selected clip', category: 'Marking', bindings: [{ key: 'x' }] },
   { id: 'clearMarkedRange', label: 'Clear in and out points', category: 'Marking', bindings: [{ key: 'x', ctrl: true, shift: true }] },
+  { id: 'addMarker', label: 'Add marker at the playhead', category: 'Marking', bindings: [{ key: 'm' }] },
 
   // ── Selection ──────────────────────────────────────────────────────────────
   { id: 'selectAll', label: 'Select all clips', category: 'Selection', bindings: [{ key: 'a', ctrl: true }] },

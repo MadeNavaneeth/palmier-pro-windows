@@ -20,6 +20,7 @@ import {
 } from '../../shared/media-panel/selection';
 import { useTimelineStore } from './timeline';
 import { useProjectStore } from './project';
+import type { MediaProbeResult } from '../../main/ipc/media';
 
 export interface MediaPanelState {
   selection: MediaSelectionState;
@@ -27,6 +28,8 @@ export interface MediaPanelState {
   orderedIds: readonly string[];
   /** Columns the grid currently renders; 1 for list-style results. */
   columnCount: number;
+  /** One-line status for panel actions (extraction failures, etc.). */
+  notice: string | null;
 
   isSelected: (assetId: string) => boolean;
   publishVisibleItems: (orderedIds: readonly string[], columnCount: number) => void;
@@ -35,14 +38,32 @@ export interface MediaPanelState {
   selectAll: () => void;
   clearSelection: () => void;
   consumeScrollTarget: () => void;
+  setNotice: (notice: string | null) => void;
   /** Delete the selection (or `targetId` when it sits outside the selection). */
   deleteSelection: (targetId?: string) => { removedAssetIds: string[]; removedClipIds: string[] } | null;
+  /**
+   * Extract audio from the selection's video assets into standalone library
+   * assets (upstream PR #562). Targets `targetId` when it sits outside the
+   * selection, matching `deleteSelection`.
+   */
+  extractAudioSelection: (
+    targetId?: string,
+  ) => Promise<{ imported: number; errors: string[] }>;
+}
+
+/** A video asset is an extraction candidate only when it carries audio. */
+export function canExtractAudio(asset: {
+  type: string;
+  audioCodec?: string;
+}): boolean {
+  return asset.type === 'video' && Boolean(asset.audioCodec);
 }
 
 export const useMediaPanelStore = create<MediaPanelState>((set, get) => ({
   selection: EMPTY_MEDIA_SELECTION,
   orderedIds: [],
   columnCount: 1,
+  notice: null,
 
   isSelected: (assetId) => get().selection.selectedIds.includes(assetId),
 
@@ -93,6 +114,8 @@ export const useMediaPanelStore = create<MediaPanelState>((set, get) => ({
     );
   },
 
+  setNotice: (notice) => set({ notice }),
+
   deleteSelection: (targetId) => {
     const { selection, orderedIds } = get();
     // Right-clicking an unselected tile acts on that tile, matching upstream's
@@ -114,5 +137,47 @@ export const useMediaPanelStore = create<MediaPanelState>((set, get) => ({
     }));
     useProjectStore.getState().markDirty();
     return report;
+  },
+
+  extractAudioSelection: async (targetId) => {
+    const { selection, orderedIds } = get();
+    const ids =
+      targetId !== undefined && !selection.selectedIds.includes(targetId)
+        ? [targetId]
+        : selection.selectedIds.filter((id) => orderedIds.includes(id));
+
+    const timeline = useTimelineStore.getState();
+    const candidates = ids
+      .map((id) => timeline.project.media.find((asset) => asset.id === id))
+      .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset))
+      .filter(canExtractAudio);
+
+    const errors: string[] = [];
+    const extracted: MediaProbeResult[] = [];
+    for (const asset of candidates) {
+      try {
+        const result = await window.palmier.media.extractAudio(asset.path);
+        if (result.success) {
+          extracted.push(result.asset);
+        } else {
+          errors.push(result.error);
+        }
+      } catch {
+        errors.push(`Could not extract audio from ${asset.filename}`);
+      }
+    }
+
+    if (extracted.length > 0) {
+      timeline.importAssets(extracted);
+      useProjectStore.getState().markDirty();
+    }
+    set({
+      notice: errors.length > 0
+        ? errors[0]
+        : extracted.length > 0
+          ? null
+          : 'No selected video has extractable audio',
+    });
+    return { imported: extracted.length, errors };
   },
 }));

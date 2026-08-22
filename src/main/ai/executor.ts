@@ -158,6 +158,109 @@ export class ToolExecutor {
       case 'get_media':
         return { success: true, data: this.editor.getMedia() };
 
+      case 'manage_clip_links': {
+        try {
+          const receipt = args.action === 'link'
+            ? this.editor.linkClips(args.clipIds)
+            : this.editor.unlinkClips(args.clipIds);
+          return { success: true, data: receipt };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Link operation failed.',
+          };
+        }
+      }
+
+      case 'swap_clip_media': {
+        try {
+          const receipt = this.editor.swapClipMedia(args.clipId, args.assetId);
+          return { success: true, data: receipt };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Media swap failed.',
+          };
+        }
+      }
+
+      case 'manage_tracks': {
+        try {
+          const receipt = this.editor.manageTracks({
+            ...(args.reorder !== undefined ? { reorder: args.reorder } : {}),
+            ...(args.set !== undefined ? { set: args.set } : {}),
+            ...(args.remove !== undefined ? { remove: args.remove } : {}),
+          });
+          return receipt
+            ? { success: true, data: receipt }
+            : { success: true, data: { noOp: true } };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Track operation failed.',
+          };
+        }
+      }
+
+      case 'manage_markers': {
+        try {
+          if (args.action === 'create') {
+            if (args.name === undefined || args.startFrame === undefined) {
+              return { success: false, error: 'Creating a marker requires name and startFrame.' };
+            }
+            const receipt = this.editor.changeTimelineMarkers({
+              creates: [{
+                name: args.name,
+                startFrame: args.startFrame,
+                ...(args.durationFrames !== undefined ? { durationFrames: args.durationFrames } : {}),
+                ...(args.color !== undefined ? { color: args.color } : {}),
+                ...(args.comment !== undefined ? { comment: args.comment } : {}),
+              }],
+            }, 'Add marker');
+            return receipt
+              ? { success: true, data: { created: receipt.created } }
+              : { success: true, data: { noOp: true } };
+          }
+          if (args.action === 'update') {
+            if (args.markerId === undefined) {
+              return { success: false, error: 'Updating a marker requires markerId.' };
+            }
+            const patch = {
+              id: args.markerId,
+              ...(args.name !== undefined ? { name: args.name } : {}),
+              ...(args.startFrame !== undefined ? { startFrame: args.startFrame } : {}),
+              ...(args.durationFrames !== undefined ? { durationFrames: args.durationFrames } : {}),
+              ...(args.color !== undefined ? { color: args.color } : {}),
+              ...(args.comment !== undefined ? { comment: args.comment } : {}),
+            };
+            const fields = Object.keys(patch).filter((key) => key !== 'id');
+            if (fields.length === 0) {
+              return { success: false, error: 'Updating a marker requires at least one field to change.' };
+            }
+            const receipt = this.editor.changeTimelineMarkers({ updates: [patch] }, 'Update marker');
+            return receipt
+              ? { success: true, data: { updated: receipt.updated } }
+              : { success: true, data: { noOp: true } };
+          }
+          // delete
+          if (args.markerId === undefined) {
+            return { success: false, error: 'Deleting a marker requires markerId.' };
+          }
+          const receipt = this.editor.changeTimelineMarkers(
+            { deleteIds: [args.markerId] },
+            'Delete marker',
+          );
+          return receipt
+            ? { success: true, data: { deletedMarkerId: args.markerId } }
+            : { success: true, data: { noOp: true } };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Marker operation failed.',
+          };
+        }
+      }
+
       // ── Write operations ──────────────────────────────────────────────────
       case 'add_clip': {
         const clipId = this.editor.addClip({

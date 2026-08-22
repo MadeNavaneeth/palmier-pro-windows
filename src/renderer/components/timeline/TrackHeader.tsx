@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Eye,
   EyeOff,
@@ -22,19 +22,77 @@ export function TrackHeader({ track }: TrackHeaderProps) {
   const setTrackLocked = useTimelineStore((state) => state.setTrackLocked);
   const setTrackVisible = useTimelineStore((state) => state.setTrackVisible);
   const setTrackSyncLocked = useTimelineStore((state) => state.setTrackSyncLocked);
+  const setTrackName = useTimelineStore((state) => state.setTrackName);
+  const selectAllClipsOnTrack = useTimelineStore((state) => state.selectAllClipsOnTrack);
+  const clipCount = useTimelineStore(
+    (state) => state.getClips().filter((clip) => clip.trackId === track.id).length,
+  );
   const syncLocked = track.syncLocked !== false;
   const controlClass =
     'flex size-4 shrink-0 items-center justify-center text-text-muted transition hover:bg-white/[0.08] hover:text-text-primary';
 
+  // Inline rename (#520). Editing state lives here, not in the store: a
+  // rename in progress is view state, and tearing it down on any store change
+  // would lose a half-typed name.
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState('');
+  const renameRef = useRef<HTMLInputElement>(null);
+
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (renaming) {
+      renameRef.current?.focus();
+      renameRef.current?.select();
+    }
+  }, [renaming]);
+
+  const commitRename = () => {
+    if (renaming) {
+      setTrackName(track.id, draft);
+      setRenaming(false);
+    }
+  };
+
   return (
-    <div className="relative flex h-12 items-center gap-0.5 border-b border-white/10 px-1.5">
+    <div
+      className="relative flex h-12 items-center gap-0.5 border-b border-white/10 px-1.5"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenuOpen(true);
+      }}
+    >
       <span
         className="absolute inset-y-1 left-0 w-0.5 rounded-r"
         style={{ backgroundColor: tint }}
       />
-      <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-text-secondary">
-        {track.name}
-      </span>
+      {renaming ? (
+        <input
+          ref={renameRef}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') commitRename();
+            if (event.key === 'Escape') setRenaming(false);
+          }}
+          maxLength={200}
+          aria-label="Track name"
+          className="min-w-0 flex-1 rounded-sm border border-accent/60 bg-surface-0 px-1 py-0.5 text-[10px] text-text-primary outline-none"
+        />
+      ) : (
+        <span
+          className="min-w-0 flex-1 cursor-text truncate text-[10px] font-medium text-text-secondary"
+          title={`${track.name} - double-click to rename`}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            setDraft(track.name);
+            setRenaming(true);
+          }}
+        >
+          {track.name}
+        </span>
+      )}
       <button
         type="button"
         className={controlClass}
@@ -72,6 +130,40 @@ export function TrackHeader({ track }: TrackHeaderProps) {
           ? track.visible ? <Volume2 size={11} /> : <VolumeX size={11} />
           : track.visible ? <Eye size={11} /> : <EyeOff size={11} />}
       </button>
+
+      {menuOpen && (
+        <>
+          {/* Click-away layer so the menu closes without a global listener. */}
+          <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
+          <div
+            role="menu"
+            className="absolute left-1 top-7 z-30 min-w-36 rounded border border-white/15 bg-surface-2 py-0.5 shadow-lg"
+          >
+            <button
+              role="menuitem"
+              disabled={clipCount === 0}
+              onClick={() => {
+                setMenuOpen(false);
+                selectAllClipsOnTrack(track.id);
+              }}
+              className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:cursor-default disabled:text-text-muted disabled:hover:bg-transparent"
+            >
+              Select all clips on track
+            </button>
+            <button
+              role="menuitem"
+              onClick={() => {
+                setMenuOpen(false);
+                setDraft(track.name);
+                setRenaming(true);
+              }}
+              className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+            >
+              Rename track
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

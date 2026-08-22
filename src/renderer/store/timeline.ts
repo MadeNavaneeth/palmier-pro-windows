@@ -141,9 +141,29 @@ export interface TimelineState {
   // Selection
   selectClip: (clipId: string, additive?: boolean, includeLinked?: boolean) => void;
   selectAllClips: () => void;
+  /**
+   * Select every clip on one track (upstream PR #512). Returns false — leaving
+   * the selection untouched — when the track is missing or has no clips.
+   */
+  selectAllClipsOnTrack: (trackId: string) => boolean;
   deselectAll: () => void;
   selectClipsInRange: (startFrame: Frame, endFrame: Frame, trackId?: string) => void;
   setHoveredClip: (clipId: string | null) => void;
+
+  // Markers (upstream PRs #542 / #560)
+  /** Marker ids currently selected in the ruler. */
+  selectedMarkerIds: Set<string>;
+  /** Add a point marker at the playhead, auto-named "Marker N". */
+  addMarkerAtPlayhead: () => string | null;
+  selectMarker: (markerId: string, additive?: boolean) => void;
+  clearMarkerSelection: () => void;
+  /** Delete the selected markers; true when anything was deleted. */
+  deleteSelectedMarkers: () => boolean;
+  /** Patch one marker; false when the id is unknown or validation refused it. */
+  updateMarker: (
+    markerId: string,
+    patch: { name?: string; startFrame?: Frame; durationFrames?: Frame },
+  ) => boolean;
 
   // Editing
   addClip: (assetId: string, trackId: string, startFrame: Frame, durationFrames?: Frame) => string;
@@ -172,6 +192,8 @@ export interface TimelineState {
   setTrackLocked: (trackId: string, locked: boolean) => void;
   setTrackVisible: (trackId: string, visible: boolean) => void;
   setTrackSyncLocked: (trackId: string, syncLocked: boolean) => void;
+  /** Rename a track; empty restores the generated label (upstream PR #520). */
+  setTrackName: (trackId: string, rawName: string) => boolean;
 
   // Compositing / properties
   importAssets: (probeResults: MediaProbeResult[]) => string[];
@@ -278,6 +300,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     selectedClipIds: new Set(),
     hoveredClipId: null,
     selectedGap: null,
+    selectedMarkerIds: new Set(),
 
     isPlaying: false,
     playbackRate: 1,
@@ -335,6 +358,23 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       set({ selectedClipIds: new Set(clips.map((clip) => clip.id)), selectedGap: null });
     },
 
+    selectAllClipsOnTrack: (trackId) => {
+      const ids = get()
+        .getClips()
+        .filter((clip) => clip.trackId === trackId)
+        .map((clip) => clip.id);
+      // A missing or empty track must not clobber the current selection —
+      // the same invariant as upstream's embedded stale-gap fix (#512): a
+      // successful select clears any selected gap so a following
+      // gap-ripple-delete cannot fire against the old gap.
+      if (ids.length === 0) return false;
+      set({
+        selectedClipIds: new Set(get().controller.expandLinkedClipIds(ids)),
+        selectedGap: null,
+      });
+      return true;
+    },
+
     deselectAll: () => set({ selectedClipIds: new Set(), selectedGap: null }),
 
     selectClipsInRange: (startFrame, endFrame, trackId) => {
@@ -356,6 +396,76 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     setHoveredClip: (clipId) => set({ hoveredClipId: clipId }),
+
+    // ─── Markers (#542) ───────────────────────────────────────────────────
+    addMarkerAtPlayhead: () => {
+      const { controller } = get();
+      const frame = controller.getPlayhead();
+      // Auto-name "Marker N", skipping any name the user already claimed.
+      const existing = new Set(controller.getMarkers().map((marker) => marker.name));
+      let n = 1;
+      while (existing.has(`Marker ${n}`)) n += 1;
+      try {
+        const receipt = controller.changeTimelineMarkers(
+          { creates: [{ name: `Marker ${n}`, startFrame: frame }] },
+          'Add marker',
+        );
+        const created = receipt?.created[0];
+        if (!created) return null;
+        set({
+          selectedMarkerIds: new Set([created.id]),
+          selectedClipIds: new Set(),
+          selectedGap: null,
+        });
+        return created.id;
+      } catch {
+        return null;
+      }
+    },
+
+    selectMarker: (markerId, additive) => {
+      set((state) => {
+        const next = new Set(additive ? state.selectedMarkerIds : []);
+        if (additive && next.has(markerId)) next.delete(markerId);
+        else next.add(markerId);
+        // Selecting a marker dismisses clip and gap selections, matching
+        // upstream's marker-first interaction.
+        return {
+          selectedMarkerIds: next,
+          selectedClipIds: additive ? state.selectedClipIds : new Set(),
+          selectedGap: null,
+        };
+      });
+    },
+
+    clearMarkerSelection: () => set({ selectedMarkerIds: new Set() }),
+
+    deleteSelectedMarkers: () => {
+      const ids = [...get().selectedMarkerIds];
+      if (ids.length === 0) return false;
+      try {
+        const receipt = get().controller.changeTimelineMarkers(
+          { deleteIds: ids },
+          ids.length > 1 ? 'Delete markers' : 'Delete marker',
+        );
+        set({ selectedMarkerIds: new Set() });
+        return receipt !== null;
+      } catch {
+        return false;
+      }
+    },
+
+    updateMarker: (markerId, patch) => {
+      try {
+        const receipt = get().controller.changeTimelineMarkers(
+          { updates: [{ id: markerId, ...patch }] },
+          'Update marker',
+        );
+        return receipt !== null;
+      } catch {
+        return false;
+      }
+    },
 
     // ─── Editing ───────────────────────────────────────────────────────────
     addClip: (assetId, trackId, startFrame, durationFrames) => {
@@ -512,6 +622,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     setTrackVisible: (trackId, visible) => get().controller.setTrackVisible(trackId, visible),
     setTrackSyncLocked: (trackId, syncLocked) =>
       get().controller.setTrackSyncLocked(trackId, syncLocked),
+    setTrackName: (trackId, rawName) => get().controller.setTrackName(trackId, rawName),
 
     // ─── Compositing / properties ──────────────────────────────────────────
     importAssets: (probeResults) => {
@@ -783,6 +894,14 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         points.push({ frame: clip.startFrame + clip.durationFrames, source: 'clip-end' });
       }
 
+      // Marker edges are snap targets (upstream PR #542); the 'marker'
+      // source was reserved in the SnapPoint union for exactly this.
+      for (const marker of get().controller.getMarkers()) {
+        points.push({ frame: marker.startFrame, source: 'marker' });
+        const end = marker.startFrame + marker.durationFrames;
+        if (marker.durationFrames > 0) points.push({ frame: end, source: 'marker' });
+      }
+
       return points;
     },
 
@@ -815,12 +934,22 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     // ─── Project Lifecycle ─────────────────────────────────────────────────
     loadProject: (project) => {
       get().controller.loadProject(project);
-      set({ selectedClipIds: new Set(), selectedGap: null, isPlaying: false });
+      set({
+        selectedClipIds: new Set(),
+        selectedGap: null,
+        selectedMarkerIds: new Set(),
+        isPlaying: false,
+      });
     },
 
     resetProject: () => {
       get().controller.reset();
-      set({ selectedClipIds: new Set(), selectedGap: null, isPlaying: false });
+      set({
+        selectedClipIds: new Set(),
+        selectedGap: null,
+        selectedMarkerIds: new Set(),
+        isPlaying: false,
+      });
     },
 
     syncFromController: () => {

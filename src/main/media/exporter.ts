@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FFmpeg Exporter — converts the timeline state into a filter_complex graph
  * and runs FFmpeg to produce the final video file.
  *
@@ -12,14 +12,10 @@
 import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
 import { ipcMain, BrowserWindow } from 'electron';
-import path from 'path';
 import fs from 'fs/promises';
-import type { Project, Clip, Track, Frame } from '../../shared/types/project';
-import {
-  assetDurationSeconds,
-  clampSourceSeconds,
-  clipTrimSeconds,
-} from '../../shared/media/source-time';
+import type { Project } from '../../shared/types/project';
+import { selectExportClips } from '../../shared/media/export-eligibility';
+import { buildFfmpegArgs as buildExportFfmpegArgs } from './export-args';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -40,26 +36,6 @@ export interface ExportProgress {
   eta: string; // estimated time remaining
 }
 
-// ─── Quality presets ─────────────────────────────────────────────────────────
-
-const PRESETS: Record<string, Record<string, string[]>> = {
-  mp4: {
-    draft: ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28'],
-    normal: ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20'],
-    high: ['-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-profile:v', 'high', '-level', '5.1'],
-  },
-  mov: {
-    draft: ['-c:v', 'prores_ks', '-profile:v', '0'], // ProRes Proxy
-    normal: ['-c:v', 'prores_ks', '-profile:v', '2'], // ProRes LT
-    high: ['-c:v', 'prores_ks', '-profile:v', '3'], // ProRes HQ
-  },
-  webm: {
-    draft: ['-c:v', 'libvpx-vp9', '-crf', '35', '-b:v', '0', '-deadline', 'realtime'],
-    normal: ['-c:v', 'libvpx-vp9', '-crf', '28', '-b:v', '0', '-deadline', 'good'],
-    high: ['-c:v', 'libvpx-vp9', '-crf', '20', '-b:v', '0', '-deadline', 'best'],
-  },
-};
-
 // ─── Exporter ────────────────────────────────────────────────────────────────
 
 export class Exporter {
@@ -73,15 +49,15 @@ export class Exporter {
 
   async export(project: Project, options: ExportOptions, win: BrowserWindow): Promise<void> {
     this.cancelled = false;
-    const { outputPath, format, quality } = options;
+    const { outputPath } = options;
     const width = options.width || project.settings.width;
     const height = options.height || project.settings.height;
     const fps = options.fps || project.settings.fps;
 
-    // Calculate total frames
-    const clips = project.timeline.clips.filter((clip) =>
-      project.timeline.tracks.find((track) => track.id === clip.trackId)?.visible !== false,
-    );
+    // Calculate total frames over exactly the clips the export will consume,
+    // so the reported duration and the rendered output cannot disagree
+    // (muted-audio exclusion is shared with the argument builder, #544).
+    const clips = selectExportClips(project);
     const totalFrames = clips.length > 0
       ? Math.max(...clips.map((c) => c.startFrame + c.durationFrames))
       : 0;
@@ -189,166 +165,17 @@ export class Exporter {
     fps: number,
     totalFrames: number,
   ): string[] {
-    const { outputPath, format, quality } = options;
-    const clips = project.timeline.clips.filter((clip) =>
-      project.timeline.tracks.find((track) => track.id === clip.trackId)?.visible !== false,
+    // Graph construction lives in ./export-args (pure, unit-tested); this
+    // only supplies the native geometry callback (#546).
+    return buildExportFfmpegArgs(
+      project,
+      { outputPath: options.outputPath, format: options.format, quality: options.quality },
+      width,
+      height,
+      fps,
+      totalFrames,
+      this.nativeAddon?.exportFilterGeometry ?? null,
     );
-    const duration = totalFrames / fps;
-
-    // Sort clips by start frame for proper layering
-    const sortedClips = [...clips].sort((a, b) => {
-      const trackA = project.timeline.tracks.find((t) => t.id === a.trackId);
-      const trackB = project.timeline.tracks.find((t) => t.id === b.trackId);
-      return (trackA?.order || 0) - (trackB?.order || 0);
-    });
-
-    const videoClips = sortedClips.filter((c) => c.type !== 'audio');
-    const audioClips = sortedClips.filter((c) => c.type === 'audio');
-
-    const args: string[] = ['-y']; // overwrite output
-
-    // Input: blank canvas as base
-    args.push('-f', 'lavfi', '-i', `color=c=black:s=${width}x${height}:d=${duration}:r=${fps}`);
-
-    // Add each video clip as an input
-    for (const clip of videoClips) {
-      const asset = project.media.find((m) => m.id === clip.assetId);
-      if (!asset) continue;
-      args.push('-i', asset.path);
-    }
-
-    // Add audio inputs
-    for (const clip of audioClips) {
-      const asset = project.media.find((m) => m.id === clip.assetId);
-      if (!asset) continue;
-      args.push('-i', asset.path);
-    }
-
-    // Build filter_complex
-    if (videoClips.length > 0) {
-      const filterGraph = this.buildFilterGraph(project, videoClips, width, height, fps);
-      args.push('-filter_complex', filterGraph);
-      args.push('-map', `[vout]`);
-    } else {
-      args.push('-map', '0:v');
-    }
-
-    // Audio mixing (simple amix for now)
-    if (audioClips.length > 0) {
-      // Map all audio streams
-      const audioInputStart = 1 + videoClips.length;
-      for (let i = 0; i < audioClips.length; i++) {
-        args.push('-map', `${audioInputStart + i}:a?`);
-      }
-    }
-
-    // Output settings
-    const codecArgs = PRESETS[format]?.[quality] || PRESETS.mp4.normal;
-    args.push(...codecArgs);
-
-    // Audio codec
-    if (format === 'webm') {
-      args.push('-c:a', 'libopus');
-    } else {
-      args.push('-c:a', 'aac', '-b:a', '192k');
-    }
-
-    // Duration limit and output
-    args.push('-t', duration.toFixed(4));
-    args.push(outputPath);
-
-    return args;
-  }
-
-  private buildFilterGraph(
-    project: Project,
-    videoClips: Clip[],
-    canvasWidth: number,
-    canvasHeight: number,
-    fps: number,
-  ): string {
-    const filters: string[] = [];
-    let lastLabel = '0:v';
-
-    for (let i = 0; i < videoClips.length; i++) {
-      const clip = videoClips[i];
-      const inputIdx = i + 1; // +1 because 0 is the blank canvas
-      const inTime = clip.startFrame / fps;
-      const outTime = (clip.startFrame + clip.durationFrames) / fps;
-
-      // Get the geometry filter from the Rust native addon
-      let geomFilter: string;
-      if (this.nativeAddon?.exportFilterGeometry) {
-        geomFilter = this.nativeAddon.exportFilterGeometry(
-          clip.x, clip.y,
-          clip.width, clip.height,
-          clip.rotation,
-          clip.scaleX, clip.scaleY,
-        );
-      } else {
-        // Fallback: simple scale + overlay
-        const sw = Math.round(clip.width * clip.scaleX);
-        const sh = Math.round(clip.height * clip.scaleY);
-        geomFilter = `scale=${sw}:${sh},overlay=x=${Math.round(clip.x)}:y=${Math.round(clip.y)}`;
-      }
-
-      // Trim window in source seconds, through the shared mapping so export and
-      // preview address the source identically (#68).
-      const asset = project.media.find((m) => m.id === clip.assetId);
-      const sourceDuration = asset ? assetDurationSeconds(asset, fps) : 0;
-      const trim = clipTrimSeconds(clip, fps);
-      const trimStart = clampSourceSeconds(trim.start, sourceDuration, asset?.fps);
-      const clampedEnd = sourceDuration > 0 ? Math.min(trim.end, sourceDuration) : trim.end;
-      // Clamping must never collapse the window: an empty FFmpeg trim range
-      // renders the clip as nothing instead of failing loudly.
-      const trimEnd = Math.max(clampedEnd, trimStart + 1 / fps);
-
-      const trimmedLabel = `v${i}trimmed`;
-      const scaledLabel = `v${i}scaled`;
-      const overlayOut = i < videoClips.length - 1 ? `[v${i}out]` : '[vout]';
-
-      // Trim filter
-      filters.push(
-        `[${inputIdx}:v]trim=start=${trimStart.toFixed(4)}:end=${trimEnd.toFixed(4)},setpts=PTS-STARTPTS[${trimmedLabel}]`,
-      );
-
-      // Scale/transform
-      const scaledW = Math.round(clip.width * clip.scaleX);
-      const scaledH = Math.round(clip.height * clip.scaleY);
-
-      // Transition fades — applied in the clip's own (0-based, post-setpts) time
-      // so they match the preview's effective-opacity ramp exactly. alpha=1 makes
-      // the fade affect transparency so it composites over the layers below.
-      let fadeChain = '';
-      if (clip.fadeInFrames && clip.fadeInFrames > 0) {
-        const d = clip.fadeInFrames / fps;
-        fadeChain += `,fade=t=in:st=0:d=${d.toFixed(4)}:alpha=1`;
-      }
-      if (clip.fadeOutFrames && clip.fadeOutFrames > 0) {
-        const d = clip.fadeOutFrames / fps;
-        const st = (clip.durationFrames - clip.fadeOutFrames) / fps;
-        fadeChain += `,fade=t=out:st=${st.toFixed(4)}:d=${d.toFixed(4)}:alpha=1`;
-      }
-
-      // Resample every source to the project frame rate before compositing.
-      // `overlay` runs on the base input's timebase, so a 60 fps source dropped
-      // onto a 30 fps canvas otherwise queues two source frames per output frame
-      // and the encode crawls or stalls on long 4K clips (#68).
-      filters.push(
-        `[${trimmedLabel}]fps=${fps},scale=${scaledW}:${scaledH}:flags=bilinear,format=rgba${fadeChain}[${scaledLabel}]`,
-      );
-
-      // Overlay with enable condition (time window)
-      filters.push(
-        `[${lastLabel}][${scaledLabel}]overlay=x=${Math.round(clip.x)}:y=${Math.round(clip.y)}:enable='between(t,${inTime.toFixed(4)},${outTime.toFixed(4)})'${overlayOut}`,
-      );
-
-      if (i < videoClips.length - 1) {
-        lastLabel = `v${i}out`;
-      }
-    }
-
-    return filters.join(';');
   }
 
   // ─── Progress parsing ────────────────────────────────────────────────────

@@ -27,11 +27,22 @@ import {
   ReplaceClipsCommand,
   ReplaceTracksCommand,
   ReplaceProjectCommand,
+  ReplaceMarkersCommand,
 } from './commands';
 import type { Command } from './commands';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
 import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
+import { resolveTrackName, TRACK_NAME_MAX_LENGTH } from './track-name';
+import {
+  MARKER_DEFAULT_COLOR,
+  mapMarkersOpeningAt,
+  mapMarkersThroughClosingHoles,
+  rescaleMarker,
+  sortMarkers,
+  validateMarker,
+  type TimelineMarker,
+} from './markers';
 import { hasEmbeddedAudio, isMediaCompatibleWithTrack, placementDuration } from './placement';
 import { computeRippleShifts, mergeRippleRanges, type RippleRange } from './ripple';
 
@@ -169,6 +180,11 @@ function rescaleTimelineFrames(timeline: Timeline, scale: number): Timeline {
   const next: Timeline = {
     ...timeline,
     clips: timeline.clips.map((clip) => rescaled.get(clip.id) ?? clip),
+    // Markers follow the project timebase change like every other frame
+    // value (upstream PR #542's rescaleFrames hook).
+    ...(timeline.markers
+      ? { markers: timeline.markers.map((marker) => rescaleMarker(marker, scale)) }
+      : {}),
     playheadFrame: clampFrame(Math.round(timeline.playheadFrame * scale), 0),
   };
   const inFrame = scaleMarker(timeline.inFrame);
@@ -221,10 +237,31 @@ function refitClipToCanvas(
   return clipsShallowEqual(clip, next) ? clip : next;
 }
 
-export class EditorController {
-  private project: Project;
+/**
+ * The automatic `Video N` / `Audio N` label for a track's position among
+ * tracks of its type, computed against an explicit track list so rename
+ * batching can resolve fallbacks against its own working copy.
+ */
+function generatedTrackLabelIn(track: Track, tracks: readonly Track[]): string {
+  const sameType = tracks
+    .filter((candidate) => candidate.type === track.type)
+    .sort((a, b) => a.order - b.order);
+  const position = Math.max(0, sameType.findIndex((candidate) => candidate.id === track.id)) + 1;
+  return `${track.type === 'video' ? 'Video' : 'Audio'} ${position}`;
+}
+
+export class EditorController {  private project: Project;
   private history: CommandHistory;
   private listeners: Set<StateChangeListener> = new Set();
+  /**
+   * Clip lookups by id, valid only for the exact project object it was built
+   * from (upstream PR #486). Every mutation — command execution, undo, redo,
+   * restore — replaces `this.project` wholesale, so reference identity is a
+   * complete invalidation signal and no revision counter is needed. First
+   * occurrence wins per id, matching what the linear `Array.find` it replaced
+   * returned.
+   */
+  private clipByIdCache?: { project: Project; byId: Map<string, Clip> };
 
   constructor(project?: Project) {
     this.project = project || createEmptyProject();
@@ -267,6 +304,20 @@ export class EditorController {
       }
     }
     return [...requested];
+  }
+
+  /** O(1) clip lookup, rebuilt lazily once per project revision (#486). */
+  private findClipById(clipId: string): Clip | undefined {
+    let cache = this.clipByIdCache;
+    if (!cache || cache.project !== this.project) {
+      const byId = new Map<string, Clip>();
+      for (const clip of this.project.timeline.clips) {
+        if (!byId.has(clip.id)) byId.set(clip.id, clip);
+      }
+      cache = { project: this.project, byId };
+      this.clipByIdCache = cache;
+    }
+    return cache.byId.get(clipId);
   }
 
   private canEditClipIds(clipIds: Iterable<string>): boolean {
@@ -419,6 +470,7 @@ export class EditorController {
       end: clip.startFrame + clip.durationFrames,
     }));
     const shifts = new Map<string, Frame>();
+    const trackHoles: RippleRange[][] = [];
 
     for (const track of this.project.timeline.tracks) {
       if (track.locked) continue;
@@ -433,6 +485,7 @@ export class EditorController {
           ? globalRanges
           : [];
       if (ranges.length === 0) continue;
+      trackHoles.push(ranges);
 
       const remaining = this.project.timeline.clips.filter(
         (clip) => clip.trackId === track.id && !ids.has(clip.id),
@@ -448,7 +501,7 @@ export class EditorController {
         const startFrame = shifts.get(clip.id);
         return startFrame === undefined ? clip : { ...clip, startFrame };
       });
-    this.execute(new ReplaceClipsCommand(clips, 'Ripple delete clips'));
+    this.executeRipple(clips, this.rippleMarkersClosing(trackHoles), 'Ripple delete clips');
 
     return {
       removedClipIds: selected.map((clip) => clip.id),
@@ -491,7 +544,11 @@ export class EditorController {
       const startFrame = shifts.get(clip.id);
       return startFrame === undefined ? clip : { ...clip, startFrame };
     });
-    this.execute(new ReplaceClipsCommand(clips, 'Ripple delete gap'));
+    this.executeRipple(
+      clips,
+      this.rippleMarkersClosing([[{ start, end }]]),
+      'Ripple delete gap',
+    );
     return { removedClipIds: [], shiftedClipIds: [...shifts.keys()] };
   }
 
@@ -618,16 +675,32 @@ export class EditorController {
     });
 
     if (!changed) return null;
-    const project: Project = {
-      ...this.project,
-      timeline: {
-        ...this.project.timeline,
-        clips,
-        inFrame: undefined,
-        outFrame: undefined,
-      },
-    };
-    this.execute(new ReplaceProjectCommand(project, 'Ripple delete ranges'));
+    const markers = this.rippleMarkersClosing(
+      [...clearTrackIds].map(() => merged),
+    );
+    if (markers === null) {
+      const project: Project = {
+        ...this.project,
+        timeline: {
+          ...this.project.timeline,
+          clips,
+          inFrame: undefined,
+          outFrame: undefined,
+        },
+      };
+      this.execute(new ReplaceProjectCommand(project, 'Ripple delete ranges'));
+    } else {
+      this.execute(new ReplaceProjectCommand({
+        ...this.project,
+        timeline: {
+          ...this.project.timeline,
+          clips,
+          markers,
+          inFrame: undefined,
+          outFrame: undefined,
+        },
+      }, 'Ripple delete ranges'));
+    }
     return {
       removedFrames: merged.reduce((total, range) => total + range.end - range.start, 0),
       clearedTrackIds: [...clearTrackIds],
@@ -638,7 +711,7 @@ export class EditorController {
   }
 
   moveClip(clipId: string, newStartFrame: Frame, newTrackId?: string): void {
-    const clip = this.project.timeline.clips.find((candidate) => candidate.id === clipId);
+    const clip = this.findClipById(clipId);
     if (!clip) return;
 
     const targetFrame = clampFrame(newStartFrame);
@@ -688,7 +761,7 @@ export class EditorController {
     deltaFrames: Frame,
     ripple = false,
   ): RippleTrimReport | null {
-    const lead = this.project.timeline.clips.find((clip) => clip.id === clipId);
+    const lead = this.findClipById(clipId);
     const requestedDelta = Math.round(deltaFrames);
     if (!lead || !Number.isFinite(requestedDelta) || requestedDelta === 0) return null;
 
@@ -775,10 +848,17 @@ export class EditorController {
       const startFrame = shifts.get(clip.id);
       return startFrame === undefined ? clip : { ...clip, startFrame };
     });
-    this.execute(new ReplaceClipsCommand(
+    // Upstream wires ripple-trim marker movement at the lead clip's inner
+    // edge: a shortening trim closes the space after it, a lengthening one
+    // opens more.
+    const markers = ripple
+      ? this.rippleMarkersOpening(leadEnd, durationDelta)
+      : null;
+    this.executeRipple(
       clips,
+      markers,
       ripple ? 'Ripple trim clips' : targetIds.size > 1 ? 'Trim linked clips' : 'Trim clip',
-    ));
+    );
     return {
       resizedClipIds: targets.map((clip) => clip.id),
       shiftedClipIds: [...shifts.keys()],
@@ -787,7 +867,7 @@ export class EditorController {
   }
 
   splitClip(clipId: string, atFrame: Frame): string | null {
-    const clip = this.project.timeline.clips.find((c) => c.id === clipId);
+    const clip = this.findClipById(clipId);
     if (!clip) return null;
 
     // Validate the split frame before any arithmetic; null = reject.
@@ -869,6 +949,503 @@ export class EditorController {
       { syncLocked },
       syncLocked ? 'Enable sync lock' : 'Disable sync lock',
     );
+  }
+
+  /**
+   * Apply a user-entered track name (upstream PR #520).
+   *
+   * Invalid input is refused (`false`, no history entry); an empty-after-trim
+   * name restores the generated `Video N` / `Audio N` label for the track's
+   * position among its type. An unchanged name is a no-op that adds no
+   * history entry.
+   */
+  setTrackName(trackId: string, rawName: string): boolean {
+    const track = this.project.timeline.tracks.find((candidate) => candidate.id === trackId);
+    if (!track) return false;
+    const name = resolveTrackName(rawName, this.generatedTrackLabel(track));
+    if (name === null || name === track.name) return false;
+    return this.updateTrack(trackId, { name }, 'Rename track');
+  }
+
+  /** The automatic label for a track's position among tracks of its type. */
+  private generatedTrackLabel(track: Track): string {
+    return generatedTrackLabelIn(track, this.project.timeline.tracks);
+  }
+
+  /**
+   * Reorder, restyle, rename, and remove tracks in one atomic, undoable step
+   * (upstream PR #520's `manage_tracks` surface).
+   *
+   * Every entry addresses a track by exactly one of `trackId` or current
+   * `index` — never both (the #302 mis-targeting class). Reorder destinations
+   * must stay inside the track's type zone. `muted` and `hidden` fold onto
+   * this port's single `visible` toggle (`visible === false` means muted on
+   * audio tracks). A `name` key present with an empty string restores the
+   * generated label; absent leaves the name untouched. Removals refuse
+   * non-empty tracks and the last track of either type.
+   */
+  manageTracks(op: {
+    reorder?: Array<{ trackId?: string; index?: number; to: number }>;
+    set?: Array<{
+      trackId?: string;
+      index?: number;
+      muted?: boolean;
+      hidden?: boolean;
+      syncLocked?: boolean;
+      name?: string;
+    }>;
+    remove?: Array<number | string | { trackId?: string; index?: number }>;
+  }): {
+    tracks: Array<{ trackId: string; index: number; type: string; name: string }>;
+    reordered?: Array<{ trackId: string; from: number; to: number; changed: boolean }>;
+    renamed?: Array<{ trackId: string; name: string; changed: boolean }>;
+    removedTracks?: Array<{ trackId: string; label: string; type: string }>;
+  } | null {
+    const hasWork = (op.reorder?.length ?? 0) + (op.set?.length ?? 0) + (op.remove?.length ?? 0) > 0;
+    if (!hasWork) {
+      throw new Error('Nothing to do — pass at least one of reorder, set, remove.');
+    }
+
+    // All selectors resolve against the current track list, up front.
+    const resolveSelector = (
+      entry: { trackId?: string; index?: number },
+      path: string,
+    ): { id: string } => {
+      const tracks = this.project.timeline.tracks;
+      const hasId = typeof entry.trackId === 'string' && entry.trackId.length > 0;
+      const hasIndex = entry.index !== undefined;
+      if (hasId === hasIndex) {
+        throw new Error(`${path}: pass one current trackId or index`);
+      }
+      if (hasId) {
+        const found = tracks.find((candidate) => candidate.id === entry.trackId);
+        if (!found) throw new Error(`${path}: no track "${entry.trackId}" on this timeline.`);
+        return { id: found.id };
+      }
+      const idx = entry.index!;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= tracks.length) {
+        throw new Error(
+          `${path}: track index ${idx} out of range (timeline has ${tracks.length} tracks)`,
+        );
+      }
+      return { id: tracks[idx].id };
+    };
+
+    const reorders = (op.reorder ?? []).map((entry, i) => {
+      const path = `reorder[${i}]`;
+      const resolved = resolveSelector(entry, path);
+      if (!Number.isInteger(entry.to)) {
+        throw new Error(`${path}: 'to' is required and must be an integer`);
+      }
+      return { id: resolved.id, to: entry.to };
+    });
+    const sets = (op.set ?? []).map((entry, i) => {
+      const path = `set[${i}]`;
+      const resolved = resolveSelector(entry, path);
+      const includesName = entry.name !== undefined;
+      if (
+        entry.muted === undefined
+        && entry.hidden === undefined
+        && entry.syncLocked === undefined
+        && !includesName
+      ) {
+        throw new Error(`${path}: pass at least one of muted, hidden, syncLocked, name`);
+      }
+      return { ...resolved, muted: entry.muted, hidden: entry.hidden, syncLocked: entry.syncLocked, name: includesName ? entry.name! : '', includesName };
+    });
+    const removeIds = (op.remove ?? []).map((raw, i) =>
+      resolveSelector(
+        typeof raw === 'number'
+          ? { index: raw }
+          : typeof raw === 'string'
+            ? { trackId: raw }
+            : raw,
+        `remove[${i}]`,
+      ).id,
+    );
+
+    // ── Apply: reorders → sets → removes, mirroring upstream's order ──
+    let working = [...this.project.timeline.tracks];
+    const reordered: Array<{ trackId: string; from: number; to: number; changed: boolean }> = [];
+    for (const r of reorders) {
+      const from = working.findIndex((track) => track.id === r.id);
+      if (from === -1) continue;
+      const to = Math.max(0, Math.min(working.length - 1, r.to));
+      if (working[to].type !== working[from].type) {
+        throw new Error(`reorder: destination index ${r.to} is outside the track's type zone`);
+      }
+      const [moved] = working.splice(from, 1);
+      working.splice(to, 0, moved);
+      reordered.push({ trackId: r.id, from, to, changed: from !== to });
+    }
+
+    const setById = new Map(sets.map((entry) => [entry.id, entry]));
+    const renamed: Array<{ trackId: string; name: string; changed: boolean }> = [];
+    working = working.map((track) => {
+      const patch = setById.get(track.id);
+      if (!patch) return track;
+      let visible = track.visible;
+      if (patch.muted !== undefined) visible = !patch.muted;
+      if (patch.hidden !== undefined) visible = !patch.hidden;
+      let name = track.name;
+      if (patch.includesName) {
+        const resolved = resolveTrackName(patch.name, generatedTrackLabelIn(track, working));
+        if (resolved === null) {
+          throw new Error(
+            `set.name must be one line of at most ${TRACK_NAME_MAX_LENGTH} characters`,
+          );
+        }
+        name = resolved;
+      }
+      if (patch.includesName) {
+        renamed.push({ trackId: track.id, name, changed: name !== track.name });
+      }
+      return {
+        ...track,
+        visible,
+        ...(name !== track.name ? { name } : {}),
+        ...(patch.syncLocked !== undefined ? { syncLocked: patch.syncLocked } : {}),
+      };
+    });
+
+    const removeSet = new Set(removeIds);
+    for (const id of removeIds) {
+      const track = working.find((candidate) => candidate.id === id)!;
+      const clipCount = this.project.timeline.clips.filter((clip) => clip.trackId === id).length;
+      if (clipCount > 0) {
+        throw new Error(
+          `"${track.name}" still has ${clipCount} clip(s) — move or remove them first.`,
+        );
+      }
+    }
+    for (const type of ['video', 'audio'] as const) {
+      const remaining = working.filter((t) => t.type === type && !removeSet.has(t.id)).length;
+      if (remaining === 0 && removeIds.length > 0) {
+        throw new Error(`Cannot remove the last ${type} track.`);
+      }
+    }
+    const removedTracks = working
+      .filter((track) => removeSet.has(track.id))
+      .map((track) => ({ trackId: track.id, label: track.name, type: track.type }));
+    working = working.filter((track) => !removeSet.has(track.id));
+
+    // Renumber render orders per type zone: each zone's existing order values
+    // are reassigned (descending — array head is the top compositing layer)
+    // along the new array sequence, so reordered tracks restack correctly
+    // while untouched zones keep their exact original values. A global
+    // renumber here would flip cross-type defaults (the seeded project has
+    // video order 1 above audio order 0) and turn invisible changes into
+    // history entries.
+    const ordersByType = new Map<string, number[]>();
+    for (const track of working) {
+      const list = ordersByType.get(track.type);
+      if (list) list.push(track.order);
+      else ordersByType.set(track.type, [track.order]);
+    }
+    for (const list of ordersByType.values()) list.sort((a, b) => b - a);
+    const zoneCursor = new Map<string, number>();
+    const nextTracks = working.map((track) => {
+      const type = track.type;
+      const slot = zoneCursor.get(type) ?? 0;
+      zoneCursor.set(type, slot + 1);
+      const nextOrder = ordersByType.get(type)![slot];
+      return track.order === nextOrder ? track : { ...track, order: nextOrder };
+    });
+
+    // No-op calls add no history entry.
+    const current = this.project.timeline.tracks;
+    if (
+      nextTracks.length === current.length
+      && nextTracks.every((track, i) =>
+        track.id === current[i].id
+        && track.visible === current[i].visible
+        && track.syncLocked === current[i].syncLocked
+        && track.order === current[i].order
+        && track.name === current[i].name,
+      )
+    ) {
+      return null;
+    }
+
+    this.execute(new ReplaceTracksCommand(nextTracks, 'Manage tracks'));
+
+    return {
+      tracks: nextTracks.map((track, i) => ({
+        trackId: track.id,
+        index: i,
+        type: track.type,
+        name: track.name,
+      })),
+      ...(reordered.length > 0 ? { reordered } : {}),
+      ...(renamed.length > 0 ? { renamed } : {}),
+      ...(removedTracks.length > 0 ? { removedTracks } : {}),
+    };
+  }
+
+  // ─── Timeline markers (upstream PRs #542 / #560) ──────────────────────────
+
+  getMarkers(): TimelineMarker[] {
+    return this.project.timeline.markers ?? [];
+  }
+
+  /**
+   * Create, update, and delete markers in one undoable step.
+   *
+   * Every resulting marker is validated (name/comment/color/frame bounds);
+   * a violation throws with a precise message so the Agent can correct its
+   * arguments rather than retry blind. Deletes and updates must reference
+   * existing markers. A call that changes nothing adds no history entry and
+   * returns `null`.
+   */
+  changeTimelineMarkers(
+    op: {
+      creates?: Array<Pick<TimelineMarker, 'name' | 'startFrame'> & Partial<TimelineMarker>>;
+      updates?: Array<Partial<Omit<TimelineMarker, 'id'>> & { id: string }>;
+      deleteIds?: string[];
+    },
+    actionName = 'Edit timeline markers',
+  ): { created: TimelineMarker[]; updated: TimelineMarker[]; deletedIds: string[] } | null {
+    const current = this.getMarkers();
+    const deleteIds = new Set(op.deleteIds ?? []);
+    for (const id of deleteIds) {
+      if (!current.some((marker) => marker.id === id)) {
+        throw new Error(`No marker "${id}" on this timeline.`);
+      }
+    }
+
+    const created: TimelineMarker[] = (op.creates ?? []).map((input) => ({
+      id: nanoid(),
+      name: input.name,
+      startFrame: input.startFrame,
+      durationFrames: input.durationFrames ?? 0,
+      color: input.color ?? MARKER_DEFAULT_COLOR,
+      comment: input.comment ?? '',
+    }));
+    const updated: TimelineMarker[] = [];
+
+    let next = current.filter((marker) => !deleteIds.has(marker.id));
+    for (const patch of op.updates ?? []) {
+      const index = next.findIndex((marker) => marker.id === patch.id);
+      if (index === -1) throw new Error(`No marker "${patch.id}" on this timeline.`);
+      const merged: TimelineMarker = {
+        ...next[index],
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.startFrame !== undefined ? { startFrame: patch.startFrame } : {}),
+        ...(patch.durationFrames !== undefined ? { durationFrames: patch.durationFrames } : {}),
+        ...(patch.color !== undefined ? { color: patch.color } : {}),
+        ...(patch.comment !== undefined ? { comment: patch.comment } : {}),
+      };
+      next = next.map((marker, index_) => (index_ === index ? merged : marker));
+      updated.push(merged);
+    }
+
+    const error = [...created, ...next].map(validateMarker).find((message) => message !== null);
+    if (error) throw new Error(error);
+
+    next = sortMarkers([...next, ...created]);
+    if (
+      next.length === current.length
+      && next.every((marker, index) =>
+        marker.id === current[index].id
+        && marker.name === current[index].name
+        && marker.startFrame === current[index].startFrame
+        && marker.durationFrames === current[index].durationFrames
+        && marker.color === current[index].color
+        && marker.comment === current[index].comment,
+      )
+    ) {
+      return null;
+    }
+
+    this.execute(new ReplaceMarkersCommand(next, actionName));
+    return { created, updated, deletedIds: [...deleteIds] };
+  }
+
+  /** Remap markers through a ripple delete; `null` when none would move. */
+  private rippleMarkersClosing(
+    trackHoles: readonly (readonly RippleRange[])[],
+  ): TimelineMarker[] | null {
+    if (this.getMarkers().length === 0 || trackHoles.length === 0) return null;
+    return mapMarkersThroughClosingHoles(this.getMarkers(), trackHoles);
+  }
+
+  // ─── Manual clip linking (upstream PR #462) ───────────────────────────────
+
+  /**
+   * Resolve the clips a link/unlink request acts on: the requested ids plus
+   * every clip sharing their current link groups. Shared by both directions
+   * so the Agent and any future UI gate identically.
+   */
+  private resolveLinkTargets(clipIds: Iterable<string>): Clip[] {
+    const requested = [...new Set(clipIds)];
+    if (requested.length === 0) {
+      throw new Error('At least one clip id is required.');
+    }
+    for (const id of requested) {
+      if (!this.findClipById(id)) throw new Error(`Clip not found: ${id}`);
+    }
+    return this.expandLinkedClipIds(requested)
+      .map((id) => this.findClipById(id))
+      .filter((clip): clip is Clip => clip !== undefined);
+  }
+
+  /**
+   * Link clips (and their existing groups) under one new link group.
+   *
+   * Refusals mirror upstream's message exactly: at least two clips, at least
+   * two distinct media types among them, and not already a single group.
+   * One undoable step stamps the new group over the whole union, so linking
+   * two half-groups merges them.
+   */
+  linkClips(clipIds: Iterable<string>): { linkedClipIds: string[] } {
+    const targets = this.resolveLinkTargets(clipIds);
+    const mediaTypes = new Set(targets.map((clip) => clip.type));
+    const groupIds = new Set(
+      targets.map((clip) => clip.linkGroupId).filter((id): id is string => id !== undefined),
+    );
+    const alreadyOneGroup =
+      groupIds.size === 1 && targets.every((clip) => clip.linkGroupId === targets[0].linkGroupId);
+    if (targets.length < 2 || mediaTypes.size < 2 || alreadyOneGroup) {
+      throw new Error(
+        'Link requires at least two clips of different media types that are not already one link group',
+      );
+    }
+    if (!this.canEditClipIds(targets.map((clip) => clip.id))) {
+      throw new Error('One or more clips are on a locked track.');
+    }
+
+    const groupId = nanoid();
+    const targetIds = new Set(targets.map((clip) => clip.id));
+    const clips = this.project.timeline.clips.map((clip) =>
+      targetIds.has(clip.id) ? { ...clip, linkGroupId: groupId } : clip,
+    );
+    this.execute(new ReplaceClipsCommand(clips, 'Link clips'));
+    return { linkedClipIds: [...targetIds] };
+  }
+
+  /**
+   * Clear the link group from the requested clips and everyone linked to
+   * them. Refuses when none of the resolved clips is actually linked.
+   */
+  unlinkClips(clipIds: Iterable<string>): { unlinkedClipIds: string[] } {
+    const resolved = this.resolveLinkTargets(clipIds);
+    const targets = resolved.filter((clip) => clip.linkGroupId !== undefined);
+    if (targets.length === 0) {
+      throw new Error('None of the provided clips is linked');
+    }
+    if (!this.canEditClipIds(targets.map((clip) => clip.id))) {
+      throw new Error('One or more clips are on a locked track.');
+    }
+
+    const targetIds = new Set(targets.map((clip) => clip.id));
+    const clips = this.project.timeline.clips.map((clip) => {
+      if (!targetIds.has(clip.id)) return clip;
+      const next = { ...clip };
+      delete next.linkGroupId;
+      return next;
+    });
+    this.execute(new ReplaceClipsCommand(clips, 'Unlink clips'));
+    return { unlinkedClipIds: [...targetIds] };
+  }
+
+  // ─── Clip media source swapping (upstream PR #500) ────────────────────────
+
+  /**
+   * Replace a clip's source media while keeping its edit state — timeline
+   * position, duration, framing, fades — intact.
+   *
+   * Every linked partner sharing the anchor's source swaps with it, as one
+   * undoable step. The replacement must be compatible: same media kind as
+   * every target, long enough to cover each target's trimmed source window,
+   * and — for video without an audio stream — never backing an audio clip.
+   * A longer replacement simply leaves trim headroom: the user can extend
+   * the clip into the surplus later, because `outPoint` remains free up to
+   * the new asset's duration (the Windows rendering of upstream's
+   * trim-end-headroom bookkeeping).
+   */
+  swapClipMedia(clipId: string, replacementAssetId: string): {
+    changedClipIds: string[];
+    oldAssetId: string;
+    newAssetId: string;
+  } {
+    const anchor = this.findClipById(clipId);
+    if (!anchor) throw new Error(`Clip not found: ${clipId}`);
+    const replacement = this.project.media.find((asset) => asset.id === replacementAssetId);
+    if (!replacement) throw new Error(`No media asset "${replacementAssetId}" in this project.`);
+
+    // Only linked partners sharing the anchor's source swap with it; a
+    // manually linked clip with different media keeps its own source.
+    const targets = this.expandLinkedClipIds([clipId])
+      .map((id) => this.findClipById(id))
+      .filter((clip): clip is Clip => clip !== undefined)
+      .filter((clip) => clip.assetId === anchor.assetId);
+
+    // A clip's SOURCE kind comes from its current asset, not its playback
+    // type: the audio half of a picture-plus-audio pair sources from video
+    // media and must validate against video replacements (upstream splits
+    // this as sourceClipType vs mediaType).
+    const sourceKindOf = (clip: Clip): string =>
+      this.project.media.find((asset) => asset.id === clip.assetId)?.type ?? clip.type;
+
+    for (const target of targets) {
+      if (target.type === 'title' || target.type === 'generated') {
+        throw new Error('This clip\'s source cannot be swapped.');
+      }
+      // Checked before the generic kind mismatch so the common real case —
+      // swapping a picture-plus-linked-audio pair to a silent video — gets
+      // the precise reason instead of "video vs audio".
+      if (
+        target.type === 'audio'
+        && replacement.type === 'video'
+        && !replacement.audioCodec
+      ) {
+        throw new Error('The replacement video has no audio stream to back this clip\'s audio.');
+      }
+      if (sourceKindOf(target) !== replacement.type) {
+        throw new Error(
+          `Replacement is ${replacement.type} media; this clip's source is ${sourceKindOf(target)}.`,
+        );
+      }
+      if (replacement.type !== 'image' && replacement.duration < target.outPoint - target.inPoint) {
+        throw new Error(
+          'The replacement media is too short for this clip\'s edit. Trim it shorter first or pick longer media.',
+        );
+      }
+    }
+    if (!this.canEditClipIds(targets.map((clip) => clip.id))) {
+      throw new Error('One or more clips are on a locked track.');
+    }
+
+    const targetIds = new Set(targets.map((clip) => clip.id));
+    const clips = this.project.timeline.clips.map((clip) =>
+      targetIds.has(clip.id) ? { ...clip, assetId: replacementAssetId } : clip,
+    );
+    this.execute(new ReplaceClipsCommand(clips, 'Replace clip source'));
+    return {
+      changedClipIds: [...targetIds],
+      oldAssetId: anchor.assetId,
+      newAssetId: replacementAssetId,
+    };
+  }
+
+  private rippleMarkersOpening(frame: Frame, push: Frame): TimelineMarker[] | null {
+    if (this.getMarkers().length === 0) return null;
+    return mapMarkersOpeningAt(this.getMarkers(), frame, push);
+  }
+
+  /**
+   * Commit a ripple transaction's clip changes together with any marker
+   * remapping, so one user action stays exactly one undo step.
+   */
+  private executeRipple(clips: Clip[], markers: TimelineMarker[] | null, label: string): void {
+    if (markers === null) {
+      this.execute(new ReplaceClipsCommand(clips, label));
+      return;
+    }
+    this.execute(new ReplaceProjectCommand({
+      ...this.project,
+      timeline: { ...this.project.timeline, clips, markers },
+    }, label));
   }
 
   private updateTrack(trackId: string, patch: Partial<Track>, label: string): boolean {
@@ -1314,7 +1891,7 @@ export class EditorController {
    * Returns the number of segments removed (0 = nothing changed).
    */
   removeSilence(clipId: string, silentRangesSec: SilentRange[]): number {
-    const clip = this.project.timeline.clips.find((c) => c.id === clipId);
+    const clip = this.findClipById(clipId);
     if (!clip) return 0;
 
     const fps = this.project.settings.fps;

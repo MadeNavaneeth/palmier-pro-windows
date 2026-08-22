@@ -5,6 +5,7 @@
 
 import type { BlendMode } from './blend-mode';
 import type { ClipTransition } from '../editor/transition';
+import type { TimelineMarker } from '../editor/markers';
 
 // ─── Core time type ──────────────────────────────────────────────────────────
 
@@ -118,6 +119,12 @@ export interface Timeline {
   playheadFrame: Frame;
   inFrame?: Frame;
   outFrame?: Frame;
+  /**
+   * Review notes anchored to timeline frames (upstream PR #542). Optional so
+   * projects saved before markers existed decode unchanged; always sorted by
+   * (startFrame, id) when written.
+   */
+  markers?: TimelineMarker[];
 }
 
 // ─── Project ─────────────────────────────────────────────────────────────────

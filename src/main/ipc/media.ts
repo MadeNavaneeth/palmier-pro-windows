@@ -3,7 +3,7 @@
  * Uses ffprobe for metadata extraction and thumbnail generation.
  */
 
-import { ipcMain, dialog, BrowserWindow } from 'electron';
+import { ipcMain, dialog, BrowserWindow, app } from 'electron';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -85,6 +85,77 @@ export function registerMediaHandlers(): void {
       return { success: false, error: err.message };
     }
   });
+
+  // ─── Extract audio from a video into a library asset (upstream PR #562) ─────
+  // An optional `window` bakes a source range into the extracted file, which
+  // is how the timeline clip entry ("Save as audio") captures the clip's
+  // trim; omitted, the full source is extracted (media-panel entry).
+  ipcMain.handle('media:extract-audio', async (_event, sourcePath: unknown, window?: unknown) => {
+    if (typeof sourcePath !== 'string' || sourcePath.length === 0) {
+      return { success: false, error: 'Invalid source path' };
+    }
+    let startSec: number | undefined;
+    let endSec: number | undefined;
+    if (window !== undefined && window !== null) {
+      const w = window as { startSec?: unknown; endSec?: unknown };
+      startSec = typeof w.startSec === 'number' ? w.startSec : NaN;
+      endSec = typeof w.endSec === 'number' ? w.endSec : NaN;
+      if (
+        !Number.isFinite(startSec) || !Number.isFinite(endSec)
+        || startSec < 0 || endSec <= startSec
+      ) {
+        return { success: false, error: 'Invalid extraction window' };
+      }
+    }
+    try {
+      // Eligibility is decided before any FFmpeg work: the source must carry
+      // an audio stream, mirroring upstream's `canExtractAudio` gate.
+      const probe = await probeMedia(sourcePath);
+      if (!probe.audioCodec) {
+        return { success: false, error: `${probe.filename} has no audio stream` };
+      }
+
+      const outputDir = path.join(app.getPath('userData'), 'extracted-audio');
+      await fs.mkdir(outputDir, { recursive: true });
+      const base = path.basename(sourcePath, path.extname(sourcePath));
+      let outputPath = path.join(outputDir, `${base} (audio).m4a`);
+      for (let n = 2; await fileExists(outputPath); n += 1) {
+        outputPath = path.join(outputDir, `${base} (audio) ${n}.m4a`);
+      }
+
+      try {
+        // Output-side seeking: decode-then-trim is sample-accurate for a
+        // re-encode and needs no keyframe alignment.
+        const ffmpegArgs = ['-y'];
+        ffmpegArgs.push('-i', sourcePath);
+        if (startSec !== undefined && endSec !== undefined) {
+          ffmpegArgs.push('-ss', startSec.toFixed(4), '-to', endSec.toFixed(4));
+        }
+        ffmpegArgs.push('-vn', '-c:a', 'aac', '-b:a', '192k', outputPath);
+        await execFileAsync('ffmpeg', ffmpegArgs);
+      } catch (err: unknown) {
+        // A failed extraction must not leave a partial file behind to be
+        // imported later as a broken asset.
+        await fs.rm(outputPath, { force: true });
+        throw err;
+      }
+
+      const extracted = await probeMedia(outputPath);
+      return { success: true, asset: extracted };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
+  });
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function probeMediaPaths(filePaths: string[]): Promise<{

@@ -118,7 +118,11 @@ export function useKeyboardShortcuts() {
         timeline.splitAtPlayhead();
         return;
       case 'deleteSelected':
-        timeline.removeSelectedClips();
+        // Markers delete before clips (upstream PR #542): a selected marker
+        // under Delete must not also be the frame where a clip vanishes.
+        if (!timeline.deleteSelectedMarkers()) {
+          timeline.removeSelectedClips();
+        }
         return;
       case 'rippleDeleteSelected':
         timeline.rippleDelete();
@@ -152,6 +156,9 @@ export function useKeyboardShortcuts() {
       case 'clearMarkedRange':
         timeline.clearMarkedRange();
         return;
+      case 'addMarker':
+        timeline.addMarkerAtPlayhead();
+        return;
 
       // ── Selection ──────────────────────────────────────────────────────────
       case 'selectAll':
@@ -161,7 +168,10 @@ export function useKeyboardShortcuts() {
         // Escape dismisses the frontmost overlay before touching selection.
         if (ui.shortcutHelpOpen) ui.closeShortcutHelp();
         else if (ui.exportOpen) ui.closeExport();
-        else timeline.deselectAll();
+        else {
+          timeline.clearMarkerSelection();
+          timeline.deselectAll();
+        }
         return;
 
       // ── View ───────────────────────────────────────────────────────────────

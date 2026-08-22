@@ -297,6 +297,92 @@ export const tools = {
   },
 
   // ── Export ───────────────────────────────────────────────────────────────────
+  manageTracks: {
+    name: 'manage_tracks',
+    description:
+      'Reorder, restyle, rename, or remove timeline tracks in one step. Each entry addresses a '
+      + 'track by exactly one of trackId or its current index. muted/hidden fold onto this port\'s '
+      + 'single track toggle (audio: mute, video: hide); a name key present with "" restores the '
+      + 'generated label; removals require an empty track.',
+    parameters: z.object({
+      reorder: z.array(z.object({
+        trackId: z.string().optional(),
+        index: z.number().int().min(0).optional(),
+        to: z.number().int().min(0).describe('Destination index within the track\'s type zone.'),
+      }).refine((e) => (e.trackId !== undefined) !== (e.index !== undefined), {
+        message: 'pass one current trackId or index',
+      })).optional().describe('Move tracks.'),
+      set: z.array(z.object({
+        trackId: z.string().optional(),
+        index: z.number().int().min(0).optional(),
+        muted: z.boolean().optional(),
+        hidden: z.boolean().optional(),
+        syncLocked: z.boolean().optional(),
+        name: z.string().max(80).optional().describe('"" clears to the generated label.'),
+      }).refine((e) => (e.trackId !== undefined) !== (e.index !== undefined), {
+        message: 'pass one current trackId or index',
+      }).refine(
+        (e) => e.muted !== undefined || e.hidden !== undefined || e.syncLocked !== undefined
+          || e.name !== undefined,
+        { message: 'pass at least one of muted, hidden, syncLocked, name' },
+      )).optional().describe('Change track flags or names.'),
+      remove: z.array(z.union([
+        z.number().int().min(0),
+        z.string().min(1).describe('Track id.'),
+        z.object({
+          trackId: z.string().optional(),
+          index: z.number().int().min(0).optional(),
+        }).refine((e) => (e.trackId !== undefined) !== (e.index !== undefined), {
+          message: 'pass one current trackId or index',
+        }),
+      ])).optional().describe('Remove empty tracks.'),
+    }).refine(
+      (op) => (op.reorder?.length ?? 0) + (op.set?.length ?? 0) + (op.remove?.length ?? 0) > 0,
+      { message: 'Nothing to do — pass at least one of reorder, set, remove.' },
+    ),
+  },
+
+  swapClipMedia: {
+    name: 'swap_clip_media',
+    description:
+      'Replace a clip\'s source media while keeping its edit state — timing, framing, fades — intact. '
+      + 'Linked partners sharing the same source swap together. The replacement must be the same media '
+      + 'kind and long enough to cover the clip\'s trimmed source window.',
+    parameters: z.object({
+      clipId: z.string().describe('The clip whose source to replace.'),
+      assetId: z.string().describe('ID of the replacement media asset (upstream\'s mediaRef).'),
+    }),
+  },
+
+  manageClipLinks: {
+    name: 'manage_clip_links',
+    description:
+      'Link or unlink clips so they select, move, trim, split, and delete together. '
+      + 'Linking requires at least two clips of different media types that are not already one group; '
+      + 'unlinking clears the group from the clips and everyone linked to them.',
+    parameters: z.object({
+      action: z.enum(['link', 'unlink']).describe('Whether to link or unlink.'),
+      clipIds: z.array(z.string().min(1)).min(1).describe('Clip IDs to operate on. Linking expands each id to its whole current group first.'),
+    }),
+  },
+
+  manageMarkers: {
+    name: 'manage_markers',
+    description:
+      'Create, update, or delete timeline markers — review notes anchored to frames. '
+      + 'A marker with durationFrames 0 is a point; a positive duration makes it a range.',
+    parameters: z.object({
+      action: z.enum(['create', 'update', 'delete']).describe('Which marker operation to perform.'),
+      markerId: z.string().optional().describe('Marker ID. Required for update and delete.'),
+      name: z.string().max(120).optional().describe('Marker name (single line, max 120 chars). Required for create.'),
+      startFrame: frameSchema.optional().describe('Start frame. Required for create.'),
+      durationFrames: frameSchema.optional().describe('Range length in frames. 0 or omitted = point marker.'),
+      color: z.string().regex(/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/).optional()
+        .describe('Marker color as #RRGGBB or #RRGGBBAA. Defaults to blue.'),
+      comment: z.string().max(4000).optional().describe('Free-form note text (max 4000 chars).'),
+    }),
+  },
+
   exportProject: {
     name: 'export_project',
     description: 'Export the project to a video file via FFmpeg.',

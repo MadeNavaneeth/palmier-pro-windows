@@ -36,6 +36,14 @@ const api = {
       }
     },
     probe: (filePath: string) => ipcRenderer.invoke('media:probe', filePath),
+    /**
+     * Extract a video's audio into a standalone library asset (upstream PR
+     * #562). The optional window bakes a source range in (timeline clip entry).
+     */
+    extractAudio: (
+      sourcePath: string,
+      window?: { startSec: number; endSec: number },
+    ) => ipcRenderer.invoke('media:extract-audio', sourcePath, window),
     thumbnail: (filePath: string, outputDir: string, timestamp?: number) =>
       ipcRenderer.invoke('media:thumbnail', filePath, outputDir, timestamp),
     // `config` overrides the saved silence controls for this call only; omit it

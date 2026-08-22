@@ -74,6 +74,7 @@ describe('toOpenAiTools', () => {
             properties: { clipId: { type: 'string' } },
             required: ['clipId'],
           },
+          strict: false,
         },
       },
     ]);
@@ -84,6 +85,18 @@ describe('toOpenAiTools', () => {
       { name: 'undo', description: 'Undo.', inputSchema: { type: 'object' } },
     ]);
     expect(tool.function.parameters).toEqual({ type: 'object', properties: {} });
+  });
+
+  it('pins every tool non-strict so omitted arguments stay omitted (#471)', () => {
+    // Upstream's Responses API defect: under strict schema normalization the
+    // model is forced to emit every property, so an optional argument it meant
+    // to omit arrived as an explicit null instead of being absent. The request
+    // must declare each tool non-strict.
+    const tools = toOpenAiTools([
+      { name: 'remove_silence', description: 'A.', inputSchema: { type: 'object' } },
+      { name: 'trim_clip', description: 'B.', inputSchema: { type: 'object' } },
+    ]);
+    expect(tools.map((tool) => tool.function.strict)).toEqual([false, false]);
   });
 });
 
@@ -98,6 +111,23 @@ describe('parseToolArguments', () => {
     for (const raw of ['', '   ', 'not json', '[1,2]', '"text"', '42', 'null', '{']) {
       expect(parseToolArguments(raw), raw).toEqual({});
     }
+  });
+
+  it('drops keys sent as explicit null so omission keeps its meaning (#471)', () => {
+    // Every tool schema expresses optionality with optional(), so a null can
+    // only be a provider artifact for "the model omitted this". It must reach
+    // the executor as absent — e.g. remove_silence treats an omitted argument
+    // as "follow the saved controls" — not as a validation failure.
+    expect(parseToolArguments('{"clipId":null,"thresholdDb":-35}')).toEqual({
+      thresholdDb: -35,
+    });
+    expect(parseToolArguments('{"a":null,"b":null}')).toEqual({});
+  });
+
+  it('leaves nested objects untouched', () => {
+    // Only top-level keys are normalized; deeper stripping could mask a
+    // provider actually sending malformed structure.
+    expect(parseToolArguments('{"opts":{"x":null},"n":1}')).toEqual({ opts: { x: null }, n: 1 });
   });
 });
 
@@ -217,7 +247,7 @@ describe('createCompletion', () => {
     await createCompletion(request({
       tools: [{
         type: 'function',
-        function: { name: 'undo', description: 'Undo.', parameters: { type: 'object' } },
+        function: { name: 'undo', description: 'Undo.', parameters: { type: 'object' }, strict: false },
       }],
     }));
     const body = JSON.parse(spy.mock.calls[1][1].body as string);

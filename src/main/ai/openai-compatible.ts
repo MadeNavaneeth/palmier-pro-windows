@@ -19,6 +19,13 @@ export interface OpenAiTool {
     name: string;
     description: string;
     parameters: Record<string, unknown>;
+    /**
+     * Pinned non-strict (upstream #471): strict schema normalization forces the
+     * model to emit every property, so an optional argument the model meant to
+     * omit arrives as an explicit `null` instead of being absent — and
+     * "omitted" must stay distinguishable from a supplied value.
+     */
+    strict: false;
   };
 }
 
@@ -101,11 +108,23 @@ export function toOpenAiTools(
         properties: {},
         ...schema.inputSchema,
       },
+      strict: false as const,
     },
   }));
 }
 
-/** Parse tool arguments, treating malformed JSON as an empty argument set. */
+/**
+ * Parse tool arguments, treating malformed JSON as an empty argument set.
+ *
+ * Keys the model sent as explicit `null` are dropped before validation
+ * (upstream #471): every tool schema expresses optionality with `optional()`,
+ * so `null` can never be a meaningful value — it is what strict-normalizing
+ * providers emit for an argument the model meant to omit. Dropping it here
+ * keeps "omitted" meaning "use the default" (the silence-removal contract, the
+ * optional clip targeting, and so on) instead of failing validation.
+ * Nested objects are left untouched: the schemas are flat, and stripping
+ * deeply could mask a provider actually sending malformed structure.
+ */
 export function parseToolArguments(argumentsJson: string): Record<string, unknown> {
   if (!argumentsJson || argumentsJson.trim().length === 0) return {};
   try {
@@ -113,9 +132,13 @@ export function parseToolArguments(argumentsJson: string): Record<string, unknow
     // A bare array or scalar is not a valid argument object; the executor
     // validates each field anyway, so an empty object produces a clean error
     // instead of a crash inside argument access.
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const args: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (value === null) continue;
+      args[key] = value;
+    }
+    return args;
   } catch {
     return {};
   }

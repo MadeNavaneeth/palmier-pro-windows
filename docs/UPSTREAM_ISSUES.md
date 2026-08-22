@@ -6,9 +6,9 @@ Every open issue captured in
 the high-priority ledger live in [`UPSTREAM_PARITY.md`](./UPSTREAM_PARITY.md);
 this file is the exhaustive per-issue record.
 
-- Upstream baseline: `8d5648d893c3cd9b71677c5acea44c08b9616f7c`
-- Open issues captured: 51
-- Triage date: 2026-07-31
+- Upstream baseline: `3026f72ed2924c2e6f876ab34ed6854b744407f9`
+- Open issues captured: 57
+- Triage date: 2026-08-21 (re-triaged against v0.7.6; previous pass 2026-07-31 at `8d5648d8`, 51 issues)
 
 ## Dispositions
 
@@ -24,11 +24,11 @@ this file is the exhaustive per-issue record.
 | Disposition | Count |
 |---|---|
 | Implemented | 14 |
-| Partial | 5 |
-| Planned | 21 |
-| N/A platform | 11 |
-| Needs investigation | 0 |
-| **Total** | **51** |
+| Partial | 6 |
+| Planned | 23 |
+| N/A platform | 14 |
+| Needs investigation | 1 |
+| **Total** | **58** |
 
 Every open issue in the captured snapshot now has a concrete disposition; none
 remain under investigation.
@@ -112,9 +112,16 @@ Ordered by issue number.
 | [#286](https://github.com/palmier-io/palmier-pro/issues/286) | Ability to restructure parts | Partial | The request is workspace layout, in CapCut's terms: rearrange the panels, detach the chat into its own window, or reduce the view to just the timeline and video. Nothing here is platform-specific, so it applies in full, and two of the three now work. Hiding panels already worked from the title bar, and that layout is persisted, so "only the timeline and video in view" survives a restart instead of resetting on every launch. Stored flags are narrowed on read, and a panel the saved layout does not mention falls back to its default, so a layout written by a build with a different set of panels still loads. Rearranging arrived with the named presets adopted from PR #430 — `default`, `media` and `vertical`, on `Ctrl+1/2/3` — which is the shape upstream chose over free-form dragging and the one that actually answers the vertical-video case. Missing: grouping panels as tabs, detaching one into a separate window, and resizable splitters with remembered divider positions. `shared/ui/workspace-layout.ts`, `store/ui.ts`, `ui-panels.test.ts`, `ui-layout.test.ts`. |
 | [#287](https://github.com/palmier-io/palmier-pro/issues/287) | Custom STT | Planned | Requires the transcription subsystem (#39) plus a pluggable STT provider, neither of which exists. |
 | [#289](https://github.com/palmier-io/palmier-pro/issues/289) | XML imports and exports | Planned | Duplicate of #154 in substance; tracked as one interchange work item. |
-| [#302](https://github.com/palmier-io/palmier-pro/issues/302) | Local MCP batch reel production: headless/stability + `manage_tracks` mis-targeting | Partial | The mis-targeting half does not apply: there is no `manage_tracks` tool, and every track-addressing tool takes a stable track id rather than an index, which is the fix upstream landed in PR #307. Stability is covered by the #58 row. Missing: a headless or windowless mode — the MCP server currently requires the Electron app to be running with a window. |
+| [#302](https://github.com/palmier-io/palmier-pro/issues/302) | Local MCP batch reel production: headless/stability + `manage_tracks` mis-targeting | Partial | The mis-targeting half is now closed on this port too: the `manage_tracks` tool (upstream PR #520's surface) addresses every entry by stable track id or current index — exactly one, never both — so a stale index cannot retarget an edit. Stability is covered by the #58 row. Missing: a headless or windowless mode — the MCP server currently requires the Electron app to be running with a window. |
 | [#310](https://github.com/palmier-io/palmier-pro/issues/310) | Hermes / Herm MCP client integration | Planned | The stdio MCP server is client-agnostic and `generateMcpConfig` emits a launch config, so a compliant client can already attach. No Hermes-specific config generation, install flow, or verification exists. |
 | [#453](https://github.com/palmier-io/palmier-pro/issues/453) | Media import silently drops files, no error shown | Partial | Applies here, and in one respect the Windows behaviour is worse than the one reported. Skipped files *are* reported: `probeMediaPaths` collects a reason per rejected path and the Media panel shows it, so this port does not fail silently the way upstream does. But only `errors[0]` reaches the banner, so dropping several unsupported files names one of them; and **folders are not expanded at all** — a dropped directory has no media extension, so it is rejected as "not a supported media file" and none of the media inside is imported, where upstream at least imports what it recognises. Missing: recursive directory expansion with a bounded depth and file cap, a readable failure when a directory cannot be listed, and a summary of everything skipped rather than the first item. `main/ipc/media.ts`, `renderer/components/MediaBin.tsx`. |
+| [#464](https://github.com/palmier-io/palmier-pro/issues/464) | Please support Apple account login | N/A platform | Same family as #173: Sign in with Apple depends on `ASWebAuthenticationSession` and Apple's hosted OAuth endpoints. This port has no account system; API keys are user-supplied. |
+| [#484](https://github.com/palmier-io/palmier-pro/issues/484) | Add Antigravity CLI integration via MCP | Partial | The stdio MCP server (`main/ai/mcp-server.ts`) is client-agnostic standard MCP and `generateMcpConfig` emits a launch config, so a compliant CLI can attach today — the same position as the Hermes request (#310). No Antigravity-specific config generation or verified walkthrough exists yet. |
+| [#516](https://github.com/palmier-io/palmier-pro/issues/516) | A more clear way to find the manual editing tools | Planned | Discoverability of manual tools versus the Agent. Applies here in full; the shortcut sheet (F1) covers keyboard discovery but there is no toolbar affordance inventory or guided tour (upstream's answer is the #458 onboarding flow). |
+| [#527](https://github.com/palmier-io/palmier-pro/issues/527) | Not working for macOS Sequoia | N/A platform | A macOS 15 compatibility report against an app whose minimum is macOS 26. The Windows support floor is set by Electron, not by an Apple OS version. |
+| [#532](https://github.com/palmier-io/palmier-pro/issues/532) | Migrate MCP server to the 2026-07-28 stateless protocol | Planned | Relevant: `main/ai/mcp-server.ts` implements stdio MCP and would need the stateless HTTP transport to serve remote/CLI clients without a persistent session. Tracked with the headless-mode gap under #302. |
+| [#536](https://github.com/palmier-io/palmier-pro/issues/536) | v0.7.4 regression of #465: scrub decode blocks on the tokio blocking pool | N/A platform | Scrub audio does not exist on Windows (#418 disposition); playhead scrubbing is visual only, so neither the original defect nor this regression can occur. The transferable rule — decode work must stay off the interaction path — is already enforced by process separation and `latest-request.ts`. |
+| [#556](https://github.com/palmier-io/palmier-pro/issues/556) | Playback can take 50+ seconds to start on sparse timelines with many tracks | Needs investigation | Upstream's cause is per-frame composition build cost scaling with track count before first paint. The Windows preview composites per frame through `preview-compositor.ts` with a bounded decode pool, and the playback loop clamps catch-up, but no sparse-timeline first-frame profiling has been done here. Needs a repro with many mostly-empty tracks before a disposition is possible. |
 
 ## Implementation notes
 
@@ -227,4 +234,4 @@ table above.
 
 ---
 
-_Last reconciled with the parity workflow: 2026-07-31._
+_Last reconciled with the parity workflow: 2026-08-21._
