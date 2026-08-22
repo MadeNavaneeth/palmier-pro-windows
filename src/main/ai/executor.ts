@@ -329,15 +329,16 @@ export class ToolExecutor {
 
       // ── Write operations ──────────────────────────────────────────────────
       case 'add_clip': {
-        if (args.mode !== undefined) {
+        if (args.mode !== undefined || args.source !== undefined) {
           const placed = this.editor.placeClipWithMode({
             assetId: args.assetId,
             trackId: args.trackId,
-            mode: args.mode,
+            ...(args.mode !== undefined ? { mode: args.mode } : {}),
             ...(args.startFrame !== undefined ? { startFrame: clampFrame(args.startFrame) } : {}),
             ...(args.durationFrames !== undefined
               ? { durationFrames: clampFrame(args.durationFrames, 1) }
               : {}),
+            ...(args.source !== undefined ? { source: args.source } : {}),
           });
           if (!placed) {
             return {

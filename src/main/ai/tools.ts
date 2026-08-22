@@ -65,6 +65,9 @@ export const tools = {
       trackId: z.string().describe('Target track ID.'),
       startFrame: frameSchema.describe('Frame position where the clip should start.'),
       durationFrames: durationSchema.optional().describe('Duration in frames. Defaults to asset duration.'),
+      source: z.tuple([z.number().finite().min(0), z.number().finite()])
+        .optional()
+        .describe('[startSeconds, endSeconds] window of the asset to place — mutually exclusive with durationFrames. This is three-point editing: set it, land at the playhead, and the trim is baked in.'),
       mode: z.enum(['overwrite', 'insert', 'append']).optional().describe(
         'Collision handling. overwrite (default) replaces whatever sits in the span; insert '
         + 'pushes later clips on the track and their linked partners right by the placed length; '

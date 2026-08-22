@@ -46,6 +46,7 @@ import {
 } from './markers';
 import { hasEmbeddedAudio, isMediaCompatibleWithTrack, placementDuration } from './placement';
 import { fileKindOf } from '../media/file-kind';
+import { assetDurationSeconds } from '../media/source-time';
 
 /**
  * One copied clip and its position relative to the copy anchor  the
@@ -527,6 +528,8 @@ export class EditorController {  private project: Project;
     mode?: 'overwrite' | 'insert' | 'append';
     startFrame?: Frame;
     durationFrames?: Frame;
+    /** Source window in seconds, [start, end) — three-point editing's In/Out. */
+    source?: [number, number];
   }): { clipIds: string[] } | null {
     const asset = this.project.media.find((m) => m.id === params.assetId);
     const track = this.project.timeline.tracks.find((t) => t.id === params.trackId);
@@ -534,8 +537,45 @@ export class EditorController {  private project: Project;
     if (!isMediaCompatibleWithTrack(asset.type, track.type)) return null;
 
     const fps = this.project.settings.fps;
-    const duration = clampFrame(params.durationFrames || placementDuration(asset, fps), 1);
     const mode = params.mode ?? 'overwrite';
+
+    // Source-window resolution mirrors upstream resolvePlacement: `source`
+    // and `durationFrames` are mutually exclusive; a source span is clamped
+    // to the asset and must survive as at least one frame.
+    let duration: Frame;
+    let inPoint: Frame;
+    if (params.source !== undefined) {
+      if (params.durationFrames !== undefined) {
+        throw new Error(
+          'Set source OR durationFrames, not both — source picks a span of the asset, durationFrames an exact timeline length.',
+        );
+      }
+      const [rawStart, rawEnd] = params.source;
+      if (
+        !Number.isFinite(rawStart) || !Number.isFinite(rawEnd)
+        || rawStart < 0 || rawEnd <= rawStart
+      ) {
+        throw new Error('source must be [startSeconds, endSeconds] with 0 <= start < end.');
+      }
+      const assetLen = assetDurationSeconds(asset, fps);
+      if (asset.type !== 'image') {
+        if (assetLen <= 0) {
+          throw new Error(
+            'source needs a known source length; this asset has none. Use durationFrames.',
+          );
+        }
+        if (rawStart >= assetLen) {
+          throw new Error(`source start (${rawStart}s) is past the end of the asset (${assetLen}s).`);
+        }
+      }
+      const startSec = Math.max(0, rawStart);
+      const endSec = asset.type === 'image' ? rawEnd : Math.min(rawEnd, assetLen);
+      inPoint = Math.round(startSec * fps);
+      duration = Math.max(1, Math.round(endSec * fps) - inPoint);
+    } else {
+      duration = clampFrame(params.durationFrames || placementDuration(asset, fps), 1);
+      inPoint = 0;
+    }
 
     let start: Frame;
     if (mode === 'append') {
@@ -569,12 +609,16 @@ export class EditorController {  private project: Project;
       asset.type === 'video' && track.type === 'video' && hasEmbeddedAudio(asset)
         ? nanoid()
         : undefined;
-    const mainClip = this.createPlacedClip(asset, asset.type, params.trackId, start, duration, linkGroupId);
+    const mainClip = this.createPlacedClip(
+      asset, asset.type, params.trackId, start, duration, linkGroupId,
+      mode === 'append' ? 0 : inPoint,
+    );
     const createdClips = [mainClip];
     let audioClip: Clip | undefined;
     if (linkGroupId) {
       const audioTrack = this.resolveAudioPlacementTrack(start, duration, createdClips, newTracks);
-      audioClip = this.createPlacedClip(asset, 'audio', audioTrack.id, start, duration, linkGroupId);
+      audioClip = this.createPlacedClip(asset, 'audio', audioTrack.id, start, duration, linkGroupId,
+        mode === 'append' ? 0 : inPoint);
       createdClips.push(audioClip);
     }
     const finalClips = [...clips, ...createdClips];
@@ -2012,6 +2056,7 @@ export class EditorController {  private project: Project;
     startFrame: Frame,
     durationFrames: Frame,
     linkGroupId?: string,
+    inPoint: Frame = 0,
   ): Clip {
     return {
       id: nanoid(),
@@ -2021,8 +2066,8 @@ export class EditorController {  private project: Project;
       linkGroupId,
       startFrame,
       durationFrames,
-      inPoint: 0,
-      outPoint: durationFrames,
+      inPoint,
+      outPoint: inPoint + durationFrames,
       x: 0,
       y: 0,
       width: this.project.settings.width,
