@@ -203,6 +203,7 @@ export function MediaBin() {
           <div className="flex h-6 shrink-0 items-center border-b border-white/10 px-2 text-[10px]">
             <span className="font-semibold text-text-primary">Library</span>
             <MediaLibraryCount visibleCount={mediaItems.length} />
+            <ProxyModeToggle />
           </div>
 
           {/* Three-point placement strip for the single selected asset */}
@@ -546,6 +547,38 @@ function SourcePlaceStrip() {
       </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Proxy decode policy toggle (R2): auto uses ready proxies for preview
+ * decoding, off forces originals. Persisted in the main process.
+ */
+function ProxyModeToggle() {
+  const [mode, setMode] = useState<'auto' | 'off'>('auto');
+
+  useEffect(() => {
+    void window.palmier.media.getProxyMode().then((res: unknown) => {
+      const r = res as { mode?: 'auto' | 'off' } | undefined;
+      if (r?.mode === 'auto' || r?.mode === 'off') setMode(r.mode);
+    });
+  }, []);
+
+  return (
+    <select
+      value={mode}
+      onChange={(e) => {
+        const next = e.target.value as 'auto' | 'off';
+        setMode(next);
+        void window.palmier.media.setProxyMode(next);
+      }}
+      className="ml-auto rounded border border-white/15 bg-surface-0 px-1 py-0.5 text-[9px] text-text-secondary outline-none"
+      aria-label="Proxy decoding"
+      title="Proxy decoding: auto uses generated proxies for smoother scrubbing; off always decodes originals"
+    >
+      <option value="auto">Proxy: auto</option>
+      <option value="off">Proxy: off</option>
+    </select>
   );
 }
 

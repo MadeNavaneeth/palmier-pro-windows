@@ -15,6 +15,7 @@ import fsSync from 'fs';
 import crypto from 'crypto';
 import type { EditorController } from '../../shared/editor/controller';
 import { proxyArgs } from '../../shared/media/proxy';
+import { loadProxyMode, saveProxyMode } from './proxy-mode';
 
 const generating = new Set<string>();
 
@@ -69,6 +70,14 @@ export function registerProxyHandlers(editorController: EditorController): void 
   });
 
   ipcMain.handle('media:proxy-status', () => ({ generating: [...generating] }));
+
+  ipcMain.handle('media:get-proxy-mode', () => loadProxyMode());
+  ipcMain.handle('media:set-proxy-mode', (_event, mode: unknown) => {
+    if (mode !== 'auto' && mode !== 'off') {
+      return { success: false, error: 'Proxy mode must be auto or off.' };
+    }
+    return { success: true, mode: saveProxyMode(mode) };
+  });
 
   ipcMain.handle(
     'media:remove-proxy',

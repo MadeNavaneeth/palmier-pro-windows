@@ -44,6 +44,8 @@ const api = {
     generateProxy: (assetId: string) => ipcRenderer.invoke('media:generate-proxy', assetId),
     proxyStatus: () => ipcRenderer.invoke('media:proxy-status'),
     removeProxy: (assetId: string) => ipcRenderer.invoke('media:remove-proxy', assetId),
+    getProxyMode: () => ipcRenderer.invoke('media:get-proxy-mode'),
+    setProxyMode: (mode: 'auto' | 'off') => ipcRenderer.invoke('media:set-proxy-mode', mode),
     chooseFolder: () => ipcRenderer.invoke('media:choose-folder'),
     /**
      * Offline-relink scan: match the given filenames (case-insensitive,

@@ -1,5 +1,5 @@
 /**
- * PreviewCompositor — orchestrates frame decoding and GPU composition
+ * PreviewCompositor â€” orchestrates frame decoding and GPU composition
  * for the real-time preview. Lives in the main process.
  *
  * Flow:
@@ -24,8 +24,9 @@ import {
 } from '../../shared/media/source-time';
 import { LatestRequestGate, type RequestToken } from './latest-request';
 import { effectiveSourcePath } from '../../shared/media/proxy';
+import { loadProxyMode } from './proxy-mode';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface GpuLayerDesc {
   width: number;
@@ -44,7 +45,7 @@ interface GpuLayerDesc {
   wipe_softness: number;
 }
 
-// ─── Preview Compositor ──────────────────────────────────────────────────────
+// â”€â”€â”€ Preview Compositor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export class PreviewCompositor {
   private project: Project | null = null;
@@ -75,7 +76,7 @@ export class PreviewCompositor {
     const { settings } = project;
     const { width, height, fps } = settings;
 
-    // Find visible clips at this frame (sorted by track order → z-index)
+    // Find visible clips at this frame (sorted by track order â†’ z-index)
     const visibleClips = this.getVisibleClips(project, frameIndex);
     if (visibleClips.length === 0) {
       this.sendFrame(win, request, Buffer.alloc(width * height * 4));
@@ -168,7 +169,7 @@ export class PreviewCompositor {
     }
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────────────────
+  // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   /**
    * Decode requests for every visible clip at a frame.
@@ -201,7 +202,7 @@ export class PreviewCompositor {
 
     // Preview decodes from the proxy when one exists; exports always read
     // the original (R2 proxy policy, shared/media/proxy.ts).
-    const sourcePath = effectiveSourcePath(asset, 'preview');
+    const sourcePath = effectiveSourcePath(asset, 'preview', loadProxyMode());
 
     // A still image has one frame; there is nothing to seek.
     if (asset.type === 'image') {
@@ -253,7 +254,7 @@ export class PreviewCompositor {
   }
 }
 
-// ─── Register IPC handlers ───────────────────────────────────────────────────
+// â”€â”€â”€ Register IPC handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 let compositorInstance: PreviewCompositor | null = null;
 

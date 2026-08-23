@@ -19,6 +19,13 @@ describe('effectiveSourcePath (R2 proxies)', () => {
     expect(effectiveSourcePath(base, 'preview')).toBe('D:/src/heavy.mp4');
     expect(effectiveSourcePath(base, 'export')).toBe('D:/src/heavy.mp4');
   });
+
+  it('mode "off" forces originals for every usage', () => {
+    const asset = { ...base, proxyPath: 'C:/px/a.mp4' };
+    expect(effectiveSourcePath(asset, 'preview', 'off')).toBe('D:/src/heavy.mp4');
+    expect(effectiveSourcePath(asset, 'export', 'off')).toBe('D:/src/heavy.mp4');
+    expect(effectiveSourcePath(asset, 'preview', 'auto')).toBe('C:/px/a.mp4');
+  });
 });
 
 describe('proxyArgs', () => {
