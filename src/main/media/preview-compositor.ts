@@ -1,5 +1,5 @@
 /**
- * PreviewCompositor â€” orchestrates frame decoding and GPU composition
+ * PreviewCompositor  orchestrates frame decoding and GPU composition
  * for the real-time preview. Lives in the main process.
  *
  * Flow:
@@ -24,9 +24,10 @@ import {
 } from '../../shared/media/source-time';
 import { LatestRequestGate, type RequestToken } from './latest-request';
 import { effectiveSourcePath } from '../../shared/media/proxy';
+import { ByteBudgetLru } from './render-cache';
 import { loadProxyMode } from './proxy-mode';
 
-// â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Types 
 
 interface GpuLayerDesc {
   width: number;
@@ -45,12 +46,23 @@ interface GpuLayerDesc {
   wipe_softness: number;
 }
 
-// â”€â”€â”€ Preview Compositor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Preview Compositor 
 
 export class PreviewCompositor {
   private project: Project | null = null;
   private nativeAddon: any = null;
   private readonly requests = new LatestRequestGate<number>();
+
+  /**
+   * Render cache (roadmap R2): composited frames keyed by project revision
+   * token + frame + size. Any edit replaces the project object wholesale
+   * (immutable model), which mints a new token and orphans the previous
+   * generation's entries -- correctness for free. Scrub-backs, loops and
+   * pause/resume inside one revision then skip decode+compose entirely.
+   */
+  private readonly renderCache = new ByteBudgetLru<Buffer>(256 * 1024 * 1024);
+  private readonly projectTokens = new WeakMap<Project, number>();
+  private nextToken = 1;
 
   constructor() {}
 
@@ -59,6 +71,16 @@ export class PreviewCompositor {
       this.requests.invalidateAll();
     }
     this.project = project;
+  }
+
+  private tokenFor(project: Project): number {
+    let id = this.projectTokens.get(project);
+    if (id === undefined) {
+      id = this.nextToken;
+      this.nextToken += 1;
+      this.projectTokens.set(project, id);
+    }
+    return id;
   }
 
   setNativeAddon(addon: any): void {
@@ -73,14 +95,40 @@ export class PreviewCompositor {
     if (!project) return;
 
     const request = this.requests.begin(win.webContents.id);
-    const { settings } = project;
-    const { width, height, fps } = settings;
+    const { width, height } = project.settings;
 
-    // Find visible clips at this frame (sorted by track order â†’ z-index)
+    // Render-cache hit (R2): scrub-backs, loops and pause/resume inside one
+    // project revision skip decode + GPU composition entirely.
+    const cacheKey = `${this.tokenFor(project)}:${frameIndex}:${width}x${height}`;
+    const cached = this.renderCache.get(cacheKey);
+    if (cached) {
+      this.sendFrame(win, request, cached);
+      return;
+    }
+
+    const composited = await this.composeToBuffer(project, frameIndex, width, height, request);
+    if (composited === null || !this.requests.isCurrent(request)) return;
+
+    this.renderCache.set(cacheKey, composited, composited.length);
+    this.sendFrame(win, request, composited);
+  }
+
+  /**
+   * Decode every visible layer at a frame and run the native composition.
+   * Returns null when nothing could be composed or a newer request for the
+   * same window superseded this one.
+   */
+  private async composeToBuffer(
+    project: Project,
+    frameIndex: Frame,
+    width: number,
+    height: number,
+    request: RequestToken<number>,
+  ): Promise<Buffer | null> {
+    // Find visible clips at this frame (sorted by track order  z-index)
     const visibleClips = this.getVisibleClips(project, frameIndex);
     if (visibleClips.length === 0) {
-      this.sendFrame(win, request, Buffer.alloc(width * height * 4));
-      return;
+      return Buffer.alloc(width * height * 4);
     }
 
     // Decode frames for each visible clip
@@ -99,7 +147,7 @@ export class PreviewCompositor {
       const decoded = await decoder.getFrame(decodeRequest);
       const frameBuffer = decoded?.data || null;
 
-      if (!this.requests.isCurrent(request)) return;
+      if (!this.requests.isCurrent(request)) return null;
       if (!frameBuffer) continue;
 
       const wipe = wipeParamsFor(clip, frameIndex);
@@ -127,28 +175,23 @@ export class PreviewCompositor {
     }
 
     if (layerDescs.length === 0) {
-      this.sendFrame(win, request, Buffer.alloc(width * height * 4));
-      return;
+      return Buffer.alloc(width * height * 4);
     }
 
     // Concatenate all layer buffers
     const concatenated = Buffer.concat(buffers);
 
     // Call native compositor
-    let composited: Buffer;
     if (this.nativeAddon?.compositeFrameGpu) {
-      composited = this.nativeAddon.compositeFrameGpu(
+      return this.nativeAddon.compositeFrameGpu(
         JSON.stringify(layerDescs),
         concatenated,
         width,
         height,
       );
-    } else {
-      // Fallback: just send first layer (degraded preview)
-      composited = buffers[0] || Buffer.alloc(width * height * 4);
     }
-
-    this.sendFrame(win, request, composited);
+    // Fallback: just send first layer (degraded preview)
+    return buffers[0] ?? Buffer.alloc(width * height * 4);
   }
 
   /**
@@ -159,9 +202,15 @@ export class PreviewCompositor {
     if (!project) return;
 
     const decoder = getFrameDecoder();
-    const { settings } = project;
+    const { width, height } = project.settings;
+    const tokenForProject = this.tokenFor(project);
 
     for (const frameIndex of frames) {
+      // Render cache first (R2): an already-composited frame needs no
+      // source decode at all, so prefetching it would only thrash.
+      const cacheKey = `${tokenForProject}:${frameIndex}:${width}x${height}`;
+      if (this.renderCache.get(cacheKey)) continue;
+
       const requests = this.decodeRequestsForFrame(project, frameIndex);
       if (requests.length > 0) {
         await decoder.prefetch(requests);
@@ -169,7 +218,7 @@ export class PreviewCompositor {
     }
   }
 
-  // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //  Helpers 
 
   /**
    * Decode requests for every visible clip at a frame.
@@ -254,7 +303,7 @@ export class PreviewCompositor {
   }
 }
 
-// â”€â”€â”€ Register IPC handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Register IPC handlers 
 
 let compositorInstance: PreviewCompositor | null = null;
 
