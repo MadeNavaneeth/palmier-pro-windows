@@ -1810,6 +1810,25 @@ export class EditorController {  private project: Project;
     return clip?.linkGroupId !== undefined;
   }
 
+  /**
+   * Attach or clear a proxy file for an asset (roadmap R2). Undoable like
+   * every media-field change; generation itself runs outside the editor.
+   */
+  setProxyState(assetId: string, proxyPath: string | null): boolean {
+    const asset = this.project.media.find((a) => a.id === assetId);
+    if (!asset) return false;
+    const next: MediaAsset =
+      proxyPath === null
+        ? (() => {
+            const copy = { ...asset };
+            delete copy.proxyPath;
+            return copy;
+          })()
+        : { ...asset, proxyPath };
+    this.execute(new ReplaceMediaCommand(next, proxyPath ? 'Attach proxy' : 'Remove proxy'));
+    return true;
+  }
+
   getMarkers(): TimelineMarker[] {
     return this.project.timeline.markers ?? [];
   }

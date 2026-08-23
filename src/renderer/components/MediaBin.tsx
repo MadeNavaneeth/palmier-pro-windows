@@ -622,6 +622,27 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
     }
   }
 
+  // ─── Proxies (R2) ─────────────────────────────────────────────────────────
+  const isVideo = item.type === 'video';
+  const hasProxy = Boolean(item.proxyPath);
+
+  function handleGenerateProxy() {
+    setMenuOpen(false);
+    void window.palmier.media.generateProxy(item.id).then((res) => {
+      if (res.success && (res as { started?: boolean }).started) {
+        useMediaPanelStore.getState().setNotice('Proxy generation started — the badge appears when it is ready.');
+      } else if (!res.success && res.error) {
+        useMediaPanelStore.getState().setNotice(res.error);
+      }
+    });
+  }
+
+  async function handleRemoveProxy() {
+    setMenuOpen(false);
+    await window.palmier.media.removeProxy(item.id);
+    useMediaPanelStore.getState().setNotice(null);
+  }
+
   return (
     <div
       draggable
@@ -667,6 +688,15 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
             {formatDuration(item.duration, fps)}
           </span>
         )}
+        {item.proxyPath && (
+          <span
+            className="absolute top-1 left-1 rounded-sm bg-sky-500/80 px-1 py-0.5 text-[8px] font-semibold uppercase text-white"
+            title="Proxy attached — exports use the original"
+            data-proxy-badge
+          >
+            PX
+          </span>
+        )}
       </div>
       <p
         data-selected={isSelected}
@@ -692,6 +722,24 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
                 className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:text-text-muted"
               >
                 {extractLabel}
+              </button>
+            )}
+            {isVideo && !hasProxy && (
+              <button
+                role="menuitem"
+                onClick={handleGenerateProxy}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Generate proxy
+              </button>
+            )}
+            {isVideo && hasProxy && (
+              <button
+                role="menuitem"
+                onClick={handleRemoveProxy}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Remove proxy (use original)
               </button>
             )}
             <button

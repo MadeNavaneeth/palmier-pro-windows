@@ -30,6 +30,11 @@ export interface MediaAsset {
   fileSize: number;
   thumbnailPath?: string;
   addedAt: string; // ISO timestamp
+  /**
+   * Lightweight mezzanine used for preview/decode only (roadmap R2).
+   * Exports always read `path`.
+   */
+  proxyPath?: string;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────

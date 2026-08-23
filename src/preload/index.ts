@@ -38,9 +38,12 @@ const api = {
     probe: (filePath: string) => ipcRenderer.invoke('media:probe', filePath),
     /** Which of these paths no longer exist on disk (offline media, R1). */
     checkOffline: (paths: string[]) => ipcRenderer.invoke('media:check-offline', paths),
-    /** Evenly spaced thumbnails across a video source (R1 lane states). */
     filmstrip: (filePath: string, count: number) =>
       ipcRenderer.invoke('media:filmstrip', filePath, count),
+    /** Proxy generation (R2): background transcode + attach/detach. */
+    generateProxy: (assetId: string) => ipcRenderer.invoke('media:generate-proxy', assetId),
+    proxyStatus: () => ipcRenderer.invoke('media:proxy-status'),
+    removeProxy: (assetId: string) => ipcRenderer.invoke('media:remove-proxy', assetId),
     chooseFolder: () => ipcRenderer.invoke('media:choose-folder'),
     /**
      * Offline-relink scan: match the given filenames (case-insensitive,

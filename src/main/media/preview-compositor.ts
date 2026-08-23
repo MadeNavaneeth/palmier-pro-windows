@@ -23,6 +23,7 @@ import {
   sourceSecondsForTimelineFrame,
 } from '../../shared/media/source-time';
 import { LatestRequestGate, type RequestToken } from './latest-request';
+import { effectiveSourcePath } from '../../shared/media/proxy';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -198,9 +199,13 @@ export class PreviewCompositor {
     if (!asset) return null;
     const size = { width: clip.width, height: clip.height };
 
+    // Preview decodes from the proxy when one exists; exports always read
+    // the original (R2 proxy policy, shared/media/proxy.ts).
+    const sourcePath = effectiveSourcePath(asset, 'preview');
+
     // A still image has one frame; there is nothing to seek.
     if (asset.type === 'image') {
-      return { assetPath: asset.path, ...size, sourceSeconds: 0 };
+      return { assetPath: sourcePath, ...size, sourceSeconds: 0 };
     }
     if (asset.type !== 'video') return null;
 
@@ -214,7 +219,7 @@ export class PreviewCompositor {
     if (!isSourceSeekable(requested, durationSeconds)) return null;
 
     return {
-      assetPath: asset.path,
+      assetPath: sourcePath,
       ...size,
       sourceSeconds: clampSourceSeconds(requested, durationSeconds, asset.fps),
     };
