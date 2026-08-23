@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { execFile } from 'child_process';
 import { tools, getToolByName } from './tools';
 import { clampFrame } from '../../shared/utils/safe-number';
 import { detectSilenceForFile } from '../media/audio-envelope';
@@ -180,6 +181,65 @@ export class ToolExecutor {
           return {
             success: false,
             error: err instanceof Error ? err.message : 'Media swap failed.',
+          };
+        }
+      }
+
+      case 'normalize_audio': {
+        try {
+          const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+          if (!clip) return { success: false, error: `Clip not found: ${args.clipId}` };
+          if (clip.type !== 'audio') {
+            return { success: false, error: 'Only audio clips can be normalized.' };
+          }
+          const asset = this.editor.getMedia().find((m) => m.id === clip.assetId);
+          if (!asset) return { success: false, error: `Source asset not found for clip.` };
+
+          // Analyze via the same FFmpeg volumedetect used by the UI.
+          const analysis = await new Promise<{ success: boolean; maxVolumeDb?: number; error?: string }>((resolve) => {
+            execFile('ffmpeg', ['-i', asset.path, '-af', 'volumedetect', '-f', 'null', '-'],
+              (err: unknown, _stdout: unknown, stderr: unknown) => {
+                const output = typeof stderr === 'string' ? stderr : '';
+                const match = output.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
+                if (err && !match) {
+                  resolve({ success: false, error: 'Volume analysis failed.' });
+                } else if (!match) {
+                  resolve({ success: false, error: 'No audio stream detected.' });
+                } else {
+                  resolve({ success: true, maxVolumeDb: parseFloat(match[1]) });
+                }
+              });
+          });
+          if (!analysis.success) return analysis;
+
+          const targetDb = args.targetDb ?? -3;
+          const currentPeak = (analysis as { maxVolumeDb: number }).maxVolumeDb;
+          const delta = targetDb - currentPeak;
+          const gainLinear = Math.min(16, Math.max(0, Math.pow(10, delta / 20)));
+          const newVolume = Math.min(1, Math.max(0, (clip.volume ?? 1) * gainLinear));
+
+          const receipt = this.editor.applyClipProperties(
+            [args.clipId],
+            `Normalize to ${targetDb} dBFS`,
+            (draft) => {
+              draft.volume = newVolume;
+              return true;
+            },
+          );
+          return {
+            success: true,
+            data: {
+              normalized: args.clipId,
+              peakBeforeDb: currentPeak,
+              targetDb,
+              volumeApplied: newVolume,
+              changedClipIds: receipt.changedClipIds,
+            },
+          };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Normalization failed.',
           };
         }
       }

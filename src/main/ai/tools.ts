@@ -338,6 +338,18 @@ export const tools = {
     }),
   },
 
+  normalizeAudioTool: {
+    name: 'normalize_audio',
+    description:
+      'Normalize an audio clip so its peak reaches a target level (default -3 dBFS). '
+      + 'Adjusts the clip volume multiplier; timeline timing is unchanged.',
+    parameters: z.object({
+      clipId: z.string().describe('The audio clip to normalize.'),
+      targetDb: z.number().finite().min(-24).max(0).optional()
+        .describe('Target peak level in dBFS. Defaults to -3.'),
+    }),
+  },
+
   addTexts: {
     name: 'add_texts',
     description:

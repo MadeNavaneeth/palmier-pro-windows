@@ -106,6 +106,25 @@ export function Timeline({ fill = false }: { fill?: boolean } = {}) {
     void refreshOfflineStatus();
   }, [mediaSignature, refreshOfflineStatus]);
 
+  // Follow-playhead (R2): keep the playhead visible during playback by
+  // adjusting scrollFrame when it approaches either edge of the viewport.
+  const isPlaying = useTimelineStore((s) => s.isPlaying);
+  const playheadFrame = useTimelineStore((s) => s.project.timeline.playheadFrame);
+  useEffect(() => {
+    if (!isPlaying) return;
+    const container = tracksContainerRef.current;
+    if (!container) return;
+    const visibleFrames = container.clientWidth / viewport.pixelsPerFrame;
+    const margin = visibleFrames * 0.1; // 10% edge padding
+    const relativePos = playheadFrame - viewport.scrollFrame;
+
+    if (relativePos > visibleFrames - margin) {
+      scrollTo(Math.max(0, Math.round(playheadFrame - visibleFrames * 0.9)));
+    } else if (relativePos < 0) {
+      scrollTo(Math.max(0, Math.round(playheadFrame - visibleFrames * 0.1)));
+    }
+  }, [isPlaying, playheadFrame, viewport.pixelsPerFrame, viewport.scrollFrame, scrollTo]);
+
   // Track container width for the ruler, and publish it so fit-to-window works
   // from the toolbar and the keyboard, neither of which can see this element.
   useEffect(() => {
@@ -126,21 +145,27 @@ export function Timeline({ fill = false }: { fill?: boolean } = {}) {
   // Horizontal scroll handler
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
-      if (e.shiftKey || e.deltaX !== 0) {
+      if (e.shiftKey || (e.deltaX !== 0 && !e.ctrlKey)) {
         // Horizontal scroll
         const deltaFrames = Math.round((e.deltaX || e.deltaY) / viewport.pixelsPerFrame);
         scrollTo(viewport.scrollFrame + deltaFrames);
         e.preventDefault();
       } else if (e.ctrlKey) {
-        // Zoom with ctrl+wheel
+        // Zoom with ctrl+wheel, anchored at the cursor position so the frame
+        // under the pointer stays under the pointer after zooming (NLE convention).
         e.preventDefault();
+        const rect = tracksContainerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const cursorX = e.clientX - rect.left;
+        const frameAtCursor = viewport.scrollFrame + cursorX / viewport.pixelsPerFrame;
         const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
         const newPxPerFrame = Math.max(
           viewport.minPxPerFrame,
           Math.min(viewport.maxPxPerFrame, viewport.pixelsPerFrame * zoomFactor),
         );
+        const newScrollFrame = Math.max(0, frameAtCursor - cursorX / newPxPerFrame);
         useTimelineStore.setState({
-          viewport: { ...viewport, pixelsPerFrame: newPxPerFrame },
+          viewport: { ...viewport, pixelsPerFrame: newPxPerFrame, scrollFrame: newScrollFrame },
         });
       }
     },
