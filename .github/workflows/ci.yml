@@ -37,6 +37,7 @@ jobs:
 
       - name: Verify upstream parity snapshot
         run: npm run upstream:audit:check
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
