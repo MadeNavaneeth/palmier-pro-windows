@@ -47,6 +47,10 @@ import {
 import { hasEmbeddedAudio, isMediaCompatibleWithTrack, placementDuration } from './placement';
 import { fileKindOf } from '../media/file-kind';
 import { assetDurationSeconds } from '../media/source-time';
+import {
+  DEFAULT_TITLE_STYLE,
+  sanitizeTitleText,
+} from './title';
 
 /**
  * One copied clip and its position relative to the copy anchor  the
@@ -1814,8 +1818,7 @@ export class EditorController {  private project: Project;
    * Attach or clear a proxy file for an asset (roadmap R2). Undoable like
    * every media-field change; generation itself runs outside the editor.
    */
-  setProxyState(assetId: string, proxyPath: string | null): boolean {
-    const asset = this.project.media.find((a) => a.id === assetId);
+  setProxyState(assetId: string, proxyPath: string | null): boolean {    const asset = this.project.media.find((a) => a.id === assetId);
     if (!asset) return false;
     const next: MediaAsset =
       proxyPath === null
@@ -1827,6 +1830,61 @@ export class EditorController {  private project: Project;
         : { ...asset, proxyPath };
     this.execute(new ReplaceMediaCommand(next, proxyPath ? 'Attach proxy' : 'Remove proxy'));
     return true;
+  }
+
+  // ─── Title clips (R3 foundation) ──────────────────────────────────────────
+
+  /**
+   * Add a title clip — a self-contained text layer needing no media asset.
+   * Invalid/empty text is refused by returning ''. One undoable step.
+   */
+  addTitleClip(params: {
+    trackId: string;
+    startFrame?: Frame;
+    durationFrames?: Frame;
+    text: string;
+  }): string | '' {
+    const text = sanitizeTitleText(params.text);
+    if (!text) return '';
+    const track = this.project.timeline.tracks.find((t) => t.id === params.trackId);
+    if (!track || track.type !== 'video' || track.locked) return '';
+
+    const start = clampFrame(params.startFrame ?? this.getPlayhead());
+    const durationFrames = clampFrame(params.durationFrames ?? Math.round(this.project.settings.fps * 3), 1);
+    const clip: Clip = {
+      ...this.createPlacedClip(
+        {
+          id: '__title__', path: '', filename: text, type: 'video',
+          duration: durationFrames, fileSize: 0, addedAt: new Date().toISOString(),
+        },
+        'title',
+        params.trackId,
+        start,
+        durationFrames,
+      ),
+      label: text,
+      text,
+      titleSizeRatio: DEFAULT_TITLE_STYLE.sizeRatio,
+      titleColor: DEFAULT_TITLE_STYLE.colorHex,
+    };
+    this.execute(new ReplaceClipsCommand(
+      [...this.project.timeline.clips, clip],
+      'Add title',
+    ));
+    return clip.id;
+  }
+
+  /** Update a title clip's text. Returns false when refused (invalid text). */
+  setTitleText(clipId: string, rawText: string): boolean {
+    const text = sanitizeTitleText(rawText);
+    if (!text) return false;
+    const receipt = this.applyClipProperties([clipId], 'Edit title text', (draft) => {
+      if (draft.type !== 'title') return false;
+      draft.text = text;
+      draft.label = text.slice(0, 60);
+      return true;
+    });
+    return receipt.changedClipIds.length > 0;
   }
 
   getMarkers(): TimelineMarker[] {

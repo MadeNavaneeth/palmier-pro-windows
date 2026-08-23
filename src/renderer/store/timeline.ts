@@ -171,6 +171,11 @@ export interface TimelineState {
   /** Jump to the nearest marker start before the playhead; selects it. */
   goToPreviousMarker: () => boolean;
 
+  /** Add a 3s title clip at the playhead on the first video track (R3). */
+  addTitleAtPlayhead: (text?: string) => string | '';
+  /** Update a title clip's text; false when refused (invalid/unknown). */
+  setTitleText: (clipId: string, text: string) => boolean;
+
   // Clipboard (R1)
   copySelectedClips: () => number;
   cutSelectedClips: () => number;
@@ -530,6 +535,28 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     const hit = get().controller.getMarkers().find((m) => m.startFrame === previous);
     set({ selectedMarkerIds: hit ? new Set([hit.id]) : new Set() });
     return true;
+  },
+
+  addTitleAtPlayhead: (text = 'Title') => {
+    const { controller } = get();
+    const videoTrack = controller.getTracks().find((t) => t.type === 'video');
+    if (!videoTrack) return '';
+    const clipId = controller.addTitleClip({
+      trackId: videoTrack.id,
+      startFrame: controller.getPlayhead(),
+      durationFrames: Math.round(controller.getProject().settings.fps * 3),
+      text,
+    });
+    if (clipId) set({ selectedClipIds: new Set([clipId]), selectedGap: null });
+    return clipId;
+  },
+
+  setTitleText: (clipId, text) => {
+    try {
+      return get().controller.setTitleText(clipId, text);
+    } catch {
+      return false;
+    }
   },
 
   copySelectedClips: () => {

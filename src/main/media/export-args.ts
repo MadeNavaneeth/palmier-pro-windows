@@ -4,7 +4,7 @@
  * Split out of main/media/exporter.ts so the graph construction is unit-testable
  * without Electron. One behavioral change against the pre-consolidation
  * builder: each unique source path becomes exactly ONE `-i` input, shared by
- * every clip referencing it â€” previously N clips from one source spawned N
+ * every clip referencing it ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â previously N clips from one source spawned N
  * full decodes. FFmpeg fans a single input out to multiple filter chains, so
  * per-clip trim/scale/overlay semantics are unchanged; audio `-map`s likewise
  * address the consolidated index.
@@ -20,6 +20,7 @@ import {
   clipTrimSeconds,
 } from '../../shared/media/source-time';
 import { selectExportClips } from '../../shared/media/export-eligibility';
+import { escapeDrawtext } from '../../shared/editor/title';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -56,7 +57,7 @@ function projectClipsIntoRange(
   return out;
 }
 
-// ─── Hardware encoders (R2 capability detection) ─────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Hardware encoders (R2 capability detection) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
 export type HwEncoder = 'x264' | 'nvenc' | 'qsv' | 'amf';
 
@@ -171,7 +172,7 @@ export function buildFfmpegArgs(
   const audioOnly = options.format === 'audio';
 
   if (audioOnly && audioClips.length === 0) {
-    throw new Error('No audio to export â€” every eligible audio clip is missing or muted.');
+    throw new Error('No audio to export ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â every eligible audio clip is missing or muted.');
   }
 
   // Input 0: blank canvas as base (video exports only).
@@ -192,9 +193,9 @@ export function buildFfmpegArgs(
     args.push('-i', inputPath);
   }
 
-  // Build filter_complex â€” one graph covering video chains and, when audio
+  // Build filter_complex ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â one graph covering video chains and, when audio
   // clips are eligible, the timed audio mix. Audio previously mapped raw
-  // full-source streams: no trim, no start offset, no volume â€” every music
+  // full-source streams: no trim, no start offset, no volume ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â every music
   // bed played from source zero over the whole export. The per-clip chain
   // below shares the video side's source-time mapping (#68), so export and
   // preview address a clip's audio identically.
@@ -240,18 +241,39 @@ export function buildFfmpegArgs(
     }
   }
 
-  if (filters.length > 0) {
-    args.push('-filter_complex', filters.join(';'));
-  }
-  if (audioOnly) {
-    // Audio-only: the mix chain is the whole output; the shared push below
-    // emits the single -map.
-  } else if (videoClips.length > 0) {
-    args.push('-map', `[vout]`);
+  // Title drawtext chains (R3): each takes the current video output and
+  // emits the next label, so stacking order matches title order. Titles are
+  // centered; escaping lives in shared/editor/title.ts.
+  let currentVideo: string;
+  if (videoClips.length > 0) {
+    currentVideo = '[vout]';
+  } else if (!audioOnly) {
+    currentVideo = '0:v';
   } else {
-    args.push('-map', '0:v');
+    currentVideo = ''; // audio-only exports have no video output
   }
-  if (audioMap) {
+
+  if (!audioOnly) {
+    let titleIndex = 0;
+    for (const clip of sortedClips) {
+      if (clip.type !== 'title' || !clip.text) continue;
+      const outLabel = `[vt${titleIndex}]`;
+      filters.push(
+        `${currentVideo}drawtext=text='${escapeDrawtext(clip.text)}'`
+        + `:fontsize=${Math.round((clip.titleSizeRatio ?? 0.09) * height)}`
+        + `:fontcolor=${clip.titleColor ?? 'white'}`
+        + `:x=(w-text_w)/2:y=(h-text_h)/2`
+        + `:enable='between(t,${(clip.startFrame / fps).toFixed(4)},${((clip.startFrame + clip.durationFrames) / fps).toFixed(4)})'`
+        + outLabel,
+      );
+      currentVideo = outLabel;
+      titleIndex += 1;
+    }
+    if (filters.length > 0) {
+      args.push('-filter_complex', filters.join(';'));
+    }
+    args.push('-map', currentVideo);
+  } else if (audioMap) {
     args.push('-map', audioMap);
   }
 
@@ -326,7 +348,7 @@ function buildFilterGraph(
     const scaledW = Math.round(clip.width * clip.scaleX);
     const scaledH = Math.round(clip.height * clip.scaleY);
 
-    // Transition fades â€” applied in the clip's own (0-based, post-setpts) time
+    // Transition fades ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â applied in the clip's own (0-based, post-setpts) time
     // so they match the preview's effective-opacity ramp exactly. alpha=1 makes
     // the fade affect transparency so it composites over the layers below.
     let fadeChain = '';

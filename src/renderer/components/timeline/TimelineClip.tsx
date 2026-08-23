@@ -246,6 +246,22 @@ export function TimelineClip({ clip }: TimelineClipProps) {
     [clip.id, selectClip],
   );
 
+  // ─── Title inline editing (R3) ───────────────────────────────────────────
+  const setTitleText = useTimelineStore((s) => s.setTitleText);
+  const [editingTitle, setEditingTitle] = useState<string | null>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingTitle !== null) titleInputRef.current?.select();
+  }, [editingTitle]);
+
+  const commitTitle = useCallback(() => {
+    if (editingTitle !== null) {
+      setTitleText(clip.id, editingTitle);
+      setEditingTitle(null);
+    }
+  }, [editingTitle, clip.id, setTitleText]);
+
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
@@ -381,15 +397,45 @@ export function TimelineClip({ clip }: TimelineClipProps) {
 
       {/* Clip content */}
       <div className="flex-1 min-w-0 px-1.5 py-0.5">
-        {width > 40 && (
-          <span className="block truncate text-2xs font-medium text-white/90">
-            {clip.label || clip.assetId}
-          </span>
-        )}
-        {width > 80 && (
-          <span className="block truncate text-2xs text-white/50">
-            {clip.durationFrames}f
-          </span>
+        {clip.type === 'title' && editingTitle !== null ? (
+          <input
+            ref={titleInputRef}
+            value={editingTitle}
+            onChange={(event) => setEditingTitle(event.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') commitTitle();
+              if (event.key === 'Escape') setEditingTitle(null);
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            className="w-full rounded-sm border border-accent/60 bg-surface-0 px-1 text-2xs text-text-primary outline-none"
+            aria-label="Title text"
+          />
+        ) : (
+          <>
+            {width > 40 && (
+              <span
+                className="block truncate text-2xs font-medium text-white/90"
+                onDoubleClick={
+                  clip.type === 'title'
+                    ? (event) => {
+                        event.stopPropagation();
+                        setEditingTitle(clip.label ?? clip.text ?? 'Title');
+                      }
+                    : undefined
+                }
+              >
+                {clip.type === 'title' ? (clip.text || clip.assetId) : (clip.label || clip.assetId)}
+              </span>
+            )}
+            {width > 80 && (
+              <span className="block truncate text-2xs text-white/50">
+                {clip.durationFrames}f
+              </span>
+            )}
+          </>
         )}
       </div>
 

@@ -100,6 +100,17 @@ export interface Clip {
   // Metadata
   label?: string;
   color?: string;
+
+  /**
+   * Title clip content (R3 foundation). Only meaningful when `type` is
+   * `'title'`; sanitized via sanitizeTitleText, rendered by the preview
+   * canvas and baked into exports with FFmpeg drawtext.
+   */
+  text?: string;
+  /** Title font size as a fraction of project height. */
+  titleSizeRatio?: number;
+  /** Title color as #rrggbb. */
+  titleColor?: string;
 }
 
 export type TrackType = 'video' | 'audio';

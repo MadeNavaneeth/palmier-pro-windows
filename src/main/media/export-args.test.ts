@@ -89,6 +89,49 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
     );
     expect(args).toContain('h264_nvenc');
   });
+
+  // ─── Title drawtext (R3) ──────────────────────────────────────────────────
+
+  it('emits escaped, centered, time-gated drawtext for title clips', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [
+        { type: 'video', assetId: 'v' },
+        {
+          type: 'title',
+          assetId: '__title__',
+          startFrame: 30,
+          durationFrames: 60,
+          text: "Episode: 'One' 100%\nTake two",
+          titleSizeRatio: 0.1,
+          titleColor: '#ffcc00',
+        },
+      ],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('drawtext'))!;
+    expect(graph).toContain("drawtext=text='Episode\\: \\'One\\' 100\\%\\nTake two'");
+    expect(graph).toContain('fontsize=108'); // 0.1 × 1080
+    expect(graph).toContain('fontcolor=#ffcc00');
+    expect(graph).toContain(':x=(w-text_w)/2:y=(h-text_h)/2');
+    expect(graph).toContain("between(t,1.0000,3.0000)");
+    // Chain order: composed video feeds the title filter; the map takes the last.
+    expect(graph).toContain('[vout]drawtext=');
+    expect(graph.match(/\[vt0\]/g)).toHaveLength(1);
+  });
+
+  it('omits drawtext entirely when there are no titles (audio-only too)', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
+      [{ type: 'audio', assetId: 'a', trackId: 'a1' }],
+    );
+    const audioArgs = buildFfmpegArgs(
+      project,
+      { outputPath: 'out.m4a', format: 'audio', quality: 'normal' },
+      1920, 1080, 30, 100, null,
+    );
+    expect(audioArgs.join(' ')).not.toContain('drawtext');
+  });
 });
 
 function build(project: Project): string[] {

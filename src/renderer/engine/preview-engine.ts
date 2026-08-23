@@ -269,8 +269,38 @@ export class PreviewEngine {
 
     // Render each layer
     for (const clip of layers) {
+      if (clip.type === 'title') {
+        this.renderTitleLayer(clip);
+        continue;
+      }
       await this.renderLayer(clip, frame);
     }
+  }
+
+  /**
+   * Draw a title clip's text, centered in its box (R3 foundation). The
+   * export path renders the same content via FFmpeg drawtext with the same
+   * centered alignment; fonts differ by platform but size ratio and color
+   * are shared through the clip fields.
+   */
+  private renderTitleLayer(clip: Clip): void {
+    if (!this.project || !clip.text) return;
+    const fontSize = Math.max(
+      8,
+      Math.round((clip.titleSizeRatio ?? 0.09) * this.project.settings.height),
+    );
+    this.ctx.save();
+    this.ctx.globalAlpha = clip.opacity;
+    this.ctx.fillStyle = clip.titleColor ?? '#ffffff';
+    this.ctx.font = `${fontSize}px system-ui, sans-serif`;
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
+    const centerX = clip.x + clip.width / 2;
+    const centerY = clip.y + clip.height / 2;
+    for (const [i, line] of clip.text.split('\n').entries()) {
+      this.ctx.fillText(line, centerX, centerY + (i - (clip.text!.split('\n').length - 1) / 2) * fontSize * 1.2);
+    }
+    this.ctx.restore();
   }
 
   private async renderLayer(clip: Clip, currentFrame: Frame): Promise<void> {

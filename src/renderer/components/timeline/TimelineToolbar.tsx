@@ -12,6 +12,7 @@ import {
   Redo2,
   Scissors,
   Trash2,
+  Type,
   Undo2,
   ZoomIn,
   ZoomOut,
@@ -39,6 +40,7 @@ export function TimelineToolbar() {
   const splitAtPlayhead = useTimelineStore((state) => state.splitAtPlayhead);
   const removeSelectedClips = useTimelineStore((state) => state.removeSelectedClips);
   const rippleDelete = useTimelineStore((state) => state.rippleDelete);
+  const addTitleAtPlayhead = useTimelineStore((state) => state.addTitleAtPlayhead);
   const selectedClipIds = useTimelineStore((state) => state.selectedClipIds);
   const selectedGap = useTimelineStore((state) => state.selectedGap);
   const inFrame = useTimelineStore((state) => state.project.timeline.inFrame);
@@ -119,6 +121,12 @@ export function TimelineToolbar() {
       </ToolButton>
       <ToolButton label={withChord('Split at playhead', 'splitAtPlayhead')} onClick={splitAtPlayhead}>
         <Scissors size={14} />
+      </ToolButton>
+      <ToolButton
+        label="Add title at the playhead (double-click the clip to edit)"
+        onClick={() => addTitleAtPlayhead()}
+      >
+        <Type size={14} />
       </ToolButton>
       <ToolButton
         label={withChord('Delete selected clips', 'deleteSelected')}
