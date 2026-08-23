@@ -1889,6 +1889,26 @@ export class EditorController {  private project: Project;
   }
 
   /**
+   * Set constant playback speed on a visual clip (roadmap R4 groundwork).
+   *
+   * Timeline duration is unchanged -- the clip consumes speed× more source,
+   * expressed by scaling outPoint from inPoint so every consumer that trusts
+   * the trim window (export, waveforms, relink checks) follows automatically.
+   * Audio clips are refused: time-stretching audio is an R5 concern with
+   * different quality machinery.
+   */
+  setClipSpeed(clipId: string, speed: number): boolean {
+    if (!Number.isFinite(speed) || speed < 0.25 || speed > 4) return false;
+    const receipt = this.applyClipProperties([clipId], `Set speed to ${speed}x`, (draft) => {
+      if (draft.type === 'audio' || draft.type === 'title') return false;
+      draft.speed = speed;
+      draft.outPoint = draft.inPoint + Math.round(draft.durationFrames * speed);
+      return true;
+    });
+    return receipt.changedClipIds.length > 0;
+  }
+
+  /**
    * Import SRT content as title clips on a video track (roadmap R3).
    *
    * Each cue becomes one clip spanning [start, end) relative to

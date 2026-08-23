@@ -34,9 +34,17 @@ export interface ClipSourceWindow {
   outPoint: Frame;
   /** Visible duration on the timeline, in project frames. */
   durationFrames: Frame;
+  /**
+   * Constant playback speed (R4 groundwork): source time advances this many
+   * frames per timeline frame. Undefined means 1.
+   */
+  speed?: number;
 }
 
-export function clipSourceWindow(clip: Clip): ClipSourceWindow {
+/** Defensive speed resolution: undefined/garbage falls back to normal. */
+export function effectiveSpeed(speed: number | undefined): number {
+  return typeof speed === 'number' && Number.isFinite(speed) && speed > 0 ? speed : 1;
+}export function clipSourceWindow(clip: Clip): ClipSourceWindow {
   return {
     startFrame: clip.startFrame,
     inPoint: clip.inPoint,
@@ -75,8 +83,9 @@ export function sourceSecondsForTimelineFrame(
   projectFps: number,
 ): number {
   if (!Number.isFinite(timelineFrame)) return 0;
-  const offset = timelineFrame - clip.startFrame + clip.inPoint;
-  return Math.max(0, projectFramesToSeconds(offset, projectFps));
+  const speed = effectiveSpeed(clip.speed);
+  const sourceOffset = clip.inPoint + (timelineFrame - clip.startFrame) * speed;
+  return Math.max(0, projectFramesToSeconds(sourceOffset, projectFps));
 }
 
 /**
@@ -91,9 +100,13 @@ export function clipTrimSeconds(
   clip: ClipSourceWindow,
   projectFps: number,
 ): { start: number; end: number } {
+  const speed = effectiveSpeed(clip.speed);
   const start = Math.max(0, projectFramesToSeconds(clip.inPoint, projectFps));
+  // The consumed source span scales with speed; outPoint is trusted when it
+  // already encodes that span (set by setClipSpeed), otherwise the visible
+  // duration at normal speed is the fallback for legacy/stale projects.
   const outPointSeconds = projectFramesToSeconds(clip.outPoint, projectFps);
-  const durationSeconds = projectFramesToSeconds(clip.durationFrames, projectFps);
+  const durationSeconds = projectFramesToSeconds(clip.durationFrames * speed, projectFps);
   const end = outPointSeconds > start ? outPointSeconds : start + durationSeconds;
   return { start, end };
 }

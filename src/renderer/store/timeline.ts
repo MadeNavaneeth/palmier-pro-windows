@@ -175,6 +175,8 @@ export interface TimelineState {
   addTitleAtPlayhead: (text?: string) => string | '';
   /** Update a title clip's text; false when refused (invalid/unknown). */
   setTitleText: (clipId: string, text: string) => boolean;
+  /** Constant playback speed on a visual clip (R4 groundwork). */
+  setClipSpeed: (clipId: string, speed: number) => boolean;
 
   // Clipboard (R1)
   copySelectedClips: () => number;
@@ -554,6 +556,14 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
   setTitleText: (clipId, text) => {
     try {
       return get().controller.setTitleText(clipId, text);
+    } catch {
+      return false;
+    }
+  },
+
+  setClipSpeed: (clipId, speed) => {
+    try {
+      return get().controller.setClipSpeed(clipId, speed);
     } catch {
       return false;
     }

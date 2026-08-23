@@ -111,6 +111,13 @@ export interface Clip {
   titleSizeRatio?: number;
   /** Title color as #rrggbb. */
   titleColor?: string;
+  /**
+   * Constant playback speed (R4 groundwork): 1 = normal, 2 = twice as fast.
+   * Timeline duration is unchanged -- the clip consumes speed× more of its
+   * source per timeline frame, expressed via outPoint and applied in the
+   * shared source-time mapping. Visual clips only.
+   */
+  speed?: number;
 }
 
 export type TrackType = 'video' | 'audio';

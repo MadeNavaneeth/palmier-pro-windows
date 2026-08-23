@@ -58,6 +58,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
 
   // ─── Detach / relink audio (#462 surface) ─────────────────────────────────
   const controller = useTimelineStore((s) => s.controller);
+  const setClipSpeed = useTimelineStore((s) => s.setClipSpeed);
   const selectedCount = selectedClipIds.size;
   const canDetach = clip.linkGroupId !== undefined;
   const canRelink =
@@ -488,6 +489,29 @@ export function TimelineClip({ clip }: TimelineClipProps) {
               >
                 Link selected clips
               </button>
+            )}
+            {(clip.type === 'video' || clip.type === 'image') && (
+              <>
+                <div className="my-0.5 h-px bg-white/10" />
+                <div className="px-2 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-text-muted">
+                  Speed
+                </div>
+                {[0.5, 1, 2].map((rate) => (
+                  <button
+                    key={rate}
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuPos(null);
+                      setClipSpeed(clip.id, rate);
+                    }}
+                    className={`block w-full px-2 py-1 text-left text-[10px] hover:bg-white/10 ${
+                      (clip.speed ?? 1) === rate ? 'text-accent' : 'text-text-secondary'
+                    }`}
+                  >
+                    {rate}× speed{rate === 1 ? ' (normal)' : ''}
+                  </button>
+                ))}
+              </>
             )}
             <button
               role="menuitem"
