@@ -52,6 +52,10 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const hasRange = inFrame !== undefined && outFrame !== undefined && inFrame !== outFrame;
   const rangeStart = hasRange ? Math.min(inFrame!, outFrame!) : 0;
   const rangeEnd = hasRange ? Math.max(inFrame!, outFrame!) : 0;
+  const hasTitles = useTimelineStore((s) =>
+    s.project.timeline.clips.some((c) => c.type === 'title' && c.text),
+  );
+  const [exportCaptions, setExportCaptions] = useState(true);
   const [resIdx, setResIdx] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
@@ -119,6 +123,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       ...(useRange && hasRange
         ? { range: { start: rangeStart, end: rangeEnd } }
         : {}),
+      exportCaptions: exportCaptions && hasTitles,
     });
     if (startRes && !startRes.success && startRes.canceled) {
       setIsExporting(false); // user closed the save dialog; not an error
@@ -216,6 +221,36 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                     className="accent-[var(--color-accent)]"
                   />
                   Export In/Out range only ({rangeStart}–{rangeEnd})
+                </label>
+              </div>
+            )}
+
+            {/* Captions sidecar (R3) */}
+            {hasTitles && format !== 'audio' && (
+              <div className="mb-4">
+                <label className="flex items-center gap-2 text-xs text-text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={exportCaptions}
+                    onChange={(e) => setExportCaptions(e.target.checked)}
+                    className="accent-[var(--color-accent)]"
+                  />
+                  Export captions (.vtt sidecar)
+                </label>
+              </div>
+            )}
+
+            {/* Captions sidecar (R3) */}
+            {hasTitles && format !== 'audio' && (
+              <div className="mb-4">
+                <label className="flex items-center gap-2 text-xs text-text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={exportCaptions}
+                    onChange={(e) => setExportCaptions(e.target.checked)}
+                    className="accent-[var(--color-accent)]"
+                  />
+                  Export captions (.vtt sidecar)
                 </label>
               </div>
             )}

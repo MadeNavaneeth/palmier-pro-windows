@@ -18,6 +18,7 @@ import fsSync from 'fs';
 import type { Project } from '../../shared/types/project';
 import { selectExportClips } from '../../shared/media/export-eligibility';
 import { offlineExportBlockers, formatOfflineNames } from '../../shared/media/offline';
+import { buildVtt } from '../../shared/editor/vtt';
 import { buildFfmpegArgs as buildExportFfmpegArgs } from './export-args';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -31,6 +32,8 @@ export interface ExportOptions {
   fps?: number;
   /** Export only this timeline span (In/Out marks), frames inclusive-exclusive. */
   range?: { start: number; end: number };
+  /** Write a WebVTT sidecar next to the output for title/caption clips. */
+  exportCaptions?: boolean;
 }
 
 export interface ExportProgress {
@@ -149,7 +152,7 @@ export class Exporter {
         // Verify the output file actually exists and is non-empty before
         // signalling completion.
         fs.stat(outputPath)
-          .then((stat) => {
+          .then(async (stat) => {
             if (!stat.isFile() || stat.size === 0) {
               win.webContents.send(
                 'export:error',
@@ -157,6 +160,24 @@ export class Exporter {
               );
               reject(new Error('Export produced no output file'));
               return;
+            }
+            // WebVTT sidecar (R3): title clips become a caption file next to
+            // the video. A sidecar write failure must not fail the finished
+            // video, so it is logged and skipped instead.
+            if (options.exportCaptions) {
+              try {
+                const cues = project.timeline.clips
+                  .filter((clip) => clip.type === 'title' && clip.text)
+                  .map((clip) => ({
+                    startSec: clip.startFrame / fps,
+                    endSec: (clip.startFrame + clip.durationFrames) / fps,
+                    text: clip.text ?? '',
+                  }));
+                const vttPath = outputPath.replace(/\.[^.]+$/, '') + '.vtt';
+                await fs.writeFile(vttPath, buildVtt(cues), 'utf8');
+              } catch (err) {
+                console.warn('[exporter] VTT sidecar write failed:', err);
+              }
             }
             win.webContents.send('export:complete', { outputPath, bytes: stat.size });
             resolve();
