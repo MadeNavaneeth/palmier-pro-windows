@@ -420,6 +420,11 @@ export class EditorController {  private project: Project;
     return this.history.canRedo();
   }
 
+  /** Human-readable description of the next undo, or null. */
+  getLastCommandDescription(): string | null {
+    return this.history.lastCommandName();
+  }
+
   //  High-level editing API (used by UI, agent, MCP) 
 
   addClip(params: {

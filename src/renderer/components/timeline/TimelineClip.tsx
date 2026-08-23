@@ -47,6 +47,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
 
   // ─── Save as audio (#562) ────────────────────────────────────────────────
   const fps = useTimelineStore((s) => s.getProjectFps());
+  const settingsHeight = useTimelineStore((s) => s.project.settings.height);
   const asset = useTimelineStore((s) => s.project.media.find((m) => m.id === clip.assetId));
   const isOffline = useTimelineStore(
     (s) => Boolean(asset && s.offlinePaths.has(asset.path)),
@@ -283,18 +284,39 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   // ─── Title inline editing (R3) ───────────────────────────────────────────
   const setTitleText = useTimelineStore((s) => s.setTitleText);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
+  const [titleFontSize, setTitleFontSize] = useState<string>('');
+  const [titleColor, setTitleColor] = useState<string>('');
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editingTitle !== null) titleInputRef.current?.select();
+    if (editingTitle !== null) {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    }
   }, [editingTitle]);
 
+  const startTitleEdit = useCallback(() => {
+    setEditingTitle(clip.text ?? 'Title');
+    setTitleFontSize(String(Math.round((clip.titleSizeRatio ?? 0.09) * settingsHeight)));
+    setTitleColor(clip.titleColor ?? '#ffffff');
+  }, [clip]);
+
   const commitTitle = useCallback(() => {
-    if (editingTitle !== null) {
-      setTitleText(clip.id, editingTitle);
-      setEditingTitle(null);
+    if (editingTitle === null) return;
+    setTitleText(clip.id, editingTitle);
+    const ratio = parseFloat(titleFontSize) / settingsHeight;
+    if (Number.isFinite(ratio) && ratio > 0 && Math.abs(ratio - (clip.titleSizeRatio ?? 0)) > 0.001) {
+      useTimelineStore.getState().controller.applyClipProperties(
+        [clip.id], 'Resize title', (draft) => { draft.titleSizeRatio = ratio; return true; },
+      );
     }
-  }, [editingTitle, clip.id, setTitleText]);
+    if (titleColor && /^#[0-9a-fA-F]{6}$/.test(titleColor) && titleColor !== (clip.titleColor ?? '')) {
+      useTimelineStore.getState().controller.applyClipProperties(
+        [clip.id], 'Recolor title', (draft) => { draft.titleColor = titleColor; return true; },
+      );
+    }
+    setEditingTitle(null);
+  }, [editingTitle, titleFontSize, titleColor, clip, settingsHeight, setTitleText]);
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {

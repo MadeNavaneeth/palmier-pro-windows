@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import {
   CircleX,
   Keyboard,
@@ -25,7 +25,7 @@ import { primaryShortcutLabel } from '../../../shared/editor/shortcuts';
  * Tooltip text with the live chord appended.
  *
  * Reading the chord from the catalogue means a rebinding cannot leave a stale
- * hint on a button — the labels here used to name keys the handler no longer had.
+ * hint on a button Ã¢â‚¬â€ the labels here used to name keys the handler no longer had.
  */
 function withChord(label: string, id: Parameters<typeof primaryShortcutLabel>[0]): string {
   const chord = primaryShortcutLabel(id);
@@ -53,6 +53,7 @@ export function TimelineToolbar() {
   const canRedo = useTimelineStore((state) => state.canRedo());
   const undo = useTimelineStore((state) => state.undo);
   const redo = useTimelineStore((state) => state.redo);
+  const lastOp = useTimelineStore((state) => state.controller.getLastCommandDescription());
   const toggleSnap = useTimelineStore((state) => state.toggleSnap);
   const deselectAll = useTimelineStore((state) => state.deselectAll);
   const fitToViewport = useTimelineStore((state) => state.fitToViewport);
@@ -84,7 +85,11 @@ export function TimelineToolbar() {
     // open in a 1024px window this row is 400px wide, and at gap-1.5 the
     // shortcuts button sat 1px past the panel edge.
     <div className="@container flex h-[38px] shrink-0 items-center gap-1.5 border-b border-white/10 bg-surface-1 px-2.5">
-      <ToolButton label={withChord('Undo', 'undo')} onClick={undo} disabled={!canUndo}>
+      <ToolButton
+        label={canUndo && lastOp ? `Undo: ${lastOp}` : withChord('Undo', 'undo')}
+        onClick={undo}
+        disabled={!canUndo}
+      >
         <Undo2 size={14} />
       </ToolButton>
       <ToolButton label={withChord('Redo', 'redo')} onClick={redo} disabled={!canRedo}>
@@ -198,7 +203,7 @@ export function TimelineToolbar() {
  * Inspector panels all showing, this row is 400px and the shortcuts button at
  * the far right sat one pixel past the panel edge. The margin lives here rather
  * than as a smaller `gap` on the row, because an element declaring `@container`
- * cannot container-query itself — only its descendants can.
+ * cannot container-query itself Ã¢â‚¬â€ only its descendants can.
  */
 function Divider() {
   return <div className="mx-1 h-5 w-px bg-white/12 @max-md:mx-0.5" />;
