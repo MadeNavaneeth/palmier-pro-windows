@@ -19,6 +19,7 @@ import type { Project } from '../../shared/types/project';
 import { selectExportClips } from '../../shared/media/export-eligibility';
 import { offlineExportBlockers, formatOfflineNames } from '../../shared/media/offline';
 import { buildVtt } from '../../shared/editor/vtt';
+import { recordExport, loadExportHistory } from './export-history';
 import { buildFfmpegArgs as buildExportFfmpegArgs } from './export-args';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -179,6 +180,14 @@ export class Exporter {
                 console.warn('[exporter] VTT sidecar write failed:', err);
               }
             }
+            recordExport({
+              outputPath,
+              format: options.format,
+              quality: options.quality,
+              projectName: project.name,
+              completedAt: new Date().toISOString(),
+              bytes: stat.size,
+            });
             win.webContents.send('export:complete', { outputPath, bytes: stat.size });
             resolve();
           })
@@ -330,5 +339,9 @@ export function registerExportHandlers(getProject: () => Project | null): void {
       shell.showItemInFolder(outputPath);
     }
     return { success: true };
+  });
+
+  ipcMain.handle('export:history', () => {
+    return { success: true, history: loadExportHistory() };
   });
 }

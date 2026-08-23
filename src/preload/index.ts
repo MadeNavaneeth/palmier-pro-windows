@@ -131,6 +131,8 @@ const api = {
     cancel: () => ipcRenderer.invoke('export:cancel'),
     /** Show a finished export in Explorer (R2 delivery polish). */
     reveal: (outputPath: string) => ipcRenderer.invoke('export:reveal', outputPath),
+    /** Recent export history for the delivery panel (R2). */
+    getHistory: () => ipcRenderer.invoke('export:history'),
   },
 
   // ── Event subscriptions (main → renderer) ───────────────────────────────────

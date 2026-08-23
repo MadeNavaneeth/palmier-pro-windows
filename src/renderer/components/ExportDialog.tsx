@@ -38,6 +38,15 @@ interface ExportProgress {
   eta: string;
 }
 
+interface ExportHistoryEntry {
+  outputPath: string;
+  format: string;
+  quality: string;
+  projectName: string;
+  completedAt: string;
+  bytes: number;
+}
+
 const RESOLUTIONS = [
   { label: '1080p (1920×1080)', width: 1920, height: 1080 },
   { label: '720p (1280×720)', width: 1280, height: 720 },
@@ -65,6 +74,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   );
   const [exportCaptions, setExportCaptions] = useState(true);
   const [presets, setPresets] = useState<ExportPreset[]>([]);
+  const [recentExports, setRecentExports] = useState<ExportHistoryEntry[]>([]);
   const [resIdx, setResIdx] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
@@ -95,13 +105,17 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     };
   }, [isOpen]);
 
-  // Detect hardware encoders once per open (R2 capability detection).
+  // Load saved presets, export history, and detect HW encoders per open.
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
     void window.palmier.media.hwEncoders().then((res: unknown) => {
       const r = res as { encoders?: HwEncoder[] } | undefined;
       if (!cancelled && r?.encoders) setHwAvailable(['x264', ...r.encoders]);
+    });
+    void window.palmier.export.getHistory().then((res: unknown) => {
+      const r = res as { history?: ExportHistoryEntry[] } | undefined;
+      if (r?.history) setRecentExports(r.history);
     });
     return () => {
       cancelled = true;
@@ -383,6 +397,21 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 <p className="text-2xs text-text-muted truncate max-w-[280px]">{outputPath}</p>
               </div>
             </div>
+            {recentExports.length > 1 && (
+              <div className="mb-4">
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Recent deliveries</p>
+                {recentExports.slice(0, 5).map((r, i) => (
+                  <button
+                    key={i}
+                    onClick={() => void window.palmier.export.reveal(r.outputPath)}
+                    className="block w-full truncate rounded px-1 py-0.5 text-left text-[9px] text-text-muted hover:bg-white/[0.06] hover:text-text-secondary"
+                    title={`Reveal ${r.outputPath}`}
+                  >
+                    {r.projectName} · {r.format.toUpperCase()} · {r.quality} · {new Date(r.completedAt).toLocaleDateString()}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => {
