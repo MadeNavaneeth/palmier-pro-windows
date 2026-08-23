@@ -23,6 +23,8 @@ export interface ExportRecord {
   /** ISO timestamp of completion. */
   completedAt: string;
   bytes: number;
+  /** Full export options for re-running the same delivery. */
+  options?: Record<string, unknown>;
 }
 
 function getStore(): Store | null {

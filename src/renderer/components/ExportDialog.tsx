@@ -45,6 +45,7 @@ interface ExportHistoryEntry {
   projectName: string;
   completedAt: string;
   bytes: number;
+  options?: Record<string, unknown>;
 }
 
 const RESOLUTIONS = [
@@ -401,14 +402,27 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
               <div className="mb-4">
                 <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Recent deliveries</p>
                 {recentExports.slice(0, 5).map((r, i) => (
-                  <button
-                    key={i}
-                    onClick={() => void window.palmier.export.reveal(r.outputPath)}
-                    className="block w-full truncate rounded px-1 py-0.5 text-left text-[9px] text-text-muted hover:bg-white/[0.06] hover:text-text-secondary"
-                    title={`Reveal ${r.outputPath}`}
-                  >
-                    {r.projectName} · {r.format.toUpperCase()} · {r.quality} · {new Date(r.completedAt).toLocaleDateString()}
-                  </button>
+                  <div key={i} className="flex items-center gap-2 rounded px-1 py-0.5 text-[9px] text-text-muted hover:bg-white/[0.04]">
+                    <button
+                      onClick={() => void window.palmier.export.reveal(r.outputPath)}
+                      className="min-w-0 flex-1 truncate text-left hover:text-text-secondary"
+                      title={`Reveal ${r.outputPath}`}
+                    >
+                      {r.projectName} · {r.format.toUpperCase()} · {r.quality} · {new Date(r.completedAt).toLocaleDateString()}
+                    </button>
+                    {r.options && (
+                      <button
+                        onClick={() => {
+                          void window.palmier.export.start({ ...r.options, outputPath: `output.${r.format === 'audio' ? 'm4a' : r.format}` });
+                          setIsExporting(true);
+                        }}
+                        className="shrink-0 rounded border border-white/15 px-1.5 py-0.5 text-[8px] text-text-secondary hover:bg-white/[0.06] hover:text-text-primary"
+                        title="Re-run with the same settings"
+                      >
+                        Re-run
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             )}

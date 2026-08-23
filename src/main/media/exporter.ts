@@ -187,6 +187,15 @@ export class Exporter {
               projectName: project.name,
               completedAt: new Date().toISOString(),
               bytes: stat.size,
+              options: {
+                format: options.format,
+                quality: options.quality,
+                width: options.width ?? project.settings.width,
+                height: options.height ?? project.settings.height,
+                fps: options.fps ?? project.settings.fps,
+                ...(options.range ? { range: options.range } : {}),
+                ...(options.exportCaptions !== undefined ? { exportCaptions: options.exportCaptions } : {}),
+              },
             });
             win.webContents.send('export:complete', { outputPath, bytes: stat.size });
             resolve();
@@ -281,6 +290,10 @@ export function getExporter(): Exporter {
 export function registerExportHandlers(getProject: () => Project | null): void {
   const exporter = getExporter();
 
+  ipcMain.handle('export:history', () => {
+    return { success: true, history: loadExportHistory() };
+  });
+
   ipcMain.handle('export:start', async (event, options: ExportOptions) => {
     const project = getProject();
     if (!project) return { success: false, error: 'No project loaded' };
@@ -332,6 +345,10 @@ export function registerExportHandlers(getProject: () => Project | null): void {
   ipcMain.handle('export:cancel', () => {
     exporter.cancel();
     return { success: true };
+  });
+
+  ipcMain.handle('export:history', () => {
+    return { success: true, history: loadExportHistory() };
   });
 
   ipcMain.handle('export:reveal', (_event, outputPath: string) => {
