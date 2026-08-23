@@ -6,6 +6,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useTimelineStore } from '../store/timeline';
 
+interface ExportPreset {
+  id: string;
+  name: string;
+  format: 'mp4' | 'mov' | 'webm' | 'audio';
+  quality: 'draft' | 'normal' | 'high';
+  useRange: boolean;
+}
+
 interface ExportDialogProps {
   isOpen: boolean;
   onClose: () => void;
@@ -56,6 +64,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     s.project.timeline.clips.some((c) => c.type === 'title' && c.text),
   );
   const [exportCaptions, setExportCaptions] = useState(true);
+  const [presets, setPresets] = useState<ExportPreset[]>([]);
   const [resIdx, setResIdx] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
@@ -98,6 +107,41 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       cancelled = true;
     };
   }, [isOpen]);
+
+  // Load saved presets once per open.
+  useEffect(() => {
+    if (!isOpen) return;
+    void window.palmier.media.getPresets().then((res: unknown) => {
+      const r = res as { presets?: ExportPreset[] } | undefined;
+      if (r?.presets) setPresets(r.presets);
+    });
+  }, [isOpen]);
+
+  const applyPreset = useCallback((preset: ExportPreset) => {
+    setFormat(preset.format);
+    setQuality(preset.quality);
+    setUseRange(preset.useRange && hasRange);
+  }, [hasRange]);
+
+  const savePreset = useCallback(() => {
+    const name = `My ${format.toUpperCase()} ${quality}`;
+    const preset: ExportPreset = {
+      id: `${Date.now()}`,
+      name,
+      format,
+      quality,
+      useRange,
+    };
+    const next = [...presets, preset];
+    setPresets(next);
+    void window.palmier.media.setPresets(next);
+  }, [presets, format, quality, useRange]);
+
+  const deletePreset = useCallback((id: string) => {
+    const next = presets.filter((p) => p.id !== id);
+    setPresets(next);
+    void window.palmier.media.setPresets(next);
+  }, [presets]);
 
   const handleExport = useCallback(async () => {
     setError(null);
@@ -144,6 +188,26 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
         {!isExporting && !outputPath ? (
           <>
+            {/* Presets */}
+            {presets.length > 0 && (
+              <div className="mb-4">
+                <label className="block text-xs text-text-secondary mb-1.5">Presets</label>
+                <select
+                  onChange={(e) => {
+                    const preset = presets.find((p) => p.id === e.target.value);
+                    if (preset) applyPreset(preset);
+                  }}
+                  defaultValue=""
+                  className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 text-sm text-text-primary"
+                >
+                  <option value="">Choose a preset…</option>
+                  {presets.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {/* Format */}
             <div className="mb-4">
               <label className="block text-xs text-text-secondary mb-1.5">Format</label>

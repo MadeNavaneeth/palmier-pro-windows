@@ -10,6 +10,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import crypto from 'crypto';
+import { loadPresets, savePresets } from '../media/export-presets';
 
 const execFileAsync = promisify(execFile);
 
@@ -86,6 +87,16 @@ export function registerMediaHandlers(): void {
     } catch (err: any) {
       return { success: false, error: err.message };
     }
+  });
+
+  // ─── Export presets (R2) ──────────────────────────────────────────────────────
+  ipcMain.handle('export:get-presets', () => {
+    return { success: true, presets: loadPresets() };
+  });
+  ipcMain.handle('export:set-presets', (_event, presets: unknown) => {
+    if (!Array.isArray(presets)) return { success: false };
+    savePresets(presets as ReturnType<typeof loadPresets>);
+    return { success: true };
   });
 
   // ─── Offline check: which asset paths no longer exist on disk ────────────────

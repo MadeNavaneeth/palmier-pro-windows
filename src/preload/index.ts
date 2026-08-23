@@ -48,6 +48,8 @@ const api = {
     setProxyMode: (mode: 'auto' | 'off') => ipcRenderer.invoke('media:set-proxy-mode', mode),
     /** Hardware H.264 encoders this FFmpeg build exposes (R2). */
     hwEncoders: () => ipcRenderer.invoke('media:hw-encoders'),
+    getPresets: () => ipcRenderer.invoke('export:get-presets'),
+    setPresets: (presets: unknown[]) => ipcRenderer.invoke('export:set-presets', presets),
     chooseFolder: () => ipcRenderer.invoke('media:choose-folder'),
     /**
      * Offline-relink scan: match the given filenames (case-insensitive,
