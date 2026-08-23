@@ -20,7 +20,7 @@ import {
   clipTrimSeconds,
 } from '../../shared/media/source-time';
 import { selectExportClips } from '../../shared/media/export-eligibility';
-import { escapeDrawtext } from '../../shared/editor/title';
+import { escapeDrawtext, drawtextStyleParams } from '../../shared/editor/title';
 import { colorGradeOf, toFfmpegEq } from '../../shared/editor/color-grade';
 import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
 
@@ -276,13 +276,21 @@ export function buildFfmpegArgs(
     for (const clip of sortedClips) {
       if (clip.type !== 'title' || !clip.text) continue;
       const outLabel = `[vt${titleIndex}]`;
+      const styleParams = drawtextStyleParams(clip, height);
+      const align = clip.titleAlign ?? 'center';
+      const xExpr = align === 'left'
+        ? `${Math.round(clip.x)}`
+        : align === 'right'
+          ? `w-text_w-${Math.round(clip.x + clip.width)}`
+          : '(w-text_w)/2';
       filters.push(
         `${currentVideo}drawtext=text='${escapeDrawtext(clip.text)}'`
         + `:fontsize=${Math.round((clip.titleSizeRatio ?? 0.09) * height)}`
         + `:fontcolor=${clip.titleColor ?? 'white'}`
-        + `:x=(w-text_w)/2:y=(h-text_h)/2`
+        + `:x=${xExpr}:y=(h-text_h)/2`
         + `:enable='between(t,${(clip.startFrame / fps).toFixed(4)},${((clip.startFrame + clip.durationFrames) / fps).toFixed(4)})'`
-        + outLabel,
+        + styleParams
+        + `${outLabel}`,
       );
       currentVideo = outLabel;
       titleIndex += 1;

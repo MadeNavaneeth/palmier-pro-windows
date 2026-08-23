@@ -22,12 +22,53 @@ export interface TitleStyle {
   sizeRatio: number;
   /** Hex color without alpha, e.g. '#ffffff'. */
   colorHex: string;
+  /** Font family for the title. Default sans-serif. */
+  fontFamily?: string;
+  /** Bold text. Default false. */
+  bold?: boolean;
+  /** Horizontal alignment within the clip box. Default center. */
+  align?: 'left' | 'center' | 'right';
+  /** Background box color with alpha, e.g. '#00000080'. Undefined = none. */
+  backgroundColor?: string;
+  /** Outline stroke width in px at project resolution. Default 0 = off. */
+  strokeWidthPx?: number;
+  /** Outline stroke color. */
+  strokeColor?: string;
 }
 
 export const DEFAULT_TITLE_STYLE: TitleStyle = {
   sizeRatio: 0.09,
   colorHex: '#ffffff',
 };
+
+/**
+ * Build the FFmpeg drawtext style parameters from a clip's title fields.
+ * Only non-default values are emitted so the filter string stays minimal.
+ *
+ * @param clip - A title-bearing clip with optional style fields.
+ * @param height - Project height in pixels, for font size scaling.
+ */
+export function drawtextStyleParams(
+  clip: { titleBold?: boolean; titleFontFamily?: string; titleBackgroundColor?: string; titleStrokeWidth?: number; titleStrokeColor?: string },
+  height: number,
+): string {
+  const parts: string[] = [];
+  if (clip.titleBold) parts.push('bold=1');
+  if (clip.titleFontFamily) {
+    // Windows system fonts are addressed by name via fontconfig's fallback.
+    const family = escapeDrawtext(clip.titleFontFamily);
+    parts.push(`font='${family}'`);
+  }
+  if (clip.titleBackgroundColor) {
+    const bg = clip.titleBackgroundColor.replace('#', '0x');
+    parts.push(`box=1:boxcolor=${bg}:boxborderw=8`);
+  }
+  if (clip.titleStrokeWidth && clip.titleStrokeWidth > 0 && clip.titleStrokeColor) {
+    const sc = clip.titleStrokeColor.replace('#', '0x');
+    parts.push(`borderw=${Math.round(clip.titleStrokeWidth)}:bordercolor=${sc}`);
+  }
+  return parts.length > 0 ? ':' + parts.join(':') : '';
+}
 
 /** Clean a raw user/agent string into storable title text, or null. */
 export function sanitizeTitleText(raw: string): string | null {

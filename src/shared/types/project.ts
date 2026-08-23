@@ -113,6 +113,18 @@ export interface Clip {
   titleSizeRatio?: number;
   /** Title color as #rrggbb. */
   titleColor?: string;
+  /** CSS font family for the title. Default sans-serif. */
+  titleFontFamily?: string;
+  /** Font weight for the title. Default normal. */
+  titleBold?: boolean;
+  /** Horizontal alignment within the clip box. Default center. */
+  titleAlign?: 'left' | 'center' | 'right';
+  /** Semi-transparent background box behind text. Undefined = none. */
+  titleBackgroundColor?: string;
+  /** Outline stroke width in px at project resolution. Default 0 = off. */
+  titleStrokeWidth?: number;
+  /** Outline stroke color. */
+  titleStrokeColor?: string;
   /**
    * Constant playback speed (R4 groundwork): 1 = normal, 2 = twice as fast.
    * Timeline duration is unchanged -- the clip consumes speed× more of its

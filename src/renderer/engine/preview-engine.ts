@@ -292,14 +292,55 @@ export class PreviewEngine {
     );
     this.ctx.save();
     this.ctx.globalAlpha = clip.opacity;
+
+    // Background box behind text
+    if (clip.titleBackgroundColor) {
+      const metrics = this.ctx.measureText(clip.text || '');
+      // Approximate: measure longest line for box width
+      const lines = clip.text.split('\n');
+      let maxW = 0;
+      for (const line of lines) {
+        const m = this.ctx.measureText(line);
+        if (m.width > maxW) maxW = m.width;
+      }
+      const pad = 8;
+      const boxX = clip.x + clip.width / 2 - maxW / 2 - pad;
+      const boxY = clip.y + clip.height / 2 - (lines.length * fontSize * 1.2) / 2 - pad / 2;
+      this.ctx.fillStyle = clip.titleBackgroundColor;
+      this.ctx.fillRect(boxX, boxY, maxW + pad * 2, lines.length * fontSize * 1.2 + pad);
+    }
+
     this.ctx.fillStyle = clip.titleColor ?? '#ffffff';
-    this.ctx.font = `${fontSize}px system-ui, sans-serif`;
-    this.ctx.textAlign = 'center';
+    const weight = clip.titleBold ? 'bold ' : '';
+    const family = clip.titleFontFamily || 'system-ui, sans-serif';
+    this.ctx.font = `${weight}${fontSize}px ${family}`;
+    this.ctx.textAlign = clip.titleAlign === 'left' ? 'left' : clip.titleAlign === 'right' ? 'right' : 'center';
     this.ctx.textBaseline = 'middle';
-    const centerX = clip.x + clip.width / 2;
+
+    // Stroke outline behind fill
+    if (clip.titleStrokeWidth && clip.titleStrokeWidth > 0 && clip.titleStrokeColor) {
+      this.ctx.strokeStyle = clip.titleStrokeColor;
+      this.ctx.lineWidth = clip.titleStrokeWidth * 2; // canvas strokes centered
+      this.ctx.lineJoin = 'round';
+      const centerX = clip.x + clip.width / 2;
+      const centerY = clip.y + clip.height / 2;
+      const lineH = fontSize * 1.2;
+      const textLines = clip.text.split('\n');
+      for (const [i, line] of textLines.entries()) {
+        const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
+        this.ctx.strokeText(line, centerX, y);
+      }
+    }
+
+    const align = clip.titleAlign === 'left' ? 'left' : clip.titleAlign === 'right' ? 'right' : 'center';
+    this.ctx.textAlign = align as CanvasTextAlign;
+    const centerX = align === 'left' ? clip.x : align === 'right' ? clip.x + clip.width : clip.x + clip.width / 2;
     const centerY = clip.y + clip.height / 2;
-    for (const [i, line] of clip.text.split('\n').entries()) {
-      this.ctx.fillText(line, centerX, centerY + (i - (clip.text!.split('\n').length - 1) / 2) * fontSize * 1.2);
+    const lineH = fontSize * 1.2;
+    const textLines = clip.text.split('\n');
+    for (const [i, line] of textLines.entries()) {
+      const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
+      this.ctx.fillText(line, centerX, y);
     }
     this.ctx.restore();
   }

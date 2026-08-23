@@ -353,8 +353,8 @@ export const tools = {
   addTexts: {
     name: 'add_texts',
     description:
-      'Add one or more title text clips to the timeline. Titles are centered on screen '
-      + 'and render in preview plus export. Each entry needs trackId, startFrame, durationFrames and text.',
+      'Add one or more title text clips to the timeline. Titles are rendered in preview '
+      + 'and export. Each entry needs trackId, startFrame, durationFrames and text.',
     parameters: z.object({
       entries: z.array(z.object({
         trackId: z.string().describe('Target video track ID.'),
@@ -365,17 +365,34 @@ export const tools = {
           .describe('Font size in pixels. Defaults to ~9% of project height.'),
         color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional()
           .describe('Text color as #RRGGBB. Defaults to white.'),
+        bold: z.boolean().optional().describe('Bold text. Default false.'),
+        fontFamily: z.string().optional()
+          .describe('Font family name (e.g. "Arial", "Georgia"). Defaults to sans-serif.'),
+        align: z.enum(['left', 'center', 'right']).optional()
+          .describe('Horizontal alignment within the clip box. Defaults to center.'),
+        backgroundColor: z.string().regex(/^#[0-9a-fA-F]{8}$/).optional()
+          .describe('Background box color as #RRGGBBAA (e.g. #00000080). Omit for no box.'),
       })).min(1).describe('Titles to add.'),
     }),
   },
 
   setTitleTextTool: {
     name: 'set_title_text',
-    description: "Update the text content of an existing title clip.",
+    description: "Update the text and/or style of an existing title clip.",
     parameters: z.object({
       clipId: z.string().describe('The title clip to update.'),
-      text: z.string().min(1).max(300).describe('New title text.'),
-    }),
+      text: z.string().min(1).max(300).optional().describe('New title text.'),
+      fontSize: z.number().finite().min(8).max(400).optional().describe('New font size in pixels.'),
+      color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().describe('New text color as #RRGGBB.'),
+      bold: z.boolean().optional().describe('Bold text.'),
+      fontFamily: z.string().optional().describe('Font family name.'),
+      backgroundColor: z.string().regex(/^#[0-9a-fA-F]{8}$/).nullable().optional()
+        .describe('Background box color (#RRGGBBAA) or null to remove the background.'),
+    }).refine(
+      (op) => op.text !== undefined || op.fontSize !== undefined || op.color !== undefined
+        || op.bold !== undefined || op.fontFamily !== undefined || op.backgroundColor !== undefined,
+      { message: 'Pass at least one field to update.' },
+    ),
   },
 
   manageTracks: {

@@ -273,12 +273,25 @@ export class ToolExecutor {
               errors.push(`entries[${results.length}]: could not place title on track "${entry.trackId}".`);
               continue;
             }
-            if (entry.fontSize !== undefined || entry.color !== undefined) {
+            const styleFields = [
+              entry.fontSize !== undefined, entry.color !== undefined,
+              entry.bold !== undefined, entry.fontFamily !== undefined,
+              entry.align !== undefined, entry.backgroundColor !== undefined,
+            ];
+            if (styleFields.some(Boolean)) {
               this.editor.applyClipProperties([clipId], 'Style title', (draft) => {
                 if (entry.fontSize !== undefined) {
                   draft.titleSizeRatio = entry.fontSize / this.editor.getProject().settings.height;
                 }
                 if (entry.color !== undefined) draft.titleColor = entry.color;
+                if (entry.bold !== undefined) draft.titleBold = entry.bold;
+                if (entry.fontFamily !== undefined) draft.titleFontFamily = entry.fontFamily;
+                if (entry.align !== undefined) {
+                  draft.titleAlign = entry.align as 'left' | 'center' | 'right';
+                }
+                if (entry.backgroundColor !== undefined) {
+                  draft.titleBackgroundColor = entry.backgroundColor;
+                }
                 return true;
               });
             }
@@ -298,10 +311,30 @@ export class ToolExecutor {
 
       case 'set_title_text': {
         try {
-          const ok = this.editor.setTitleText(args.clipId, args.text);
-          return ok
-            ? { success: true, data: { updated: args.clipId } }
-            : { success: false, error: 'Clip not found, is not a title, or text is invalid.' };
+          const hasStyle = args.fontSize !== undefined || args.color !== undefined
+            || args.bold !== undefined || args.fontFamily !== undefined
+            || args.backgroundColor !== undefined;
+          if (args.text !== undefined) {
+            const ok = this.editor.setTitleText(args.clipId, args.text);
+            if (!ok) {
+              return { success: false, error: 'Clip not found, is not a title, or text is invalid.' };
+            }
+          }
+          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor];
+          if (styleFields.some((v) => v !== undefined)) {
+            this.editor.applyClipProperties([args.clipId], 'Style title', (draft) => {
+              if (draft.type !== 'title') return false;
+              if (args.fontSize !== undefined) {
+                draft.titleSizeRatio = args.fontSize / this.editor.getProject().settings.height;
+              }
+              if (args.color !== undefined) draft.titleColor = args.color;
+              if (args.bold !== undefined) draft.titleBold = args.bold;
+              if (args.fontFamily !== undefined) draft.titleFontFamily = args.fontFamily;
+              if (args.backgroundColor !== undefined) draft.titleBackgroundColor = args.backgroundColor;
+              return true;
+            });
+          }
+          return { success: true, data: { updated: args.clipId } };
         } catch (err) {
           return {
             success: false,
