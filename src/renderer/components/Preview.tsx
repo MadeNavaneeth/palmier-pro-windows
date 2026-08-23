@@ -15,6 +15,7 @@ import { PreviewCanvas } from './PreviewCanvas';
 import { useTimelineStore } from '../store/timeline';
 import { useUiStore } from '../store/ui';
 import { getPlaybackEngine } from '../engine/PlaybackEngine';
+import { getAudioPreviewManager } from '../engine/audio-preview';
 import { frameToTimecode } from '../../shared/utils/time';
 import {
   PLAYBACK_RATE_PRESETS as RATE_PRESETS,
@@ -54,6 +55,24 @@ export function Preview() {
   );
 
   const engine = useRef(getPlaybackEngine());
+
+  // Preview audio: reconcile the HTML audio pool from every engine tick and
+  // on seeks; pause everything whenever playback stops.
+  useEffect(() => {
+    const manager = getAudioPreviewManager();
+    const engineRef = engine.current;
+    const unsubscribe = engineRef.addTickListener((playhead) => {
+      manager.sync(playhead, true);
+    });
+    return () => {
+      unsubscribe();
+      manager.stopAll();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isPlaying) getAudioPreviewManager().stopAll();
+  }, [isPlaying]);
 
   useEffect(() => {
     if (isPlaying) engine.current.start();

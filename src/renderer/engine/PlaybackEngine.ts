@@ -40,6 +40,14 @@ export class PlaybackEngine {
   private disposed = false;
   private consecutiveCompositeFailures = 0;
   private hasReportedCompositeFailure = false;
+  /** Per-tick observers (preview audio reconciliation, R2). */
+  private tickListeners = new Set<(playhead: number) => void>();
+
+  /** Subscribe to playhead movement during playback. Returns an unsubscribe. */
+  addTickListener(listener: (playhead: number) => void): () => void {
+    this.tickListeners.add(listener);
+    return () => this.tickListeners.delete(listener);
+  }
 
   // Prefetch lookahead (frames ahead of playhead to decode)
   private prefetchAhead = 15;
@@ -65,6 +73,7 @@ export class PlaybackEngine {
   seek(frame: number): void {
     const store = useTimelineStore.getState();
     store.setPlayhead(frame);
+    for (const listener of this.tickListeners) listener(frame);
     // Detached on purpose: a seek must not block the caller on a decode.
     void this.requestComposite(frame);
   }
@@ -133,6 +142,7 @@ export class PlaybackEngine {
       const playhead = store.getPlayhead();
       void this.requestComposite(playhead);
       void this.requestPrefetch(playhead, rate >= 0 ? 1 : -1);
+      for (const listener of this.tickListeners) listener(store.getPlayhead());
     }
 
     this.rafId = requestAnimationFrame(this.tick);

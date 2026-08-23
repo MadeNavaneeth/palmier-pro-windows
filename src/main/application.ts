@@ -43,6 +43,10 @@ function createMainWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      // A video editor's Play button is expected to produce sound without a
+      // second gesture; Chromium's autoplay heuristic otherwise blocks the
+      // first preview playback after launch.
+      autoplayPolicy: 'no-user-gesture-required',
     },
     show: false,
   });
