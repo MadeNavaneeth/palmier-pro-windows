@@ -133,6 +133,9 @@ export function useKeyboardShortcuts() {
       case 'pasteAtPlayhead':
         timeline.pasteClipsAtPlayhead();
         return;
+      case 'duplicateSelected':
+        timeline.duplicateSelected();
+        return;
       case 'rippleDeleteSelected':
         timeline.rippleDelete();
         return;

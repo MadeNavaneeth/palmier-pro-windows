@@ -1,4 +1,4 @@
-﻿/**
+/**
  * FFmpeg Exporter — converts the timeline state into a filter_complex graph
  * and runs FFmpeg to produce the final video file.
  *
@@ -290,7 +290,9 @@ export function registerExportHandlers(getProject: () => Project | null): void {
           : options.format === 'webm'
             ? 'webm'
             : 'mp4';
-      const safeName = (project.name || 'export').replace(/[\\/:*?"<>|]/g, '_');
+      const dateTag = new Date().toISOString().slice(0, 10);
+      const baseName = (project.name || 'export').replace(/[\\/:*?"<>|]/g, '_');
+      const safeName = `${baseName}-${dateTag}`;
       const result = await dialog.showSaveDialog(win, {
         title: 'Export media',
         defaultPath: `${safeName}.${ext}`,

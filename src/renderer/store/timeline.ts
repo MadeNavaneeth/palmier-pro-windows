@@ -186,6 +186,9 @@ export interface TimelineState {
   /** Keyboard paste: anchor at the playhead on its source/compatible track. */
   pasteClipsAtPlayhead: () => string[];
 
+  /** Duplicate the selected clips immediately after themselves (R1). */
+  duplicateSelected: () => string[];
+
   // Marquee (R1 selection model)
   /** Additive base captured when a rubber band starts; null when idle. */
   marqueeBaseIds: ReadonlySet<string> | null;
@@ -593,18 +596,37 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     return copied;
   },
 
-  pasteClipsAtPlayhead: () => {
-    const newIds = get().controller.pasteClips();
-    if (newIds.length > 0) {
-      // Pasted clips arrive selected, matching upstream.
-      set({
-        selectedClipIds: new Set(newIds),
-        selectedGap: null,
-        selectedMarkerIds: new Set(),
-      });
-    }
-    return newIds;
-  },
+    pasteClipsAtPlayhead: () => {
+      const newIds = get().controller.pasteClips();
+      if (newIds.length > 0) {
+        // Pasted clips arrive selected, matching upstream.
+        set({
+          selectedClipIds: new Set(newIds),
+          selectedGap: null,
+          selectedMarkerIds: new Set(),
+        });
+      }
+      return newIds;
+    },
+
+    duplicateSelected: () => {
+      const ids = [...get().selectedClipIds];
+      if (ids.length === 0) return [];
+      const copied = get().controller.copyClips(ids);
+      if (copied === 0) return [];
+      const clips = get().controller.getClips().filter((c) => ids.includes(c.id));
+      const maxEnd = Math.max(...clips.map((c) => c.startFrame + c.durationFrames));
+      // Place duplicates immediately after the last selected clip.
+      const pasted = get().controller.pasteClips({ startFrame: maxEnd });
+      if (pasted.length > 0) {
+        set({
+          selectedClipIds: new Set(pasted),
+          selectedGap: null,
+          selectedMarkerIds: new Set(),
+        });
+      }
+      return pasted;
+    },
 
   // ─── Marquee (R1) ──────────────────────────────────────────────────────
   beginMarquee: (additive) => {

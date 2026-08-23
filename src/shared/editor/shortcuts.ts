@@ -67,6 +67,7 @@ export type ShortcutId =
   | 'copySelected'
   | 'cutSelected'
   | 'pasteAtPlayhead'
+  | 'duplicateSelected'
   | 'selectAll'
   | 'deselectAll'
   | 'zoomIn'
@@ -132,7 +133,13 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
     category: 'Editing',
     bindings: [{ key: 'c', ctrl: true }],
   },
-  { id: 'pasteAtPlayhead', label: 'Paste clips at the playhead', category: 'Editing', bindings: [{ key: 'v', ctrl: true }] },  {
+  { id: 'pasteAtPlayhead', label: 'Paste clips at the playhead', category: 'Editing', bindings: [{ key: 'v', ctrl: true }] },
+  {
+    id: 'duplicateSelected',
+    label: 'Duplicate selected clips',
+    category: 'Editing',
+    bindings: [{ key: 'd', ctrl: true }],
+  },  {
     id: 'redo',
     label: 'Redo',
     category: 'Editing',

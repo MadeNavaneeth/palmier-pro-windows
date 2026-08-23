@@ -326,6 +326,18 @@ export const tools = {
     ),
   },
 
+  setClipSpeedTool: {
+    name: 'set_clip_speed',
+    description:
+      'Set constant playback speed on a visual clip. Speeds range from 0.25x to 4x. '
+      + 'Timeline duration is unchanged; the clip consumes more or less of its source.',
+    parameters: z.object({
+      clipId: z.string().describe('The visual clip whose speed to change.'),
+      speed: z.number().finite().min(0.25).max(4)
+        .describe('Playback rate multiplier (e.g. 0.5 = half speed, 2 = double speed).'),
+    }),
+  },
+
   addTexts: {
     name: 'add_texts',
     description:

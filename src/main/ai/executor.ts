@@ -184,6 +184,20 @@ export class ToolExecutor {
         }
       }
 
+      case 'set_clip_speed': {
+        try {
+          const ok = this.editor.setClipSpeed(args.clipId, args.speed);
+          return ok
+            ? { success: true, data: { clipId: args.clipId, speed: args.speed } }
+            : { success: false, error: 'Clip not found, is audio/title (visual clips only), or speed is out of range.' };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Speed change failed.',
+          };
+        }
+      }
+
       case 'add_texts': {
         try {
           const results: Array<{ clipId: string; text: string }> = [];
