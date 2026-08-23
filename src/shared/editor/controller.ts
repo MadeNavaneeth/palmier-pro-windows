@@ -17,7 +17,7 @@ import type {
 } from '../types/project';
 import { MAX_CANVAS_EDGE } from '../project/aspect-ratio';
 import { createEmptyProject } from '../types/project';
-import { clampFrame, asValidFrame } from '../utils/safe-number';
+import { clampFrame, asValidFrame, MAX_FRAME } from '../utils/safe-number';
 import {
   CommandHistory,
   AddClipCommand,
@@ -51,6 +51,7 @@ import {
   DEFAULT_TITLE_STYLE,
   sanitizeTitleText,
 } from './title';
+import { parseSrt } from './srt';
 
 /**
  * One copied clip and its position relative to the copy anchor  the
@@ -272,7 +273,7 @@ function generatedTrackLabelIn(track: Track, tracks: readonly Track[]): string {
 
 /**
  * The settings fields a paste would touch, narrowed by the requested field
- * groups — used for value comparison so unchanged pastes add no history.
+ * groups â€” used for value comparison so unchanged pastes add no history.
  */
 function pickSettings(
   clip: Clip,
@@ -542,8 +543,8 @@ export class EditorController {  private project: Project;
    *
    * - `overwrite` clears the destination span first (splitting survivors),
    *   leaving other tracks untouched.
-   * - `insert` ripple-pushes the target track's later clips — plus any linked
-   *   partners of those clips on their own tracks — later by the placed
+   * - `insert` ripple-pushes the target track's later clips â€” plus any linked
+   *   partners of those clips on their own tracks â€” later by the placed
    *   length, then lands at `startFrame`.
    * - `append` lands after the last clip on the track.
    *
@@ -558,7 +559,7 @@ export class EditorController {  private project: Project;
     mode?: 'overwrite' | 'insert' | 'append';
     startFrame?: Frame;
     durationFrames?: Frame;
-    /** Source window in seconds, [start, end) — three-point editing's In/Out. */
+    /** Source window in seconds, [start, end) â€” three-point editing's In/Out. */
     source?: [number, number];
   }): { clipIds: string[] } | null {
     const asset = this.project.media.find((m) => m.id === params.assetId);
@@ -577,7 +578,7 @@ export class EditorController {  private project: Project;
     if (params.source !== undefined) {
       if (params.durationFrames !== undefined) {
         throw new Error(
-          'Set source OR durationFrames, not both — source picks a span of the asset, durationFrames an exact timeline length.',
+          'Set source OR durationFrames, not both â€” source picks a span of the asset, durationFrames an exact timeline length.',
         );
       }
       const [rawStart, rawEnd] = params.source;
@@ -1547,12 +1548,12 @@ export class EditorController {  private project: Project;
 
   //  Timeline markers (upstream PRs #542 / #560) 
 
-  // ─── Clip settings transfer / paste attributes (R1; upstream #515) ────────
+  // â”€â”€â”€ Clip settings transfer / paste attributes (R1; upstream #515) â”€â”€â”€â”€â”€â”€â”€â”€
 
   /**
    * Copy one clip's presentation settings onto every target clip in a single
    * undoable step (upstream `applyClipSettings`). Only presentation fields
-   * transfer — timing, trims, source, linkage, and fades stay the target's:
+   * transfer â€” timing, trims, source, linkage, and fades stay the target's:
    *
    * - audio targets receive `volume`;
    * - visual targets receive opacity, position, rotation, scale, and blend
@@ -1607,7 +1608,7 @@ export class EditorController {  private project: Project;
       replacements.set(id, next);
     }
 
-    // Value comparison on the transferred fields only — a rebuilt-but-
+    // Value comparison on the transferred fields only â€” a rebuilt-but-
     // identical clip must count as unchanged (upstream compares Equatable).
     const settingsDiffer = (a: Clip, b: Clip): boolean => {
       if (a.type === 'audio') return a.volume !== b.volume;
@@ -1677,7 +1678,7 @@ export class EditorController {  private project: Project;
 
   /**
    * Paste previously captured settings onto targets. Without `fields` every
-   * captured field applies; with it, only the named groups do — the
+   * captured field applies; with it, only the named groups do â€” the
    * property checklist from R1. One undoable step, upstream refusal shape.
    */
   pasteSettingsFromSnapshot(
@@ -1753,7 +1754,7 @@ export class EditorController {  private project: Project;
     };
   }
 
-  // ─── Offline media relink (upstream EditorViewModel+Relink) ──────────────
+  // â”€â”€â”€ Offline media relink (upstream EditorViewModel+Relink) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   /**
    * Repoint assets at relocated source files in one undoable step per asset.
@@ -1777,7 +1778,7 @@ export class EditorController {  private project: Project;
   }
 
   /**
-   * Batch relink in ONE undoable step — the folder-scan flow hands back a
+   * Batch relink in ONE undoable step â€” the folder-scan flow hands back a
    * mapping built by the main process. Kind validation runs for every entry
    * before anything is committed; any refusal leaves all paths untouched.
    */
@@ -1832,10 +1833,10 @@ export class EditorController {  private project: Project;
     return true;
   }
 
-  // ─── Title clips (R3 foundation) ──────────────────────────────────────────
+  // â”€â”€â”€ Title clips (R3 foundation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   /**
-   * Add a title clip — a self-contained text layer needing no media asset.
+   * Add a title clip â€” a self-contained text layer needing no media asset.
    * Invalid/empty text is refused by returning ''. One undoable step.
    */
   addTitleClip(params: {
@@ -1885,6 +1886,60 @@ export class EditorController {  private project: Project;
       return true;
     });
     return receipt.changedClipIds.length > 0;
+  }
+
+  /**
+   * Import SRT content as title clips on a video track (roadmap R3).
+   *
+   * Each cue becomes one clip spanning [start, end) relative to
+   * `startFrame` (the playhead by default). The whole import is ONE
+   * undoable step; cues that fail sanitization are skipped, and an import
+   * with zero usable cues adds no history entry and returns [].
+   */
+  importSrt(trackId: string, srtContent: string, startFrame?: Frame): string[] {
+    const track = this.project.timeline.tracks.find((t) => t.id === trackId);
+    if (!track || track.type !== 'video' || track.locked) return [];
+
+    const base = Math.max(0, Math.round(startFrame ?? this.getPlayhead()));
+    const fps = this.project.settings.fps;
+    const newIds: string[] = [];
+    const created: Clip[] = [];
+
+    for (const cue of parseSrt(srtContent)) {
+      const text = sanitizeTitleText(cue.text);
+      if (!text) continue;
+      const start = clampFrame(base + Math.round(cue.startSec * fps));
+      const duration = Math.max(
+        1,
+        Math.min(
+          Math.round(cue.endSec * fps) - Math.round(cue.startSec * fps),
+          MAX_FRAME - start,
+        ),
+      );
+      const id = nanoid();
+      newIds.push(id);
+      created.push({
+        ...this.createPlacedClip(
+          {
+            id: '__title__', path: '', filename: text, type: 'video',
+            duration: duration, fileSize: 0, addedAt: new Date().toISOString(),
+          },
+          'title', trackId, start, duration,
+        ),
+        id,
+        label: text,
+        text,
+        titleSizeRatio: 0.06,
+        titleColor: '#ffffff',
+      });
+    }
+    if (created.length === 0) return [];
+
+    this.execute(new ReplaceClipsCommand(
+      [...this.project.timeline.clips, ...created],
+      created.length === 1 ? 'Import subtitle' : `Import ${created.length} subtitles`,
+    ));
+    return newIds;
   }
 
   getMarkers(): TimelineMarker[] {

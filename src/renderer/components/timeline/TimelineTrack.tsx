@@ -14,6 +14,7 @@ import {
   getDroppedFilePath,
   isAssetCompatibleWithTrack,
 } from '../../lib/dnd';
+import { parseSrt } from '../../../shared/editor/srt';
 import { useProjectStore } from '../../store/project';
 
 interface TimelineTrackProps {
@@ -36,6 +37,7 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
   const snapFrame = useTimelineStore((s) => s.snapFrame);
   const selectedGap = useTimelineStore((s) => s.selectedGap);
   const selectGap = useTimelineStore((s) => s.selectGap);
+  const controller = useTimelineStore((s) => s.controller);
   const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
   const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
 
@@ -115,7 +117,30 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
           return;
         }
 
-        const imported = await window.palmier.media.importPaths(paths);
+        // SRT files dropped on a video track import as caption clips (R3).
+        const srtPaths = paths.filter((p) => p.toLowerCase().endsWith('.srt'));
+        const mediaPaths = paths.filter((p) => !p.toLowerCase().endsWith('.srt'));
+        for (const srtPath of srtPaths) {
+          if (track.type !== 'video') {
+            setDropError('Subtitles drop on a video track.');
+            continue;
+          }
+          try {
+            const response = await fetch(`file:///${encodeURI(srtPath).replace(/#/g, '%23')}`);
+            const content = await response.text();
+            const ids = controller.importSrt(track.id, content, frame);
+            if (ids.length > 0) {
+              useTimelineStore.setState({ selectedClipIds: new Set(ids) });
+              useProjectStore.getState().markDirty();
+            } else {
+              setDropError('No usable subtitles found in that file.');
+            }
+          } catch {
+            setDropError(`Could not read ${srtPath.split(/[\\/]/).pop()}.`);
+          }
+        }
+        if (mediaPaths.length === 0) return;
+        const imported = await window.palmier.media.importPaths(mediaPaths);
         if (imported.files.length === 0) {
           setDropError(imported.errors?.[0] || 'No supported media files found.');
           return;
