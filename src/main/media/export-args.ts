@@ -21,6 +21,7 @@ import {
 } from '../../shared/media/source-time';
 import { selectExportClips } from '../../shared/media/export-eligibility';
 import { escapeDrawtext } from '../../shared/editor/title';
+import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -222,6 +223,11 @@ export function buildFfmpegArgs(
         `[${inputIdx}:a]atrim=start=${trimStart.toFixed(4)}:end=${trimEnd.toFixed(4)},asetpts=PTS-STARTPTS`;
       if (Number.isFinite(clip.volume) && clip.volume >= 0 && clip.volume !== 1) {
         chain += `,volume=${Math.min(1, clip.volume).toFixed(4)}`;
+      }
+      const pan = clampPan(clip.pan ?? 0);
+      if (pan !== 0) {
+        // Balance-style pan (R5): attenuate one channel toward the other.
+        chain += `,${ffmpegPanFilter(pan)}`;
       }
       if (delayMs > 0) {
         chain += `,adelay=${delayMs}:all=1`;

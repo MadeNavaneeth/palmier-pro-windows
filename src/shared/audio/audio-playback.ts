@@ -9,6 +9,7 @@
  */
 
 import type { Clip, Frame, MediaAsset } from '../types/project';
+import { clampPan } from './pan';
 
 export interface AudioPlanInput {
   clips: readonly Clip[];
@@ -27,6 +28,8 @@ export interface AudioPlaybackEntry {
   /** Where in the source the element's currentTime belongs, seconds. */
   sourceTimeSec: number;
   volume: number;
+  /** Stereo balance, -1 left … +1 right (R5). */
+  pan: number;
 }
 
 /**
@@ -60,6 +63,7 @@ export function computeAudioPlan(input: AudioPlanInput): AudioPlaybackEntry[] {
       path,
       sourceTimeSec,
       volume: Math.min(1, Math.max(0, Number.isFinite(clip.volume) ? clip.volume : 1)),
+      pan: clampPan(clip.pan ?? 0),
     });
   }
   return entries;

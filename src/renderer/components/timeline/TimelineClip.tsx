@@ -59,6 +59,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   // ─── Detach / relink audio (#462 surface) ─────────────────────────────────
   const controller = useTimelineStore((s) => s.controller);
   const setClipSpeed = useTimelineStore((s) => s.setClipSpeed);
+  const setClipPan = useTimelineStore((s) => s.setClipPan);
   const selectedCount = selectedClipIds.size;
   const canDetach = clip.linkGroupId !== undefined;
   const canRelink =
@@ -530,13 +531,34 @@ export function TimelineClip({ clip }: TimelineClipProps) {
                   Paste settings
                 </button>
                 {clip.type === 'audio' ? (
-                  <button
-                    role="menuitem"
-                    onClick={() => pasteWith(['volume'])}
-                    className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
-                  >
-                    Paste volume only
-                  </button>
+                  <>
+                    <button
+                      role="menuitem"
+                      onClick={() => pasteWith(['volume'])}
+                      className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+                    >
+                      Paste volume only
+                    </button>
+                    <div className="my-0.5 h-px bg-white/10" />
+                    <div className="px-2 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-text-muted">
+                      Pan
+                    </div>
+                    {[[-1, 'Left'], [0, 'Center'], [1, 'Right']].map(([v, label]) => (
+                      <button
+                        key={label}
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuPos(null);
+                          setClipPan(clip.id, v as number);
+                        }}
+                        className={`block w-full px-2 py-1 text-left text-[10px] hover:bg-white/10 ${
+                          (clip.pan ?? 0) === v ? 'text-accent' : 'text-text-secondary'
+                        }`}
+                      >
+                        Pan {label}
+                      </button>
+                    ))}
+                  </>
                 ) : (
                   <>
                     <button

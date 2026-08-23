@@ -96,6 +96,8 @@ export interface Clip {
   // Audio
   volume: number; // 0-1
   muted: boolean;
+  /** Stereo balance, -1 hard left … +1 hard right (R5). Audio clips only. */
+  pan?: number;
 
   // Metadata
   label?: string;

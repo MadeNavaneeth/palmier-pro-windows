@@ -30,7 +30,7 @@ describe('computeAudioPlan (preview audio)', () => {
     });
     // inPoint 30f (1s) + 1s into the clip = 2s of source.
     expect(entries).toEqual([
-      { path: 'C:/m/a.mp3', sourceTimeSec: 2, volume: 1 },
+      { path: 'C:/m/a.mp3', sourceTimeSec: 2, volume: 1, pan: 0 },
     ]);
   });
 

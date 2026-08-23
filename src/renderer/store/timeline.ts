@@ -177,6 +177,8 @@ export interface TimelineState {
   setTitleText: (clipId: string, text: string) => boolean;
   /** Constant playback speed on a visual clip (R4 groundwork). */
   setClipSpeed: (clipId: string, speed: number) => boolean;
+  /** Stereo balance on an audio clip, -1 left … +1 right (R5). */
+  setClipPan: (clipId: string, pan: number) => boolean;
 
   // Clipboard (R1)
   copySelectedClips: () => number;
@@ -564,6 +566,14 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
   setClipSpeed: (clipId, speed) => {
     try {
       return get().controller.setClipSpeed(clipId, speed);
+    } catch {
+      return false;
+    }
+  },
+
+  setClipPan: (clipId, pan) => {
+    try {
+      return get().controller.setClipPan(clipId, pan);
     } catch {
       return false;
     }

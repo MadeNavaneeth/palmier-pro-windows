@@ -1816,10 +1816,26 @@ export class EditorController {  private project: Project;
   }
 
   /**
+   * Set stereo balance on an audio clip (roadmap R5). -1 hard left,
+   * +1 hard right, 0 center. Visual clips are refused.
+   */
+  setClipPan(clipId: string, pan: number): boolean {
+    if (!Number.isFinite(pan) || pan < -1 || pan > 1) return false;
+    const receipt = this.applyClipProperties([clipId], `Set pan to ${pan.toFixed(2)}`, (draft) => {
+      if (draft.type !== 'audio') return false;
+      if (pan === 0) delete draft.pan;
+      else draft.pan = pan;
+      return true;
+    });
+    return receipt.changedClipIds.length > 0;
+  }
+
+  /**
    * Attach or clear a proxy file for an asset (roadmap R2). Undoable like
    * every media-field change; generation itself runs outside the editor.
    */
-  setProxyState(assetId: string, proxyPath: string | null): boolean {    const asset = this.project.media.find((a) => a.id === assetId);
+  setProxyState(assetId: string, proxyPath: string | null): boolean {
+    const asset = this.project.media.find((a) => a.id === assetId);
     if (!asset) return false;
     const next: MediaAsset =
       proxyPath === null
