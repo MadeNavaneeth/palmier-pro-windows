@@ -13,6 +13,14 @@ interface ExportDialogProps {
 
 type Format = 'mp4' | 'mov' | 'webm' | 'audio';
 type Quality = 'draft' | 'normal' | 'high';
+type HwEncoder = 'x264' | 'nvenc' | 'qsv' | 'amf';
+
+const HW_LABELS: Record<HwEncoder, string> = {
+  x264: 'Software (x264)',
+  nvenc: 'NVIDIA NVENC',
+  qsv: 'Intel QSV',
+  amf: 'AMD AMF',
+};
 
 interface ExportProgress {
   percent: number;
@@ -36,6 +44,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
   const [format, setFormat] = useState<Format>('mp4');
   const [quality, setQuality] = useState<Quality>('normal');
+  const [hw, setHw] = useState<HwEncoder>('x264');
+  const [hwAvailable, setHwAvailable] = useState<HwEncoder[]>([]);
   const [useRange, setUseRange] = useState(false);
   const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
   const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
@@ -72,6 +82,19 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     };
   }, [isOpen]);
 
+  // Detect hardware encoders once per open (R2 capability detection).
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    void window.palmier.media.hwEncoders().then((res: unknown) => {
+      const r = res as { encoders?: HwEncoder[] } | undefined;
+      if (!cancelled && r?.encoders) setHwAvailable(['x264', ...r.encoders]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
   const handleExport = useCallback(async () => {
     setError(null);
     setOutputPath(null);
@@ -92,6 +115,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       width,
       height,
       fps: projectFps,
+      hw,
       ...(useRange && hasRange
         ? { range: { start: rangeStart, end: rangeEnd } }
         : {}),
@@ -99,7 +123,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     if (startRes && !startRes.success && startRes.canceled) {
       setIsExporting(false); // user closed the save dialog; not an error
     }
-  }, [format, quality, resIdx, projectWidth, projectHeight, projectFps, useRange, hasRange, rangeStart, rangeEnd]);
+  }, [format, quality, hw, resIdx, projectWidth, projectHeight, projectFps, useRange, hasRange, rangeStart, rangeEnd]);
 
   const handleCancel = useCallback(async () => {
     await window.palmier.export.cancel();
@@ -144,6 +168,24 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 ))}
               </div>
             </div>
+
+            {/* Encoder (MP4 only) */}
+            {format === 'mp4' && hwAvailable.length > 1 && (
+              <div className="mb-4">
+                <label className="block text-xs text-text-secondary mb-1.5">Encoder</label>
+                <select
+                  value={hwAvailable.includes(hw) ? hw : 'x264'}
+                  onChange={(e) => setHw(e.target.value as HwEncoder)}
+                  className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 text-sm text-text-primary"
+                >
+                  {hwAvailable.map((enc) => (
+                    <option key={enc} value={enc}>
+                      {HW_LABELS[enc] ?? enc}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Resolution */}
             <div className="mb-6">

@@ -46,6 +46,8 @@ const api = {
     removeProxy: (assetId: string) => ipcRenderer.invoke('media:remove-proxy', assetId),
     getProxyMode: () => ipcRenderer.invoke('media:get-proxy-mode'),
     setProxyMode: (mode: 'auto' | 'off') => ipcRenderer.invoke('media:set-proxy-mode', mode),
+    /** Hardware H.264 encoders this FFmpeg build exposes (R2). */
+    hwEncoders: () => ipcRenderer.invoke('media:hw-encoders'),
     chooseFolder: () => ipcRenderer.invoke('media:choose-folder'),
     /**
      * Offline-relink scan: match the given filenames (case-insensitive,

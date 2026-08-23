@@ -56,6 +56,44 @@ function projectClipsIntoRange(
   return out;
 }
 
+// ─── Hardware encoders (R2 capability detection) ─────────────────────────────
+
+export type HwEncoder = 'x264' | 'nvenc' | 'qsv' | 'amf';
+
+/** Bitrate tiers for hardware encoders, which lack x264-style CRF tiers. */
+const HW_BITRATE_K: Record<'draft' | 'normal' | 'high', string> = {
+  draft: '8M',
+  normal: '16M',
+  high: '30M',
+};
+
+/**
+ * Video codec arguments for an MP4 export under a chosen encoder.
+ *
+ * MOV/ProRes and WebM/VP9 have no hardware path here and fall through to
+ * their software presets regardless of `hw` -- callers should disable the
+ * selector for those formats.
+ */
+export function videoCodecArgs(
+  format: 'mp4' | 'mov' | 'webm' | 'audio',
+  quality: 'draft' | 'normal' | 'high',
+  hw: HwEncoder = 'x264',
+): string[] {
+  if (format === 'audio') return [];
+  if (format !== 'mp4' || hw === 'x264') {
+    return PRESETS[format]?.[quality] ?? PRESETS.mp4[quality];
+  }
+  const bitrate = HW_BITRATE_K[quality];
+  switch (hw) {
+    case 'nvenc':
+      return ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', quality === 'high' ? '21' : quality === 'normal' ? '24' : '27', '-b:v', '0'];
+    case 'qsv':
+      return ['-c:v', 'h264_qsv', '-preset', quality === 'high' ? 'veryslow' : quality === 'normal' ? 'medium' : 'veryfast', '-global_quality', quality === 'high' ? '22' : quality === 'normal' ? '25' : '28'];
+    case 'amf':
+      return ['-c:v', 'h264_amf', '-usage', 'transcoding', '-quality', quality === 'high' ? 'quality' : quality === 'normal' ? 'balanced' : 'speed', '-b:v', bitrate];
+  }
+}
+
 type GeometryFilterFn = (
   x: number, y: number,
   width: number, height: number,
@@ -85,7 +123,7 @@ const PRESETS: Record<string, Record<string, string[]>> = {
 /** Build the complete FFmpeg argument list for one export. */
 export function buildFfmpegArgs(
   project: Project,
-  options: ExportArgOptions,
+  options: ExportArgOptions & { hw?: HwEncoder },
   width: number,
   height: number,
   fps: number,
@@ -219,7 +257,7 @@ export function buildFfmpegArgs(
 
   // Output settings
   if (!audioOnly) {
-    const codecArgs = PRESETS[options.format]?.[options.quality] || PRESETS.mp4.normal;
+    const codecArgs = videoCodecArgs(options.format, options.quality, options.hw);
     args.push(...codecArgs);
   }
 

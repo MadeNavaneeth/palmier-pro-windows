@@ -151,6 +151,28 @@ export function registerMediaHandlers(): void {
     }
   });
 
+  // ─── Hardware encoder detection (R2) ─────────────────────────────────────────
+  let hwEncoderCache: string[] | null = null;
+  ipcMain.handle('media:hw-encoders', async () => {
+    if (hwEncoderCache) return { encoders: hwEncoderCache };
+    const encoders = await new Promise<string[]>((resolve) => {
+      execFile('ffmpeg', ['-hide_banner', '-encoders'], (err, stdout) => {
+        if (err) {
+          resolve([]);
+          return;
+        }
+        const found: string[] = [];
+        // Preference order: discrete NVENC, then Intel QSV, then AMD AMF.
+        for (const name of ['h264_nvenc', 'h264_qsv', 'h264_amf']) {
+          if (stdout.includes(name)) found.push(name.replace('h264_', ''));
+        }
+        resolve(found);
+      });
+    });
+    hwEncoderCache = encoders;
+    return { encoders };
+  });
+
   // ─── Folder picker ───────────────────────────────────────────────────────────
   ipcMain.handle('media:choose-folder', async () => {
     const win = BrowserWindow.getFocusedWindow();

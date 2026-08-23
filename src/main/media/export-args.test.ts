@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import { createEmptyProject } from '../../shared/types/project';
 import type { Clip, Project } from '../../shared/types/project';
-import { buildFfmpegArgs } from './export-args';
+import { buildFfmpegArgs, videoCodecArgs } from './export-args';
 
 function projectWithMedia(
   media: Array<{ id: string; path: string; type: 'video' | 'audio' | 'image'; duration: number; audioCodec?: string }>,
@@ -57,6 +57,39 @@ function projectWithMedia(
 }
 
 const GEOMETRY = '(geometry)';
+
+describe('videoCodecArgs (R2 hardware encoders)', () => {
+  it('software x264 keeps the CRF quality tiers', () => {
+    expect(videoCodecArgs('mp4', 'normal', 'x264')).toEqual([
+      '-c:v', 'libx264', '-preset', 'medium', '-crf', '20',
+    ]);
+  });
+
+  it('maps hardware encoders to their own rate-control flags', () => {
+    expect(videoCodecArgs('mp4', 'high', 'nvenc')).toContain('h264_nvenc');
+    expect(videoCodecArgs('mp4', 'draft', 'qsv')).toContain('h264_qsv');
+    expect(videoCodecArgs('mp4', 'normal', 'amf')).toContain('h264_amf');
+  });
+
+  it('ignores hardware for MOV/WebM and audio formats', () => {
+    expect(videoCodecArgs('mov', 'high', 'nvenc')).toContain('prores_ks');
+    expect(videoCodecArgs('webm', 'high', 'nvenc')).toContain('libvpx-vp9');
+    expect(videoCodecArgs('audio', 'high', 'nvenc')).toEqual([]);
+  });
+
+  it('threads hw through buildFfmpegArgs into the video codec args', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{ type: 'video', assetId: 'v' }],
+    );
+    const args = buildFfmpegArgs(
+      project,
+      { outputPath: 'out.mp4', format: 'mp4', quality: 'normal', hw: 'nvenc' },
+      1920, 1080, 30, 100, null,
+    );
+    expect(args).toContain('h264_nvenc');
+  });
+});
 
 function build(project: Project): string[] {
   return buildFfmpegArgs(
