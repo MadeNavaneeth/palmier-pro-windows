@@ -43,6 +43,27 @@ export class PlaybackEngine {
   /** Per-tick observers (preview audio reconciliation, R2). */
   private tickListeners = new Set<(playhead: number) => void>();
 
+  // ─── Playback health (R2 dropped-frame indicator) ─────────────────────────
+  /** Composites that outlived their frame budget during playback. */
+  private slowComposites = 0;
+  /** Ticks where more than one frame was advanced at once (real drops). */
+  private multiFrameTicks = 0;
+  private lastTickAdvanced = 1;
+
+  /** Snapshot for the UI's preview-health indicator. */
+  getPlaybackHealth(): { slowComposites: number; multiFrameTicks: number } {
+    return {
+      slowComposites: this.slowComposites,
+      multiFrameTicks: this.multiFrameTicks,
+    };
+  }
+
+  resetPlaybackHealth(): void {
+    this.slowComposites = 0;
+    this.multiFrameTicks = 0;
+    this.lastTickAdvanced = 1;
+  }
+
   /** Subscribe to playhead movement during playback. Returns an unsubscribe. */
   addTickListener(listener: (playhead: number) => void): () => void {
     this.tickListeners.add(listener);
@@ -110,6 +131,7 @@ export class PlaybackEngine {
 
     // Advance by whole frames
     let advanced = false;
+    let advancedCount = 0;
     while (this.frameAccumulator >= frameDuration) {
       this.frameAccumulator -= frameDuration;
       const current = store.getPlayhead();
@@ -129,12 +151,18 @@ export class PlaybackEngine {
         // Loop or stop at end
         store.setPlayhead(0); // loop for now
         advanced = true;
+        advancedCount += 1;
         continue;
       }
 
       store.setPlayhead(next);
       advanced = true;
+      advancedCount += 1;
     }
+
+    // Health: a tick that advanced more than one frame means the composite
+    // pipeline did not keep up with the clock (dropped frames, R2).
+    if (advanced && advancedCount > 1) this.multiFrameTicks += 1;
 
     // Request composite for current frame. Detached on purpose: the loop must
     // keep the clock moving whether or not this frame arrives in time.
@@ -156,11 +184,19 @@ export class PlaybackEngine {
    * than discarded silently (#89).
    */
   private async requestComposite(frame: number): Promise<void> {
+    const store = useTimelineStore.getState();
+    const startedAt = this.state === 'playing' ? performance.now() : null;
     try {
       // IPC call to main process which runs frame decode + Rust compositor
       await window.palmier.preview.compositeFrame(frame);
       this.consecutiveCompositeFailures = 0;
       this.hasReportedCompositeFailure = false;
+      if (startedAt !== null) {
+        const frameBudgetMs = 1000 / Math.max(1, store.getProjectFps() * Math.abs(normalizePlaybackRate(store.playbackRate)));
+        if (performance.now() - startedAt > frameBudgetMs) {
+          this.slowComposites += 1;
+        }
+      }
     } catch (err) {
       this.consecutiveCompositeFailures += 1;
       if (

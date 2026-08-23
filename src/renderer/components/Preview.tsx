@@ -74,6 +74,23 @@ export function Preview() {
     if (!isPlaying) getAudioPreviewManager().stopAll();
   }, [isPlaying]);
 
+  // Preview-health indicator (R2): polls the engine's dropped-frame stats
+  // while playing; a persistent amber dot means the pipeline is behind and
+  // a proxy or lower resolution would help.
+  const [behind, setBehind] = useState(false);
+  useEffect(() => {
+    if (!isPlaying) {
+      setBehind(false);
+      engine.current.resetPlaybackHealth();
+      return;
+    }
+    const id = window.setInterval(() => {
+      const health = engine.current.getPlaybackHealth();
+      setBehind(health.multiFrameTicks > 2 || health.slowComposites > 8);
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [isPlaying]);
+
   useEffect(() => {
     if (isPlaying) engine.current.start();
     else engine.current.stop();
@@ -165,6 +182,13 @@ export function Preview() {
         </div>
 
         <div className="flex w-44 items-center justify-end gap-1 @max-xl:w-24 @max-sm:w-auto">
+          {behind && (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full bg-amber-400"
+              title="Preview is behind the clock — generate a proxy or lower the resolution"
+              data-preview-behind
+            />
+          )}
           <label
             className="flex h-7 items-center gap-1 px-1.5 text-[10px] text-text-muted @max-xl:hidden"
             title="Playback speed"
