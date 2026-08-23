@@ -194,7 +194,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
 export function createEmptyProject(name = 'Untitled Project'): Project {
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: 2,
     name,
     settings: { ...DEFAULT_PROJECT_SETTINGS },
     media: [],

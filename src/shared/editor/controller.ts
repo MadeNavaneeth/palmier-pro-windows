@@ -53,6 +53,7 @@ import {
 } from './title';
 import { parseSrt } from './srt';
 import { colorGradeOf } from './color-grade';
+import { migrateProject, CURRENT_SCHEMA_VERSION } from './migrations';
 
 /**
  * One copied clip and its position relative to the copy anchor  the
@@ -2947,7 +2948,9 @@ export class EditorController {  private project: Project;
   }
 
   static deserialize(json: string): EditorController {
-    const project: Project = JSON.parse(json);
+    const raw: unknown = JSON.parse(json);
+    const migrated = migrateProject(raw as Record<string, unknown>);
+    const project: Project = migrated as unknown as Project;
     return new EditorController(project);
   }
 }
