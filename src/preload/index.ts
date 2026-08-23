@@ -74,6 +74,9 @@ const api = {
       ipcRenderer.invoke('audio:set-silence-settings', update),
     waveform: (filePath: string, buckets: number) =>
       ipcRenderer.invoke('audio:waveform', filePath, buckets),
+    /** Peak/mean volume analysis for normalization (R5). */
+    volumeAnalysis: (filePath: string) =>
+      ipcRenderer.invoke('audio:volume-analysis', filePath),
   },
 
   // ── System ───────────────────────────────────────────────────────────────────

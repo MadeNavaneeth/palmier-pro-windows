@@ -17,6 +17,7 @@ import { slicePeaks } from '../../../shared/audio/waveform';
 import { getWaveformPeaks } from '../../lib/waveform-cache';
 import { filmstripLayout } from '../../../shared/media/filmstrip';
 import { getFilmstrip } from '../../lib/filmstrip-cache';
+import { normalizeGain } from '../../../shared/audio/normalize';
 import { useMediaPanelStore } from '../../store/media-panel';
 
 interface TimelineClipProps {
@@ -61,6 +62,37 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   const setClipSpeed = useTimelineStore((s) => s.setClipSpeed);
   const setClipPan = useTimelineStore((s) => s.setClipPan);
   const selectedCount = selectedClipIds.size;
+
+  // ─── Normalize audio (R5) ────────────────────────────────────────────────
+  const [normalizing, setNormalizing] = useState(false);
+  async function handleNormalize() {
+    setMenuPos(null);
+    if (!asset) return;
+    setNormalizing(true);
+    try {
+      const analysis = await window.palmier.media.volumeAnalysis(asset.path);
+      if (!analysis.success) {
+        console.warn('[normalize]', analysis.error);
+        return;
+      }
+      // Target −3 dBFS peak; gain is applied through clip volume.
+      const targetDb = -3;
+      const currentPeakDb = analysis.maxVolumeDb ?? 0;
+      const gain = normalizeGain(currentPeakDb, targetDb);
+      const newVolume = Math.min(1, Math.max(0, (clip.volume ?? 1) * gain));
+      controller.applyClipProperties(
+        [clip.id],
+        'Normalize audio',
+        (draft) => {
+          draft.volume = newVolume;
+          return true;
+        },
+      );
+    } finally {
+      setNormalizing(false);
+    }
+  }
+
   const canDetach = clip.linkGroupId !== undefined;
   const canRelink =
     isSelected && selectedCount >= 2
@@ -558,6 +590,15 @@ export function TimelineClip({ clip }: TimelineClipProps) {
                         Pan {label}
                       </button>
                     ))}
+                    <div className="my-0.5 h-px bg-white/10" />
+                    <button
+                      role="menuitem"
+                      disabled={normalizing}
+                      onClick={handleNormalize}
+                      className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:text-text-muted"
+                    >
+                      {normalizing ? 'Normalizing…' : 'Normalize volume'}
+                    </button>
                   </>
                 ) : (
                   <>

@@ -6,7 +6,10 @@
  * Runs entirely on-device — no AI/transcription dependency.
  */
 
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 import { ipcMain } from 'electron';
 import {
   detectSilentRanges,
@@ -137,6 +140,34 @@ export function registerAudioHandlers(): void {
       return { success: true, peaks: bucketPeaks(envelope, count) };
     } catch (err: any) {
       return { success: false, error: err.message };
+    }
+  });
+
+  // ─── Volume analysis for normalization (R5) ────────────────────────────────
+  ipcMain.handle('audio:volume-analysis', async (_event, filePath: unknown) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      return { success: false, error: 'No media file supplied.' };
+    }
+    try {
+      const { stderr } = await execFileAsync(
+        'ffmpeg',
+        ['-i', filePath, '-af', 'volumedetect', '-f', 'null', '-'],
+      );
+      // volumedetect writes its summary to stderr
+      const output = typeof stderr === 'string' ? stderr : '';
+      const maxMatch = output.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
+      const meanMatch = output.match(/mean_volume:\s*(-?[\d.]+)\s*dB/);
+      if (!maxMatch) {
+        return { success: false, error: 'No audio stream detected.' };
+      }
+      return {
+        success: true,
+        maxVolumeDb: parseFloat(maxMatch[1]),
+        meanVolumeDb: meanMatch ? parseFloat(meanMatch[1]) : null,
+      };
+    } catch (err: any) {
+      const message = err?.message ?? 'Volume analysis failed.';
+      return { success: false, error: message };
     }
   });
 
