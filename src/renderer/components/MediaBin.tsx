@@ -416,9 +416,26 @@ function SourcePlaceStrip() {
   const [mode, setMode] = useState<'overwrite' | 'insert' | 'append'>('overwrite');
   const [trackId, setTrackId] = useState('');
   const activeTrackId = trackId || compatibleTracks[0]?.id || '';
-
   if (!placeable) return null;
   const maxSeconds = asset.duration > 0 ? asset.duration / fps : Infinity;
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Source-monitor In/Out: capture the <video> element's current playhead.
+  const setInFromVideo = useCallback(() => {
+    if (videoRef.current) setInSec(videoRef.current.currentTime.toFixed(2));
+  }, []);
+  const setOutFromVideo = useCallback(() => {
+    if (!videoRef.current) return;
+    let t = videoRef.current.currentTime;
+    if (inSec !== '' && Number.isFinite(Number(inSec)) && t <= Number(inSec)) {
+      t = Math.min(maxSeconds, Number(inSec) + 0.1);
+    }
+    setOutSec(t.toFixed(2));
+  }, [inSec, maxSeconds]);
+
+  function fileUrl(p: string): string {
+    return encodeURI(`file:///${p.replace(/\\/g, '/')}`).replace(/#/g, '%23');
+  }
 
   function handlePlace() {
     if (!asset || !activeTrackId) return;
@@ -449,9 +466,40 @@ function SourcePlaceStrip() {
 
   return (
     <div
-      className="mb-2 flex flex-wrap items-center gap-1.5 rounded border border-white/10 bg-surface-2 px-2 py-1.5"
+      className="mb-2 flex flex-col gap-1.5 rounded border border-white/10 bg-surface-2 px-2 py-1.5"
       data-source-place-strip
     >
+      {/* Source monitor (video assets): native playback + In/Out capture */}
+      {asset?.type === 'video' && (
+        <div className="flex flex-col gap-1" data-source-monitor>
+          <video
+            ref={videoRef}
+            src={fileUrl(asset.path)}
+            controls
+            className="w-full rounded bg-black"
+            style={{ maxHeight: 200 }}
+          />
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={setInFromVideo}
+              className="rounded border border-white/15 px-2 py-0.5 text-[9px] text-text-secondary hover:bg-white/10"
+              title="Set source In at the video's current position"
+            >
+              Set In here
+            </button>
+            <button
+              type="button"
+              onClick={setOutFromVideo}
+              className="rounded border border-white/15 px-2 py-0.5 text-[9px] text-text-secondary hover:bg-white/10"
+              title="Set source Out at the video's current position"
+            >
+              Set Out here
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
       <span className="text-[9px] font-semibold uppercase tracking-wide text-text-muted">
         Source
       </span>
@@ -496,6 +544,7 @@ function SourcePlaceStrip() {
       >
         Place at playhead
       </button>
+      </div>
     </div>
   );
 }
