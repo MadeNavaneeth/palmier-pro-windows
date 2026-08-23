@@ -120,6 +120,15 @@ export interface Clip {
    * shared source-time mapping. Visual clips only.
    */
   speed?: number;
+  // ─── Color grading basics (R4) ──────────────────────────────────────────
+  /** Brightness adjustment, -1 (black) to 1 (white overlay). Default 0. */
+  brightness?: number;
+  /** Contrast multiplier. Default 1 (no change); 0 = flat grey. */
+  contrast?: number;
+  /** Saturation multiplier. Default 1 (no change); 0 = greyscale. */
+  saturation?: number;
+  /** Hue rotation in degrees, -180 to 180. Default 0. */
+  hueRotation?: number;
 }
 
 export type TrackType = 'video' | 'audio';

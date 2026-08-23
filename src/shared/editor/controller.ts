@@ -52,6 +52,7 @@ import {
   sanitizeTitleText,
 } from './title';
 import { parseSrt } from './srt';
+import { colorGradeOf } from './color-grade';
 
 /**
  * One copied clip and its position relative to the copy anchor  the
@@ -1603,6 +1604,15 @@ export class EditorController {  private project: Project;
                 ...(source.blendMode !== undefined || target.blendMode !== undefined
                   ? { blendMode: source.blendMode }
                   : {}),
+                // Color grading (R4): transfer non-default fields only.
+                ...(colorGradeOf(source)
+                  ? {
+                      brightness: source.brightness,
+                      contrast: source.contrast,
+                      saturation: source.saturation,
+                      hueRotation: source.hueRotation,
+                    }
+                  : {}),
               };
       }
       replacements.set(id, next);
@@ -1620,6 +1630,10 @@ export class EditorController {  private project: Project;
         || a.scaleX !== b.scaleX
         || a.scaleY !== b.scaleY
         || (a.blendMode ?? null) !== (b.blendMode ?? null)
+        || (a.brightness ?? null) !== (b.brightness ?? null)
+        || (a.contrast ?? null) !== (b.contrast ?? null)
+        || (a.saturation ?? null) !== (b.saturation ?? null)
+        || (a.hueRotation ?? null) !== (b.hueRotation ?? null)
       );
     };
 

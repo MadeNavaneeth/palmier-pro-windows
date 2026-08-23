@@ -21,6 +21,7 @@ import {
 } from '../../shared/media/source-time';
 import { selectExportClips } from '../../shared/media/export-eligibility';
 import { escapeDrawtext } from '../../shared/editor/title';
+import { colorGradeOf, toFfmpegEq } from '../../shared/editor/color-grade';
 import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
 
 export interface ExportArgOptions {
@@ -383,9 +384,17 @@ function buildFilterGraph(
     // `overlay` runs on the base input's timebase, so a 60 fps source dropped
     // onto a 30 fps canvas otherwise queues two source frames per output frame
     // and the encode crawls or stalls on long 4K clips (#68).
-    filters.push(
-      `[${trimmedLabel}]fps=${fps},scale=${scaledW}:${scaledH}:flags=bilinear,format=rgba${fadeChain}[${scaledLabel}]`,
-    );
+      // Color grading (R4): eq filter after scale, before fades.
+      const grade = colorGradeOf(clip);
+      let colorChain = '';
+      if (grade) {
+        const eq = toFfmpegEq(grade);
+        if (eq) colorChain = `,${eq}`;
+      }
+
+      filters.push(
+        `[${trimmedLabel}]fps=${fps},scale=${scaledW}:${scaledH}:flags=bilinear,format=rgba${colorChain}${fadeChain}[${scaledLabel}]`,
+      );
 
     // Overlay with enable condition (time window)
     filters.push(

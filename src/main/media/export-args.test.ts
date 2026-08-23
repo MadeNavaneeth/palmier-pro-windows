@@ -90,6 +90,29 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
     expect(args).toContain('h264_nvenc');
   });
 
+  // ─── Color grading (R4) ──────────────────────────────────────────────────
+
+  it('emits eq filter for color-graded clips and omits it for ungraded ones', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [
+        {
+          type: 'video', assetId: 'v', startFrame: 0, durationFrames: 100,
+          brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45,
+        },
+      ],
+    );
+    const graded = build(project).find((arg) => arg.includes('trim='))!;
+    expect(graded).toContain('eq=brightness=-0.150000:contrast=1.300000:saturation=0.600000:hue=h=45.0');
+
+    const plain = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{ type: 'video', assetId: 'v' }],
+    );
+    const plainArgs = build(plain).find((arg) => arg.includes('trim='))!;
+    expect(plainArgs).not.toContain('eq=');
+  });
+
   // ─── Title drawtext (R3) ──────────────────────────────────────────────────
 
   it('emits escaped, centered, time-gated drawtext for title clips', () => {

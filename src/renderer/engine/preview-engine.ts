@@ -14,6 +14,7 @@
 
 import type { Clip, Frame, Project, ProjectSettings } from '../../shared/types/project';
 import { frameToSeconds } from '../../shared/utils/time';
+import { colorGradeOf, toCanvasFilter } from '../../shared/editor/color-grade';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -315,6 +316,11 @@ export class PreviewEngine {
     // Apply transforms
     this.ctx.save();
     this.ctx.globalAlpha = clip.opacity;
+    // Color grading (R4): Chromium canvas filter matches FFmpeg eq filter.
+    const grade = colorGradeOf(clip);
+    if (grade) {
+      this.ctx.filter = toCanvasFilter(grade);
+    }
 
     // Transform: translate to position, rotate around anchor, scale
     const cx = clip.x + clip.anchorX;
