@@ -232,6 +232,17 @@ export function buildFfmpegArgs(
       if (delayMs > 0) {
         chain += `,adelay=${delayMs}:all=1`;
       }
+      // Audio fades mirror the clip's visual fade fields so audio clips
+      // sound professional without a separate mixing pass (R5).
+      if (clip.fadeInFrames && clip.fadeInFrames > 0) {
+        const d = clip.fadeInFrames / fps;
+        chain += `,afade=t=in:st=0:d=${d.toFixed(4)}`;
+      }
+      if (clip.fadeOutFrames && clip.fadeOutFrames > 0) {
+        const st = Math.max(0, (clip.durationFrames - clip.fadeOutFrames) / fps);
+        const d = clip.fadeOutFrames / fps;
+        chain += `,afade=t=out:st=${st.toFixed(4)}:d=${d.toFixed(4)}`;
+      }
       const label = `a${labels.length}`;
       filters.push(`${chain}[${label}]`);
       labels.push(`[${label}]`);

@@ -184,6 +184,58 @@ export class ToolExecutor {
         }
       }
 
+      case 'add_texts': {
+        try {
+          const results: Array<{ clipId: string; text: string }> = [];
+          const errors: string[] = [];
+          for (const entry of args.entries) {
+            const clipId = this.editor.addTitleClip({
+              trackId: entry.trackId,
+              startFrame: entry.startFrame,
+              durationFrames: entry.durationFrames,
+              text: entry.text,
+            });
+            if (!clipId) {
+              errors.push(`entries[${results.length}]: could not place title on track "${entry.trackId}".`);
+              continue;
+            }
+            if (entry.fontSize !== undefined || entry.color !== undefined) {
+              this.editor.applyClipProperties([clipId], 'Style title', (draft) => {
+                if (entry.fontSize !== undefined) {
+                  draft.titleSizeRatio = entry.fontSize / this.editor.getProject().settings.height;
+                }
+                if (entry.color !== undefined) draft.titleColor = entry.color;
+                return true;
+              });
+            }
+            results.push({ clipId, text: entry.text });
+          }
+          if (errors.length > 0 && results.length === 0) {
+            return { success: false, error: errors[0] };
+          }
+          return { success: true, data: { added: results, errors } };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Title creation failed.',
+          };
+        }
+      }
+
+      case 'set_title_text': {
+        try {
+          const ok = this.editor.setTitleText(args.clipId, args.text);
+          return ok
+            ? { success: true, data: { updated: args.clipId } }
+            : { success: false, error: 'Clip not found, is not a title, or text is invalid.' };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Text update failed.',
+          };
+        }
+      }
+
       case 'manage_tracks': {
         try {
           const receipt = this.editor.manageTracks({

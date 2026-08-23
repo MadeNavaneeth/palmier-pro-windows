@@ -326,6 +326,34 @@ export const tools = {
     ),
   },
 
+  addTexts: {
+    name: 'add_texts',
+    description:
+      'Add one or more title text clips to the timeline. Titles are centered on screen '
+      + 'and render in preview plus export. Each entry needs trackId, startFrame, durationFrames and text.',
+    parameters: z.object({
+      entries: z.array(z.object({
+        trackId: z.string().describe('Target video track ID.'),
+        startFrame: frameSchema.describe('Frame position where the title should start.'),
+        durationFrames: frameSchema.describe('Duration in frames.'),
+        text: z.string().min(1).max(300).describe('Title text.'),
+        fontSize: z.number().finite().min(8).max(400).optional()
+          .describe('Font size in pixels. Defaults to ~9% of project height.'),
+        color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional()
+          .describe('Text color as #RRGGBB. Defaults to white.'),
+      })).min(1).describe('Titles to add.'),
+    }),
+  },
+
+  setTitleTextTool: {
+    name: 'set_title_text',
+    description: "Update the text content of an existing title clip.",
+    parameters: z.object({
+      clipId: z.string().describe('The title clip to update.'),
+      text: z.string().min(1).max(300).describe('New title text.'),
+    }),
+  },
+
   manageTracks: {
     name: 'manage_tracks',
     description:
