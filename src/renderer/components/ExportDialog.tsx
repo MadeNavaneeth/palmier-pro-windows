@@ -81,6 +81,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [outputPath, setOutputPath] = useState<string | null>(null);
+  const [outputBytes, setOutputBytes] = useState<number | null>(null);
 
   // Subscribe to export events
   useEffect(() => {
@@ -90,8 +91,9 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       setProgress(data as ExportProgress);
     });
     const unsubComplete = window.palmier.on('export:complete', (data: unknown) => {
-      const d = data as { outputPath: string };
+      const d = data as { outputPath: string; bytes: number };
       setOutputPath(d.outputPath);
+      setOutputBytes(d.bytes ?? null);
       setIsExporting(false);
     });
     const unsubError = window.palmier.on('export:error', (msg: unknown) => {
@@ -239,7 +241,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             </div>
 
             {/* Quality */}
-            <div className="mb-4">
+            <div className="mb-2">
               <label className="block text-xs text-text-secondary mb-1.5">Quality</label>
               <div className="flex gap-2">
                 {(['draft', 'normal', 'high'] as Quality[]).map((q) => (
@@ -251,6 +253,13 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                   />
                 ))}
               </div>
+              <p className="mt-1 text-[9px] text-text-muted">
+                {quality === 'draft'
+                  ? 'CRF 28 · fastest render, largest file'
+                  : quality === 'normal'
+                    ? 'CRF 20 · balanced quality and speed'
+                    : 'CRF 16 · best quality, slowest render'}
+              </p>
             </div>
 
             {/* Encoder (MP4 only) */}
@@ -396,6 +405,13 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
               <div>
                 <p className="text-sm text-text-primary">Export complete</p>
                 <p className="text-2xs text-text-muted truncate max-w-[280px]">{outputPath}</p>
+                {outputBytes !== null && (
+                  <p className="text-2xs text-text-secondary">
+                    {outputBytes > 1_048_576
+                      ? `${(outputBytes / 1_048_576).toFixed(1)} MB`
+                      : `${Math.round(outputBytes / 1024)} KB`}
+                  </p>
+                )}
               </div>
             </div>
             {recentExports.length > 1 && (

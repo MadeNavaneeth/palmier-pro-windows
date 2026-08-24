@@ -350,6 +350,18 @@ export const tools = {
     }),
   },
 
+  setClipPanTool: {
+    name: 'set_clip_pan',
+    description:
+      'Set stereo balance on an audio clip. -1 is hard left, +1 is hard right, '
+      + '0 is center (default). Visual clips are refused.',
+    parameters: z.object({
+      clipId: z.string().describe('The audio clip whose balance to change.'),
+      pan: z.number().finite().min(-1).max(1)
+        .describe('Stereo balance: -1 = hard left, 0 = center, +1 = hard right.'),
+    }),
+  },
+
   addTexts: {
     name: 'add_texts',
     description:

@@ -365,6 +365,20 @@ export class ToolExecutor {
         }
       }
 
+      case 'set_clip_pan': {
+        try {
+          const ok = this.editor.setClipPan(args.clipId, args.pan);
+          return ok
+            ? { success: true, data: { clipId: args.clipId, pan: args.pan } }
+            : { success: false, error: 'Clip not found or is not an audio clip.' };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Pan change failed.',
+          };
+        }
+      }
+
       case 'manage_tracks': {
         try {
           const receipt = this.editor.manageTracks({
