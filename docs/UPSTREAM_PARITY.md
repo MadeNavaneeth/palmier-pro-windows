@@ -145,6 +145,7 @@ cluster shares a disposition.
 | Issue #556 | Playback slow to start on sparse timelines | Needs investigation | See the triage table in `UPSTREAM_ISSUES.md`; needs a sparse-timeline first-frame profile here before a disposition |
 | Issue #532 | MCP stateless protocol migration | Planned | Relevant to `main/ai/mcp-server.ts` for headless/remote clients; grouped with the #302 headless gap |
 | PRs #570, #565, #568 | Generation cost display; inspect-frame grid overlay; static crop in set_clip_properties | Planned | Three small upstream additions. #570 is generation-UI-only (our generate_media is still a stub). #565 requires upstream's inspect_frame tool which this port does not have. #568 adds crop fields to the clip model and compositor -- meaningful but needs its own scoping session alongside the R4 color work. None affect existing functionality |
+| PRs #569–#572 | Agent generation model recommendations (Seedance 2.5, GPT Image, Seedream, MiniMax H3) | N/A platform | Agent system prompt text recommending generation models. Our generate_media is still a stub -- these recommendations only apply once the R6 provider registry exists |
 
 This table is deliberately concise. Add rows whenever an upstream change is
 adopted, deferred, rejected, or found to expose a Windows regression.
