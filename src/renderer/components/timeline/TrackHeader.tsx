@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   Eye,
   EyeOff,
   Link2,
   LockKeyhole,
   LockKeyholeOpen,
+  Trash2,
   Unlink2,
   Volume2,
   VolumeX,
@@ -24,6 +27,7 @@ export function TrackHeader({ track }: TrackHeaderProps) {
   const setTrackSyncLocked = useTimelineStore((state) => state.setTrackSyncLocked);
   const setTrackName = useTimelineStore((state) => state.setTrackName);
   const selectAllClipsOnTrack = useTimelineStore((state) => state.selectAllClipsOnTrack);
+  const controller = useTimelineStore((state) => state.controller);
   const clipCount = useTimelineStore(
     (state) => state.getClips().filter((clip) => clip.trackId === track.id).length,
   );
@@ -161,9 +165,71 @@ export function TrackHeader({ track }: TrackHeaderProps) {
             >
               Rename track
             </button>
+            <MoveUpDownItems track={track} onDone={() => setMenuOpen(false)} />
+            {clipCount === 0 && (
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  try {
+                    controller.manageTracks({ remove: [track.id] });
+                  } catch {
+                    // Last-of-type refusal is non-actionable from the menu.
+                  }
+                }}
+                className="block w-full px-2 py-1 text-left text-[10px] text-red-300 hover:bg-red-500/10"
+              >
+                Delete track
+              </button>
+            )}
           </div>
         </>
       )}
     </div>
+  );
+}
+
+function MoveUpDownItems({ track, onDone }: { track: Track; onDone: () => void }) {
+  const controller = useTimelineStore((s) => s.controller);
+  const allTracks = controller.getTracks();
+  const sameType = allTracks.filter((t) => t.type === track.type);
+  if (sameType.length <= 1) return null;
+
+  const idx = sameType.findIndex((t) => t.id === track.id);
+  const canUp = idx > 0;
+  const canDown = idx < sameType.length - 1;
+  if (!canUp && !canDown) return null;
+
+  const move = (dir: -1 | 1): void => {
+    onDone();
+    // Swap with the adjacent same-type track via manageTracks reorder.
+    const target = sameType[idx + dir];
+    if (!target) return;
+    // manageTracks reorder uses absolute array index.
+    const absTarget = allTracks.findIndex((t) => t.id === target.id);
+    try {
+      controller.manageTracks({ reorder: [{ trackId: track.id, to: absTarget }] });
+    } catch { /* non-actionable */ }
+  };
+
+  return (
+    <>
+      <button
+        role="menuitem"
+        disabled={!canUp}
+        onClick={() => move(-1)}
+        className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:text-text-muted disabled:hover:bg-transparent"
+      >
+        Move up
+      </button>
+      <button
+        role="menuitem"
+        disabled={!canDown}
+        onClick={() => move(1)}
+        className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:text-text-muted disabled:hover:bg-transparent"
+      >
+        Move down
+      </button>
+    </>
   );
 }
