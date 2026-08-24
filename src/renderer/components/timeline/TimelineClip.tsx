@@ -451,6 +451,33 @@ export function TimelineClip({ clip }: TimelineClipProps) {
         </div>
       )}
 
+      {/* Edit-state badges: speed, pan, color grade visible at a glance */}
+      {(clip.speed !== undefined && clip.speed !== 1
+        || (clip.pan !== undefined && clip.pan !== 0)
+        || clip.brightness !== undefined || clip.contrast !== undefined
+        || clip.saturation !== undefined || clip.hueRotation !== undefined) && (
+        <div className="absolute bottom-0.5 left-1 z-10 flex items-center gap-0.5 pointer-events-none">
+          {clip.speed !== undefined && clip.speed !== 1 && (
+            <span className="rounded-sm bg-indigo-900/80 px-0.5 font-mono text-[7px] text-indigo-200" title={`Speed ${clip.speed}×`}>
+              {clip.speed}×
+            </span>
+          )}
+          {clip.pan !== undefined && clip.pan !== 0 && (
+            <span className="rounded-sm bg-sky-900/80 px-0.5 text-[7px] text-sky-200" title={`Pan ${clip.pan > 0 ? 'R' : 'L'}${Math.abs(clip.pan).toFixed(1)}`}>
+              {clip.pan > 0 ? '▶' : '◀'}
+            </span>
+          )}
+          {(clip.brightness || clip.contrast !== undefined && clip.contrast !== 1
+            || clip.saturation !== undefined && clip.saturation !== 1
+            || clip.hueRotation) && (
+            <span className="h-2 w-2 rounded-full border border-white/30" style={{
+              background: `conic-gradient(from 0deg, #ef4444, #eab308, #22c55e, #3b82f6, #ef4444)`,
+              opacity: 0.8,
+            }} title="Color graded" />
+          )}
+        </div>
+      )}
+
       {/* Clip content */}
       <div className="flex-1 min-w-0 px-1.5 py-0.5">
         {clip.type === 'title' && editingTitle !== null ? (
