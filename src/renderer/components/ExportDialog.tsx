@@ -62,6 +62,38 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
   const [format, setFormat] = useState<Format>('mp4');
   const [quality, setQuality] = useState<Quality>('normal');
+  const [resIdx, setResIdx] = useState(0);
+
+  // Restore last-used export settings once per open.
+  useEffect(() => {
+    if (!isOpen) return;
+    try {
+      const saved = localStorage.getItem('palmier.export.settings');
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as Partial<{ format: Format; quality: Quality; resIdx: number }>;
+      if (parsed.format && ['mp4', 'mov', 'webm', 'audio'].includes(parsed.format)) {
+        setFormat(parsed.format as Format);
+      }
+      if (parsed.quality && ['draft', 'normal', 'high'].includes(parsed.quality)) {
+        setQuality(parsed.quality as Quality);
+      }
+      if (typeof parsed.resIdx === 'number' && parsed.resIdx >= 0 && parsed.resIdx < RESOLUTIONS.length) {
+        setResIdx(parsed.resIdx);
+      }
+    } catch {
+      // Corrupted settings fall through to defaults.
+    }
+  }, [isOpen]);
+
+  // Persist settings whenever they change while the dialog is open.
+  useEffect(() => {
+    if (!isOpen) return;
+    try {
+      localStorage.setItem('palmier.export.settings',
+        JSON.stringify({ format, quality, resIdx }));
+    } catch { /* non-critical */ }
+  }, [format, quality, resIdx, isOpen]);
+
   const [hw, setHw] = useState<HwEncoder>('x264');
   const [hwAvailable, setHwAvailable] = useState<HwEncoder[]>([]);
   const [useRange, setUseRange] = useState(false);
@@ -76,7 +108,6 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const [exportCaptions, setExportCaptions] = useState(true);
   const [presets, setPresets] = useState<ExportPreset[]>([]);
   const [recentExports, setRecentExports] = useState<ExportHistoryEntry[]>([]);
-  const [resIdx, setResIdx] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
