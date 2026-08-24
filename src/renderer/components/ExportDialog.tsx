@@ -102,6 +102,18 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const hasRange = inFrame !== undefined && outFrame !== undefined && inFrame !== outFrame;
   const rangeStart = hasRange ? Math.min(inFrame!, outFrame!) : 0;
   const rangeEnd = hasRange ? Math.max(inFrame!, outFrame!) : 0;
+
+  // Estimated duration: full timeline or the selected In/Out range.
+  const clips = useTimelineStore((s) => s.project.timeline.clips);
+  const durationFrames = useTimelineStore((s) => s.getProjectDuration());
+  const effectiveDurationFrames = useRange && hasRange ? rangeEnd - rangeStart : durationFrames;
+  const durationSec = effectiveDurationFrames / projectFps;
+  const estimatedSizeMb = format === 'audio'
+    ? (durationSec * 192 / 8 / 1024)
+    : (() => {
+      const bitrateMbps = quality === 'draft' ? 4 : quality === 'normal' ? 10 : 20;
+      return (durationSec * bitrateMbps) / 8;
+    })();
   const hasTitles = useTimelineStore((s) =>
     s.project.timeline.clips.some((c) => c.type === 'title' && c.text),
   );
@@ -113,6 +125,9 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const [error, setError] = useState<string | null>(null);
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [outputBytes, setOutputBytes] = useState<number | null>(null);
+  const res = RESOLUTIONS[resIdx];
+  const width = res.width || projectWidth;
+  const height = res.height || projectHeight;
 
   // Subscribe to export events
   useEffect(() => {
@@ -196,10 +211,6 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     setOutputPath(null);
     setProgress(null);
     setIsExporting(true);
-
-    const res = RESOLUTIONS[resIdx];
-    const width = res.width || projectWidth;
-    const height = res.height || projectHeight;
 
     const ext =
       format === 'audio' ? 'm4a' : format === 'mov' ? 'mov' : format === 'webm' ? 'webm' : 'mp4';
@@ -373,6 +384,28 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 </label>
               </div>
             )}
+
+            {/* Duration & estimated size */}
+            <div className="mb-4 rounded border border-surface-3 bg-surface-2 px-3 py-2 text-xs text-text-secondary">
+              <div className="flex justify-between">
+                <span>Duration</span>
+                <span className="font-mono">{Math.floor(durationSec / 60)}:{String(Math.round(durationSec % 60)).padStart(2, '0')}</span>
+              </div>
+              {format !== 'audio' && (
+                <div className="flex justify-between">
+                  <span>Resolution</span>
+                  <span className="font-mono">{width}×{height}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span>Est. size</span>
+                <span className="font-mono">
+                  {estimatedSizeMb > 1024
+                    ? `${(estimatedSizeMb / 1024).toFixed(1)} GB`
+                    : `${Math.round(estimatedSizeMb)} MB`}
+                </span>
+              </div>
+            </div>
 
             {/* Error message */}
             {error && (
