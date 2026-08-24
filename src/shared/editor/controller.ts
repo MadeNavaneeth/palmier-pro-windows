@@ -52,6 +52,7 @@ import {
   sanitizeTitleText,
 } from './title';
 import { parseSrt } from './srt';
+import { parseVtt } from './vtt-parse';
 import { colorGradeOf } from './color-grade';
 import { migrateProject, CURRENT_SCHEMA_VERSION } from './migrations';
 
@@ -1953,6 +1954,19 @@ export class EditorController {  private project: Project;
    * with zero usable cues adds no history entry and returns [].
    */
   importSrt(trackId: string, srtContent: string, startFrame?: Frame): string[] {
+    return this.importSubtitleContent(trackId, parseSrt(srtContent), startFrame);
+  }
+
+  /** Import WebVTT subtitle content as title clips (roadmap R3). */
+  importVtt(trackId: string, vttContent: string, startFrame?: Frame): string[] {
+    return this.importSubtitleContent(trackId, parseVtt(vttContent), startFrame);
+  }
+
+  private importSubtitleContent(
+    trackId: string,
+    cues: Array<{ startSec: number; endSec: number; text: string }>,
+    startFrame?: Frame,
+  ): string[] {
     const track = this.project.timeline.tracks.find((t) => t.id === trackId);
     if (!track || track.type !== 'video' || track.locked) return [];
 
@@ -1961,7 +1975,7 @@ export class EditorController {  private project: Project;
     const newIds: string[] = [];
     const created: Clip[] = [];
 
-    for (const cue of parseSrt(srtContent)) {
+    for (const cue of cues) {
       const text = sanitizeTitleText(cue.text);
       if (!text) continue;
       const start = clampFrame(base + Math.round(cue.startSec * fps));

@@ -15,6 +15,7 @@ import {
   isAssetCompatibleWithTrack,
 } from '../../lib/dnd';
 import { parseSrt } from '../../../shared/editor/srt';
+import { parseVtt } from '../../../shared/editor/vtt-parse';
 import { useProjectStore } from '../../store/project';
 
 interface TimelineTrackProps {
@@ -117,18 +118,21 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
           return;
         }
 
-        // SRT files dropped on a video track import as caption clips (R3).
-        const srtPaths = paths.filter((p) => p.toLowerCase().endsWith('.srt'));
-        const mediaPaths = paths.filter((p) => !p.toLowerCase().endsWith('.srt'));
-        for (const srtPath of srtPaths) {
+        // SRT and VTT files dropped on a video track import as caption clips (R3).
+        const srtPaths = paths.filter((p) => /\.(srt|vtt)$/i.test(p));
+        const mediaPaths = paths.filter((p) => !/\.(srt|vtt)$/i.test(p));
+        for (const subPath of srtPaths) {
           if (track.type !== 'video') {
             setDropError('Subtitles drop on a video track.');
             continue;
           }
           try {
-            const response = await fetch(`file:///${encodeURI(srtPath).replace(/#/g, '%23')}`);
+            const response = await fetch(`file:///${encodeURI(subPath).replace(/#/g, '%23')}`);
             const content = await response.text();
-            const ids = controller.importSrt(track.id, content, frame);
+            const isVtt = subPath.toLowerCase().endsWith('.vtt');
+            const ids = isVtt
+              ? controller.importVtt(track.id, content, frame)
+              : controller.importSrt(track.id, content, frame);
             if (ids.length > 0) {
               useTimelineStore.setState({ selectedClipIds: new Set(ids) });
               useProjectStore.getState().markDirty();
@@ -136,7 +140,7 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
               setDropError('No usable subtitles found in that file.');
             }
           } catch {
-            setDropError(`Could not read ${srtPath.split(/[\\/]/).pop()}.`);
+            setDropError(`Could not read ${subPath.split(/[\\/]/).pop()}.`);
           }
         }
         if (mediaPaths.length === 0) return;
