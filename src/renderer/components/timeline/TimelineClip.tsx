@@ -18,6 +18,7 @@ import { getWaveformPeaks } from '../../lib/waveform-cache';
 import { filmstripLayout } from '../../../shared/media/filmstrip';
 import { getFilmstrip } from '../../lib/filmstrip-cache';
 import { normalizeGain } from '../../../shared/audio/normalize';
+import { frameToTimecode } from '../../../shared/utils/time';
 import { useMediaPanelStore } from '../../store/media-panel';
 
 interface TimelineClipProps {
@@ -388,7 +389,15 @@ export function TimelineClip({ clip }: TimelineClipProps) {
             width: `${fadeInPx}px`,
             background: 'linear-gradient(to right, rgba(0,0,0,0.65), transparent)',
           }}
-        />
+        >
+          {fadeInPx > 30 && (
+            <span className="absolute bottom-0.5 left-1 text-[7px] text-white/40 font-mono">
+              {(clip.fadeInFrames ?? 0) / fps > 0.95
+                ? `${Math.round((clip.fadeInFrames ?? 0) / fps)}s`
+                : `${((clip.fadeInFrames ?? 0) / fps).toFixed(1)}s`}
+            </span>
+          )}
+        </div>
       )}
 
       {/* Fade-out ramp */}
@@ -399,7 +408,15 @@ export function TimelineClip({ clip }: TimelineClipProps) {
             width: `${fadeOutPx}px`,
             background: 'linear-gradient(to left, rgba(0,0,0,0.65), transparent)',
           }}
-        />
+        >
+          {fadeOutPx > 30 && (
+            <span className="absolute bottom-0.5 right-1 text-[7px] text-white/40 font-mono">
+              {(clip.fadeOutFrames ?? 0) / fps > 0.95
+                ? `${Math.round((clip.fadeOutFrames ?? 0) / fps)}s`
+                : `${((clip.fadeOutFrames ?? 0) / fps).toFixed(1)}s`}
+            </span>
+          )}
+        </div>
       )}
 
       {/* Offline state: the source file is gone; relink from the media panel */}
@@ -516,7 +533,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
             )}
             {width > 80 && (
               <span className="block truncate text-2xs text-white/50">
-                {clip.durationFrames}f
+                {frameToTimecode(clip.durationFrames, fps)}
               </span>
             )}
           </>
