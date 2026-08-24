@@ -165,6 +165,18 @@ export function TrackHeader({ track }: TrackHeaderProps) {
             >
               Rename track
             </button>
+            {isAudio && clipCount > 0 && (
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  useTimelineStore.getState().autoCrossfadeAudio(track.id);
+                }}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Auto-crossfade audio
+              </button>
+            )}
             <MoveUpDownItems track={track} onDone={() => setMenuOpen(false)} />
             {clipCount === 0 && (
               <button

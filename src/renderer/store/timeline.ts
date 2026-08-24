@@ -178,8 +178,10 @@ export interface TimelineState {
   setTitleText: (clipId: string, text: string) => boolean;
   /** Constant playback speed on a visual clip (R4 groundwork). */
   setClipSpeed: (clipId: string, speed: number) => boolean;
-  /** Stereo balance on an audio clip, -1 left Ã¢â‚¬Â¦ +1 right (R5). */
+  /** Stereo balance on an audio clip, -1 left … +1 right (R5). */
   setClipPan: (clipId: string, pan: number) => boolean;
+  /** Auto-crossfade adjacent audio clips on a track (R5). */
+  autoCrossfadeAudio: (trackId: string) => number;
 
   // Clipboard (R1)
   copySelectedClips: () => number;
@@ -581,6 +583,14 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       return get().controller.setClipPan(clipId, pan);
     } catch {
       return false;
+    }
+  },
+
+  autoCrossfadeAudio: (trackId) => {
+    try {
+      return get().controller.autoCrossfadeAudio(trackId);
+    } catch {
+      return -1;
     }
   },
 

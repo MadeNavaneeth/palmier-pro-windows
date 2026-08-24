@@ -1998,6 +1998,42 @@ export class EditorController {  private project: Project;
     return newIds;
   }
 
+  /**
+   * Apply short equal-length audio fades at every hard boundary between
+   * adjacent audio clips on the given track, preventing clicks at edit
+   * points. One undoable step. Returns count of boundaries crossfaded.
+   */
+  autoCrossfadeAudio(trackId: string, fadeFrames?: Frame): number {
+    const track = this.project.timeline.tracks.find((t) => t.id === trackId);
+    if (!track || track.type !== 'audio') return -1;
+
+    const clips = this.project.timeline.clips
+      .filter((c) => c.trackId === trackId && !c.muted)
+      .sort((a, b) => a.startFrame - b.startFrame);
+    if (clips.length < 2) return -1;
+
+    const fade = Math.min(fadeFrames ?? Math.round(this.project.settings.fps * 0.05), Math.round(this.project.settings.fps * 0.25));
+    const nextClips = clips.map((c) => ({ ...c }));
+    let changedCount = 0;
+
+    for (let i = 0; i < nextClips.length; i += 1) {
+      if (!nextClips[i].fadeOutFrames || nextClips[i].fadeOutFrames === 0) {
+        nextClips[i].fadeOutFrames = fade;
+        changedCount += 1;
+      }
+      if (i + 1 < nextClips.length && (!nextClips[i + 1].fadeInFrames || nextClips[i + 1].fadeInFrames === 0)) {
+        nextClips[i + 1].fadeInFrames = fade;
+        changedCount += 1;
+      }
+    }
+    if (changedCount === 0) return 0;
+
+    const clipMap = new Map(nextClips.map((c) => [c.id, c]));
+    const merged = this.project.timeline.clips.map((c) => clipMap.get(c.id) ?? c);
+    this.execute(new ReplaceClipsCommand(merged, 'Auto-crossfade audio'));
+    return changedCount;
+  }
+
   getMarkers(): TimelineMarker[] {
     return this.project.timeline.markers ?? [];
   }
