@@ -401,6 +401,19 @@ export const tools = {
     }),
   },
 
+  importVttTool: {
+    name: 'import_vtt',
+    description:
+      'Import WebVTT subtitle content as title clips on a video track. Same behavior '
+      + 'as import_srt but for the WebVTT format.',
+    parameters: z.object({
+      trackId: z.string().describe('Target video track ID.'),
+      vttContent: z.string().min(1).describe('Raw WebVTT file content.'),
+      startFrame: frameSchema.optional()
+        .describe('Frame where the first cue should land. Defaults to playhead.'),
+    }),
+  },
+
   setTitleTextTool: {
     name: 'set_title_text',
     description: "Update the text and/or style of an existing title clip.",

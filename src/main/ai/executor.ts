@@ -331,6 +331,50 @@ export class ToolExecutor {
         return { success: true, data: { importedClipIds: ids, count: ids.length } };
       }
 
+      case 'import_srt': {
+        const track = this.editor.getTracks().find((t) => t.id === args.trackId);
+        if (!track) {
+          return { success: false, error: `No track "${args.trackId}" on this timeline.` };
+        }
+        if (track.type !== 'video') {
+          return { success: false, error: 'SRT import requires a video track.' };
+        }
+        if (track.locked) {
+          return { success: false, error: `Track "${track.name}" is locked.` };
+        }
+        const ids = this.editor.importSrt(
+          args.trackId,
+          args.srtContent,
+          args.startFrame,
+        );
+        if (ids.length === 0) {
+          return { success: false, error: 'No usable subtitles found in that SRT content.' };
+        }
+        return { success: true, data: { importedClipIds: ids, count: ids.length } };
+      }
+
+      case 'import_vtt': {
+        const vt = this.editor.getTracks().find((t) => t.id === args.trackId);
+        if (!vt) {
+          return { success: false, error: `No track "${args.trackId}" on this timeline.` };
+        }
+        if (vt.type !== 'video') {
+          return { success: false, error: 'VTT import requires a video track.' };
+        }
+        if (vt.locked) {
+          return { success: false, error: `Track "${vt.name}" is locked.` };
+        }
+        const vttIds = this.editor.importVtt(
+          args.trackId,
+          args.vttContent,
+          args.startFrame,
+        );
+        if (vttIds.length === 0) {
+          return { success: false, error: 'No usable subtitles found in that VTT content.' };
+        }
+        return { success: true, data: { importedClipIds: vttIds, count: vttIds.length } };
+      }
+
       case 'set_title_text': {
         try {
           const hasStyle = args.fontSize !== undefined || args.color !== undefined

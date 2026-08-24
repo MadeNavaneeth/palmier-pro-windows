@@ -62,6 +62,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   const controller = useTimelineStore((s) => s.controller);
   const setClipSpeed = useTimelineStore((s) => s.setClipSpeed);
   const setClipPan = useTimelineStore((s) => s.setClipPan);
+  const duplicateSelected = useTimelineStore((s) => s.duplicateSelected);
   const selectedCount = selectedClipIds.size;
 
   // ─── Normalize audio (R5) ────────────────────────────────────────────────
@@ -545,6 +546,16 @@ export function TimelineClip({ clip }: TimelineClipProps) {
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
+            <button
+              role="menuitem"
+              onClick={() => {
+                setMenuPos(null);
+                duplicateSelected();
+              }}
+              className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+            >
+              Duplicate
+            </button>
             {canSaveAudio && (
               <button
                 role="menuitem"
