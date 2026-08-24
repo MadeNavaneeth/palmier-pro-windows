@@ -309,6 +309,28 @@ export class ToolExecutor {
         }
       }
 
+      case 'import_srt': {
+        const track = this.editor.getTracks().find((t) => t.id === args.trackId);
+        if (!track) {
+          return { success: false, error: `No track "${args.trackId}" on this timeline.` };
+        }
+        if (track.type !== 'video') {
+          return { success: false, error: 'SRT import requires a video track.' };
+        }
+        if (track.locked) {
+          return { success: false, error: `Track "${track.name}" is locked.` };
+        }
+        const ids = this.editor.importSrt(
+          args.trackId,
+          args.srtContent,
+          args.startFrame,
+        );
+        if (ids.length === 0) {
+          return { success: false, error: 'No usable subtitles found in that SRT content.' };
+        }
+        return { success: true, data: { importedClipIds: ids, count: ids.length } };
+      }
+
       case 'set_title_text': {
         try {
           const hasStyle = args.fontSize !== undefined || args.color !== undefined

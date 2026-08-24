@@ -156,10 +156,25 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
     });
   }, [markers, drag, xOf, width, selectedMarkerIds]);
 
+  const [hoverTimecode, setHoverTimecode] = useState<string | null>(null);
+  const [hoverX, setHoverX] = useState<number | null>(null);
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const frame = Math.max(0, Math.round((e.clientX - rect.left) / viewport.pixelsPerFrame) + viewport.scrollFrame);
+      setHoverTimecode(frameToTimecode(frame, fps));
+      setHoverX(e.clientX - rect.left);
+    },
+    [viewport.pixelsPerFrame, viewport.scrollFrame, fps],
+  );
+
   return (
     <div
       className="relative h-6 border-b border-surface-3 bg-surface-2 cursor-pointer select-none overflow-hidden"
       onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={() => { setHoverTimecode(null); setHoverX(null); }}
     >
       <svg width={width} height={24} className="absolute inset-0">
         {rangeStart !== undefined && rangeEnd !== undefined && rangeEnd > rangeStart && (
@@ -272,6 +287,16 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
           </g>
         ))}
       </svg>
+
+      {/* Hover timecode badge */}
+      {hoverTimecode && hoverX !== null && (
+        <div
+          className="pointer-events-none absolute top-0 z-10 rounded-sm bg-surface-0/90 px-1 py-px font-mono text-[8px] text-text-secondary"
+          style={{ left: Math.min(hoverX + 4, width - 60) }}
+        >
+          {hoverTimecode}
+        </div>
+      )}
 
       {renaming && (
         <input

@@ -376,6 +376,19 @@ export const tools = {
     }),
   },
 
+  importSrtTool: {
+    name: 'import_srt',
+    description:
+      'Import SRT subtitle content as title clips on a video track. Each cue becomes '
+      + 'a timed text overlay. Provide the raw SRT file content.',
+    parameters: z.object({
+      trackId: z.string().describe('Target video track ID.'),
+      srtContent: z.string().min(1).describe('Raw SRT file content (the full text of the .srt file).'),
+      startFrame: frameSchema.optional()
+        .describe('Frame where the first cue should land. Defaults to playhead.'),
+    }),
+  },
+
   setTitleTextTool: {
     name: 'set_title_text',
     description: "Update the text and/or style of an existing title clip.",
