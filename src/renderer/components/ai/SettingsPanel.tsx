@@ -267,6 +267,8 @@ export function SettingsPanel() {
             </div>
           )}
 
+          <GenerationProvidersSection />
+
           {save.status === 'error' && (
             <p role="alert" className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[10px] text-red-400">
               {save.message}
@@ -329,4 +331,114 @@ function Field({
 
 function Hint({ children }: { children: React.ReactNode }) {
   return <p className="mt-1 text-[10px] text-text-muted">{children}</p>;
+}
+
+// ─── Media generation providers (upstream PR #406 family) ───────────────────
+
+interface GenerationProviderInfo {
+  id: string;
+  name: string;
+  supportedTypes: string[];
+  configured: boolean;
+}
+
+function GenerationProvidersSection() {
+  const [providers, setProviders] = useState<GenerationProviderInfo[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const res = await window.palmier.generation.providers() as {
+        success: boolean;
+        providers?: GenerationProviderInfo[];
+      };
+      if (res.success && Array.isArray(res.providers)) setProviders(res.providers);
+    } catch (err) {
+      console.error('Failed to load generation providers:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const saveKey = useCallback(async (id: string) => {
+    const key = drafts[id]?.trim();
+    if (!key) return;
+    setError('');
+    try {
+      const res = await window.palmier.generation.setKey(id, key) as { success: boolean; error?: string };
+      if (!res.success) {
+        setError(res.error || 'Could not save the key.');
+        return;
+      }
+      setDrafts((current) => ({ ...current, [id]: '' }));
+      setSavedId(id);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save the key.');
+    }
+  }, [drafts, load]);
+
+  return (
+    <div className="border-t border-white/10 pt-3">
+      <label className="mb-1.5 block text-[10px] uppercase tracking-wide text-text-secondary">
+        Media generation
+      </label>
+      <Hint>
+        Keys for generate_media — the assistant can create images, videos, and audio
+        into your library. Encrypted at rest via Windows DPAPI.
+      </Hint>
+
+      {providers === null ? (
+        <p className="mt-2 text-[10px] text-text-muted">Loading providers…</p>
+      ) : (
+        <div className="mt-1.5 space-y-1.5">
+          {providers.map((provider) => (
+            <div key={provider.id} className="rounded border border-surface-3 bg-surface-2 px-2 py-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium text-text-primary">{provider.name}</span>
+                <span
+                  className={`flex items-center gap-1 text-[9px] ${provider.configured ? 'text-emerald-400' : 'text-text-muted'}`}
+                  title={provider.configured ? 'API key saved' : 'No API key'}
+                >
+                  {provider.configured && <Check size={11} aria-hidden="true" />}
+                  {provider.supportedTypes.join(' · ')}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={drafts[provider.id] ?? ''}
+                  onChange={(event) =>
+                    setDrafts((current) => ({ ...current, [provider.id]: event.target.value }))}
+                  placeholder={
+                    provider.configured ? 'Replace API key' : `Paste ${provider.name} key`
+                  }
+                  aria-label={`${provider.name} API key`}
+                  className="min-w-0 flex-1 rounded border border-surface-3 bg-surface-1 px-2 py-1 font-mono text-[10px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+                />
+                <button
+                  onClick={() => void saveKey(provider.id)}
+                  disabled={!drafts[provider.id]?.trim()}
+                  data-generation-save={provider.id}
+                  className="shrink-0 rounded border border-surface-4 px-2 py-1 text-[10px] text-text-secondary transition hover:bg-surface-3 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {savedId === provider.id ? 'Saved' : 'Save'}
+                </button>
+              </div>
+            </div>
+          ))}
+          {error && (
+            <p role="alert" className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-400">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
