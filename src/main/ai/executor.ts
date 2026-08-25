@@ -5,6 +5,8 @@
 
 import { z } from 'zod';
 import { execFile } from 'child_process';
+import fsSync from 'fs';
+import fs from 'fs/promises';
 import { nanoid } from 'nanoid';
 import { tools, getToolByName } from './tools';
 import { clampFrame } from '../../shared/utils/safe-number';
@@ -27,6 +29,8 @@ import {
   type SilenceTrackScope,
 } from '../../shared/editor/silence-scoping';
 import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple';
+import { parseFcpxml } from '../../shared/fcpxml/importer';
+import { exportFcpxml } from '../../shared/fcpxml/exporter';
 import {
   MAX_CANVAS_EDGE,
   aspectRatioLabel,
@@ -893,8 +897,114 @@ export class ToolExecutor {
         // Phase 4 — placeholder
         return { success: false, error: 'Export not yet implemented (Phase 4).' };
 
-      case 'generate_media': {
-        const configured = configuredProvidersFor(args.type);
+      case 'import_fcpxml': {
+        const xml = await fs.readFile(args.path, 'utf8');
+        const plan = parseFcpxml(xml);
+        if (!plan.fps) {
+          return { success: false, error: 'The file has no usable <format frameDuration>; frame mapping is undefined.' };
+        }
+        const fpsScale = this.editor.getProject().settings.fps / plan.fps;
+        const toProjectFrames = (frames: number) => Math.round(frames * fpsScale);
+
+        // Assets: probe each unique path into the library; missing files are
+        // reported and their clips skipped rather than failing the import.
+        const assetIdByPath = new Map<string, string>();
+        const offline: string[] = [];
+        for (const asset of plan.assets) {
+          if (!fsSync.existsSync(asset.path)) {
+            offline.push(asset.path);
+            continue;
+          }
+          try {
+            const probed = await probeMedia(asset.path);
+            const id = nanoid();
+            this.editor.addMedia({ id, addedAt: new Date().toISOString(), ...probed });
+            assetIdByPath.set(asset.path, id);
+          } catch {
+            offline.push(asset.path);
+          }
+        }
+
+        // Lanes materialize as fresh tracks so an import never collides with
+        // existing content (additive contract stated in the tool description).
+        const videoLaneTrack = new Map<number, string>();
+        const audioLaneTrack = new Map<number, string>();
+        const maxVLane = Math.max(0, ...plan.clips.filter((c) => c.kind !== 'audio').map((c) => c.lane));
+        for (let lane = 0; lane <= maxVLane; lane++) {
+          videoLaneTrack.set(lane, this.editor.addTrack('video'));
+        }
+        const audioLanes = plan.clips.filter((c) => c.kind === 'audio').map((c) => c.lane);
+        for (const lane of [...new Set(audioLanes)].sort((a, b) => a - b)) {
+          if (!audioLaneTrack.has(lane)) audioLaneTrack.set(lane, this.editor.addTrack('audio'));
+        }
+
+        let placed = 0;
+        let titles = 0;
+        for (const clip of plan.clips) {
+          const startFrame = toProjectFrames(clip.startFrame);
+          const durationFrames = Math.max(1, toProjectFrames(clip.durationFrames));
+
+          if (clip.kind === 'title') {
+            const trackId = videoLaneTrack.get(clip.lane);
+            if (!trackId) continue;
+            const titleId = this.editor.addTitleClip({
+              trackId,
+              text: clip.text,
+              startFrame,
+              durationFrames,
+            });
+            this.editor.applyClipProperties([titleId], 'Import title style', (draft) => {
+              if (clip.colorHex) draft.titleColor = clip.colorHex;
+              if (clip.fontSizePx) draft.titleSizeRatio = clip.fontSizePx / this.editor.getProject().settings.height;
+              if (clip.fontFamily) draft.titleFontFamily = clip.fontFamily;
+              if (clip.alignment) draft.titleAlign = clip.alignment;
+              return true;
+            });
+            titles += 1;
+            continue;
+          }
+
+          const assetId = assetIdByPath.get(clip.assetPath);
+          if (!assetId) continue; // its source was offline
+          const trackId = clip.kind === 'audio'
+            ? audioLaneTrack.get(clip.lane)
+            : videoLaneTrack.get(clip.lane);
+          if (!trackId) continue;
+          const sourceIn = toProjectFrames(clip.sourceInFrame);
+          const newClipId = this.editor.addClip({
+            assetId,
+            trackId,
+            startFrame,
+            durationFrames,
+          });
+          // Source trim is a follow-up edit: addClip has no In/Out params.
+          if (clip.sourceInFrame > 0) {
+            this.editor.trimClip(newClipId, sourceIn, sourceIn + durationFrames);
+          }
+          placed += 1;
+        }
+
+        return {
+          success: true,
+          data: {
+            placedClips: placed,
+            titles,
+            assetsAdded: assetIdByPath.size,
+            tracksCreated: videoLaneTrack.size + audioLaneTrack.size,
+            offline,
+            unsupported: plan.unsupported,
+            note: 'Each placement is a separate undo step.',
+          },
+        };
+      }
+
+      case 'export_fcpxml': {
+        const xmlOut = exportFcpxml(this.editor.getProject());
+        await fs.writeFile(args.path, xmlOut, 'utf8');
+        return { success: true, data: { path: args.path } };
+      }
+
+      case 'generate_media': {        const configured = configuredProvidersFor(args.type);
         if (configured.length === 0) {
           return {
             success: false,

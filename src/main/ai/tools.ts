@@ -1,5 +1,5 @@
-/**
- * AI Tool Contract — the Zod-defined tool schemas that both the in-app
+﻿/**
+ * AI Tool Contract â€” the Zod-defined tool schemas that both the in-app
  * agent and the MCP server share. One contract, two transports.
  *
  * This is the core "built for AI" design inherited from Palmier Pro:
@@ -11,7 +11,7 @@ import { MAX_FRAME } from '../../shared/utils/safe-number';
 import { BLEND_MODES } from '../../shared/types/blend-mode';
 import { MAX_CANVAS_EDGE, QUALITY_PRESETS } from '../../shared/project/aspect-ratio';
 
-// ─── Shared numeric schemas ──────────────────────────────────────────────────
+// â”€â”€â”€ Shared numeric schemas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Every frame-typed argument is bounded: finite, integer, non-negative, and
 // capped at MAX_FRAME. This closes the overflow crash class (upstream #200)
 // at the validation boundary, before any value reaches loop/array math.
@@ -32,10 +32,10 @@ const durationSchema = z
   .min(1)
   .max(MAX_FRAME);
 
-// ─── Tool Definitions ────────────────────────────────────────────────────────
+// â”€â”€â”€ Tool Definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const tools = {
-  // ── Timeline inspection ──────────────────────────────────────────────────────
+  // â”€â”€ Timeline inspection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   getTimeline: {
     name: 'get_timeline',
     description: 'Read the current timeline state: tracks, clips, playhead position, and project settings.',
@@ -56,7 +56,7 @@ export const tools = {
     parameters: z.object({}),
   },
 
-  // ── Editing commands ─────────────────────────────────────────────────────────
+  // â”€â”€ Editing commands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   addClip: {
     name: 'add_clip',
     description: 'Add a media asset to the timeline at a given position.',
@@ -67,7 +67,7 @@ export const tools = {
       durationFrames: durationSchema.optional().describe('Duration in frames. Defaults to asset duration.'),
       source: z.tuple([z.number().finite().min(0), z.number().finite()])
         .optional()
-        .describe('[startSeconds, endSeconds] window of the asset to place — mutually exclusive with durationFrames. This is three-point editing: set it, land at the playhead, and the trim is baked in.'),
+        .describe('[startSeconds, endSeconds] window of the asset to place â€” mutually exclusive with durationFrames. This is three-point editing: set it, land at the playhead, and the trim is baked in.'),
       mode: z.enum(['overwrite', 'insert', 'append']).optional().describe(
         'Collision handling. overwrite (default) replaces whatever sits in the span; insert '
         + 'pushes later clips on the track and their linked partners right by the placed length; '
@@ -161,7 +161,7 @@ export const tools = {
     }),
   },
 
-  // ── Track management ─────────────────────────────────────────────────────────
+  // â”€â”€ Track management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   addTrack: {
     name: 'add_track',
     description: 'Create a new track on the timeline.',
@@ -171,7 +171,7 @@ export const tools = {
     }),
   },
 
-  // ── Project settings ─────────────────────────────────────────────────────────
+  // â”€â”€ Project settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   setProjectSettings: {
     name: 'set_project_settings',
     description:
@@ -215,12 +215,12 @@ export const tools = {
         .enum(QUALITY_PRESETS.map((preset) => preset.id) as unknown as [string, ...string[]])
         .optional()
         .describe(
-          'Resolution quality preset — scales the short edge to the target while preserving the current (or specified) aspect ratio.',
+          'Resolution quality preset â€” scales the short edge to the target while preserving the current (or specified) aspect ratio.',
         ),
     }),
   },
 
-  // ── Playback / navigation ────────────────────────────────────────────────────
+  // â”€â”€ Playback / navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   setPlayhead: {
     name: 'set_playhead',
     description: 'Move the playhead to a specific frame.',
@@ -229,11 +229,11 @@ export const tools = {
     }),
   },
 
-  // ── Compositing ──────────────────────────────────────────────────────────────
+  // â”€â”€ Compositing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   setClipBlendMode: {
     name: 'set_clip_blend_mode',
     description:
-      'Set how a visual clip blends with the layers below it (multiply, screen, overlay, etc.). Use "normal" to reset. Only valid for video/image/title clips — audio clips are rejected.',
+      'Set how a visual clip blends with the layers below it (multiply, screen, overlay, etc.). Use "normal" to reset. Only valid for video/image/title clips â€” audio clips are rejected.',
     parameters: z.object({
       clipId: z.string().describe('The clip to restyle.'),
       blendMode: z
@@ -282,7 +282,7 @@ export const tools = {
   setClipTransition: {
     name: 'set_clip_transition',
     description:
-      'Set or clear a geometric in-transition (wipe or slide) on a visual clip — the clip is revealed by a wipe edge or slides in from a direction over its first N seconds. Pass type "none" to clear.',
+      'Set or clear a geometric in-transition (wipe or slide) on a visual clip â€” the clip is revealed by a wipe edge or slides in from a direction over its first N seconds. Pass type "none" to clear.',
     parameters: z.object({
       clipId: z.string().describe('The clip to apply the transition to.'),
       type: z.enum(['none', 'wipe', 'slide']).describe('Transition type. "none" clears it.'),
@@ -292,7 +292,7 @@ export const tools = {
     }),
   },
 
-  // ── Undo/Redo ────────────────────────────────────────────────────────────────
+  // â”€â”€ Undo/Redo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   undo: {
     name: 'undo',
     description: 'Undo the last editing command.',
@@ -305,7 +305,7 @@ export const tools = {
     parameters: z.object({}),
   },
 
-  // ── Export ───────────────────────────────────────────────────────────────────
+  // â”€â”€ Export â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   copyClipSettings: {
     name: 'copy_clip_settings',
     description:
@@ -319,7 +319,7 @@ export const tools = {
       targetTrack: z.object({
         trackId: z.string(),
         range: z.tuple([frameSchema, frameSchema]).optional()
-          .describe('[startFrame, endFrame) — only clips intersecting the range.'),
+          .describe('[startFrame, endFrame) â€” only clips intersecting the range.'),
       }).optional().describe('Apply to every same-kind clip on a track (source excluded).'),
     }).refine(
       (op) => op.targetClipIds !== undefined !== (op.targetTrack !== undefined),
@@ -506,14 +506,14 @@ export const tools = {
       ])).optional().describe('Remove empty tracks.'),
     }).refine(
       (op) => (op.reorder?.length ?? 0) + (op.set?.length ?? 0) + (op.remove?.length ?? 0) > 0,
-      { message: 'Nothing to do — pass at least one of reorder, set, remove.' },
+      { message: 'Nothing to do â€” pass at least one of reorder, set, remove.' },
     ),
   },
 
   swapClipMedia: {
     name: 'swap_clip_media',
     description:
-      'Replace a clip\'s source media while keeping its edit state — timing, framing, fades — intact. '
+      'Replace a clip\'s source media while keeping its edit state â€” timing, framing, fades â€” intact. '
       + 'Linked partners sharing the same source swap together. The replacement must be the same media '
       + 'kind and long enough to cover the clip\'s trimmed source window.',
     parameters: z.object({
@@ -537,7 +537,7 @@ export const tools = {
   manageMarkers: {
     name: 'manage_markers',
     description:
-      'Create, update, or delete timeline markers — review notes anchored to frames. '
+      'Create, update, or delete timeline markers â€” review notes anchored to frames. '
       + 'A marker with durationFrames 0 is a point; a positive duration makes it a range.',
     parameters: z.object({
       action: z.enum(['create', 'update', 'delete']).describe('Which marker operation to perform.'),
@@ -561,11 +561,11 @@ export const tools = {
     }),
   },
 
-  // ── Generation (Phase 7+) ───────────────────────────────────────────────────
+  // â”€â”€ Generation (Phase 7+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   generateMedia: {
     name: 'generate_media',
     description:
-      'Generate an image, video, or audio asset from a text prompt using a configured generation provider (fal.ai, Replicate, or HiggsField — whichever has an API key set; pass providerId to choose). The finished file is imported into the project media library and its asset id is returned. Video generations can take a few minutes.',
+      'Generate an image, video, or audio asset from a text prompt using a configured generation provider (fal.ai, Replicate, or HiggsField â€” whichever has an API key set; pass providerId to choose). The finished file is imported into the project media library and its asset id is returned. Video generations can take a few minutes.',
     parameters: z.object({
       type: z.enum(['image', 'video', 'audio']).describe('Type of media to generate.'),
       prompt: z.string().min(1).max(2000).describe('Generation prompt.'),
@@ -577,9 +577,27 @@ export const tools = {
       height: z.number().int().min(256).max(4096).optional().describe('Output height in pixels.'),
     }),
   },
+
+  importFcpxml: {
+    name: 'import_fcpxml',
+    description:
+      'Import a Final Cut Pro XML (.fcpxml) file: media assets are probed into the library, tracks are created for the lanes, and picture/audio/title clips are placed on them. Effects and grades inside the file are skipped and reported. Additive — existing timeline content is untouched.',
+    parameters: z.object({
+      path: z.string().min(1).describe('Absolute path to the .fcpxml file.'),
+    }),
+  },
+
+  exportFcpxml: {
+    name: 'export_fcpxml',
+    description:
+      'Write the current timeline as Final Cut Pro XML 1.11 for Resolve / FCP / Premiere: picture + audio clips on lanes, title text with styling. Effects and grades are not represented.',
+    parameters: z.object({
+      path: z.string().min(1).describe('Absolute destination path for the .fcpxml file.'),
+    }),
+  },
 } as const;
 
-// ─── Type helpers ────────────────────────────────────────────────────────────
+// â”€â”€â”€ Type helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type ToolName = (typeof tools)[keyof typeof tools]['name'];
 
@@ -596,7 +614,7 @@ export function toolsToJsonSchema() {
   }));
 }
 
-// Minimal Zod → JSON Schema conversion for MCP compatibility
+// Minimal Zod â†’ JSON Schema conversion for MCP compatibility
 function zodToJsonSchema(schema: z.ZodType<any>): Record<string, unknown> {
   // For our use case, we rely on zod's .parse() for validation
   // and produce a simplified JSON schema for tool listing.
@@ -627,3 +645,4 @@ function zodFieldToSchema(field: z.ZodType<any>): Record<string, unknown> {
   if (field instanceof z.ZodDefault) return zodFieldToSchema(field.removeDefault());
   return { type: 'string' };
 }
+
