@@ -23,11 +23,11 @@ this file is the exhaustive per-issue record.
 
 | Disposition | Count |
 |---|---|
-| Implemented | 18 |
+| Implemented | 19 |
 | Partial | 2 |
 | Planned | 23 |
 | N/A platform | 14 |
-| Needs investigation | 1 |
+| Needs investigation | 0 |
 | **Total** | **58** |
 
 Every open issue in the captured snapshot now has a concrete disposition; none
@@ -121,7 +121,7 @@ Ordered by issue number.
 | [#527](https://github.com/palmier-io/palmier-pro/issues/527) | Not working for macOS Sequoia | N/A platform | A macOS 15 compatibility report against an app whose minimum is macOS 26. The Windows support floor is set by Electron, not by an Apple OS version. |
 | [#532](https://github.com/palmier-io/palmier-pro/issues/532) | Migrate MCP server to the 2026-07-28 stateless protocol | Planned | Relevant: `main/ai/mcp-server.ts` implements stdio MCP and would need the stateless HTTP transport to serve remote/CLI clients without a persistent session. Tracked with the headless-mode gap under #302. |
 | [#536](https://github.com/palmier-io/palmier-pro/issues/536) | v0.7.4 regression of #465: scrub decode blocks on the tokio blocking pool | N/A platform | Scrub audio does not exist on Windows (#418 disposition); playhead scrubbing is visual only, so neither the original defect nor this regression can occur. The transferable rule — decode work must stay off the interaction path — is already enforced by process separation and `latest-request.ts`. |
-| [#556](https://github.com/palmier-io/palmier-pro/issues/556) | Playback can take 50+ seconds to start on sparse timelines with many tracks | Needs investigation | Upstream's cause is per-frame composition build cost scaling with track count before first paint. The Windows preview composites per frame through `preview-compositor.ts` with a bounded decode pool, and the playback loop clamps catch-up, but no sparse-timeline first-frame profiling has been done here. Needs a repro with many mostly-empty tracks before a disposition is possible. |
+| [#556](https://github.com/palmier-io/palmier-pro/issues/556) | Playback can take 50+ seconds to start on sparse timelines with many tracks | Implemented | Profiled and fixed. The Windows analogue of upstream's per-frame build cost was real: the compositor's visible-layer scan did a track-list `find` per clip in its filter and **two** per sort comparison, so every composite and prefetch request paid O(clips × tracks) even when the tracks were empty at that frame. `main/media/visible-clips.ts` now builds one track index per call and resolves ordering keys before sorting — O(clips + tracks), same semantics (audio exclusion, hidden tracks, half-open range, track-order layering). Measured over 120 resolutions on a 40-track / 3000-clip timeline: worst-case placement 120.9 ms → 8.65 ms (**14×**, and no longer growing with track count); typical placement 2×. The per-pass media lookup got the same treatment (one index instead of a scan per clip). The absolute stall upstream reports never reproduced here — bounded decode pool and newest-wins coalescing cap the rest — so this closes as hardening with a scaling regression guard (`visible-clips.test.ts`). |
 
 ## Implementation notes
 

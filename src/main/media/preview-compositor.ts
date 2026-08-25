@@ -26,6 +26,7 @@ import { LatestRequestGate, type RequestToken } from './latest-request';
 import { effectiveSourcePath } from '../../shared/media/proxy';
 import { ByteBudgetLru } from './render-cache';
 import { loadProxyMode } from './proxy-mode';
+import { visualClipsAtFrame } from './visible-clips';
 
 //  Types 
 
@@ -125,11 +126,14 @@ export class PreviewCompositor {
     height: number,
     request: RequestToken<number>,
   ): Promise<Buffer | null> {
-    // Find visible clips at this frame (sorted by track order  z-index)
-    const visibleClips = this.getVisibleClips(project, frameIndex);
+    // Find visible clips at this frame (sorted by track order  z-index).
+    // One O(clips+tracks) pass (#556); the media index below spares the
+    // per-clip asset scans as well.
+    const visibleClips = visualClipsAtFrame(project, frameIndex);
     if (visibleClips.length === 0) {
       return Buffer.alloc(width * height * 4);
     }
+    const mediaById = new Map(project.media.map((asset) => [asset.id, asset] as const));
 
     // Decode frames for each visible clip
     const decoder = getFrameDecoder();
@@ -138,10 +142,10 @@ export class PreviewCompositor {
 
     for (const clip of visibleClips) {
       // Find the media asset
-      const asset = project.media.find((m) => m.id === clip.assetId);
+      const asset = mediaById.get(clip.assetId);
       if (!asset) continue;
 
-      const decodeRequest = this.decodeRequestForClip(project, clip, frameIndex);
+      const decodeRequest = this.decodeRequestForClip(project, clip, frameIndex, mediaById);
       if (!decodeRequest) continue;
 
       const decoded = await decoder.getFrame(decodeRequest);
@@ -229,8 +233,9 @@ export class PreviewCompositor {
    */
   private decodeRequestsForFrame(project: Project, frameIndex: Frame): DecodeRequest[] {
     const requests: DecodeRequest[] = [];
-    for (const clip of this.getVisibleClips(project, frameIndex)) {
-      const request = this.decodeRequestForClip(project, clip, frameIndex);
+    const mediaById = new Map(project.media.map((asset) => [asset.id, asset] as const));
+    for (const clip of visualClipsAtFrame(project, frameIndex)) {
+      const request = this.decodeRequestForClip(project, clip, frameIndex, mediaById);
       if (request) requests.push(request);
     }
     return requests;
@@ -238,14 +243,16 @@ export class PreviewCompositor {
 
   /**
    * The single decode request for one clip at one timeline frame, or null when
-   * the clip cannot contribute a frame.
+   * the clip cannot contribute a frame. `mediaById` is the caller's per-pass
+   * asset index; building it here would reintroduce a scan per clip.
    */
   private decodeRequestForClip(
     project: Project,
     clip: Clip,
     frameIndex: Frame,
+    mediaById: ReadonlyMap<string, Project['media'][number]>,
   ): DecodeRequest | null {
-    const asset = project.media.find((m) => m.id === clip.assetId);
+    const asset = mediaById.get(clip.assetId);
     if (!asset) return null;
     const size = { width: clip.width, height: clip.height };
 
@@ -273,24 +280,6 @@ export class PreviewCompositor {
       ...size,
       sourceSeconds: clampSourceSeconds(requested, durationSeconds, asset.fps),
     };
-  }
-
-  private getVisibleClips(project: Project, frameIndex: Frame): Clip[] {
-    return project.timeline.clips
-      .filter((clip) => {
-        const clipEnd = clip.startFrame + clip.durationFrames;
-        const track = project.timeline.tracks.find((candidate) => candidate.id === clip.trackId);
-        return clip.type !== 'audio'
-          && track?.visible !== false
-          && frameIndex >= clip.startFrame
-          && frameIndex < clipEnd;
-      })
-      .sort((a, b) => {
-        // Sort by track order (video tracks with higher order render on top)
-        const trackA = project.timeline.tracks.find((t) => t.id === a.trackId);
-        const trackB = project.timeline.tracks.find((t) => t.id === b.trackId);
-        return (trackA?.order || 0) - (trackB?.order || 0);
-      });
   }
 
   private sendFrame(
