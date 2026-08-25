@@ -11,6 +11,7 @@ import {
   Music2,
   Plus,
   Search,
+  Sparkles,
   Subtitles,
   Upload,
 } from 'lucide-react';
@@ -22,6 +23,7 @@ import type { MediaAsset } from '../../shared/types/project';
 import { formatImportErrors } from '../../shared/media/import-summary';
 import { formatDuration } from '../../shared/utils/time';
 import { ASSET_DND_MIME, getDroppedFilePath, setDraggingAsset } from '../lib/dnd';
+import { GenerateDialog } from './GenerateDialog';
 
 /** Minimum tile width in the media grid; must match the grid template below. */
 const MEDIA_TILE_MIN_WIDTH = 112;
@@ -87,6 +89,7 @@ export function MediaBin() {
   const [query, setQuery] = useState('');
   const [isFileDragActive, setIsFileDragActive] = useState(false);
   const [importError, setImportError] = useState('');
+  const [generateOpen, setGenerateOpen] = useState(false);
 
   const mediaItems = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -177,6 +180,15 @@ export function MediaBin() {
               <Plus size={13} strokeWidth={1.8} />
               Import
             </button>
+            <button
+              onClick={() => setGenerateOpen(true)}
+              className="icon-button"
+              title="AI Generate media"
+              aria-label="AI Generate media"
+              data-generate-open
+            >
+              <Sparkles size={14} strokeWidth={1.7} />
+            </button>
             <button className="icon-button" title="More media actions" aria-label="More media actions">
               <MoreHorizontal size={15} />
             </button>
@@ -262,6 +274,16 @@ export function MediaBin() {
                 <p className="mt-1 text-[10px] text-text-muted">Video, audio, and image files</p>
               </div>
             </div>
+          )}
+
+          {generateOpen && (
+            <GenerateDialog
+              onClose={() => setGenerateOpen(false)}
+              onImported={(asset) => {
+                importAssets([asset]);
+                useProjectStore.getState().markDirty();
+              }}
+            />
           )}
         </div>
       ) : (

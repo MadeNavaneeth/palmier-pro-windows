@@ -19,6 +19,7 @@ import { HiggsFieldProvider } from './provider-higgsfield';
 import {
   cancelGeneration,
   configureGenerationProvider,
+  configuredProvidersFor,
   listGenerationProviders,
   registerGenerationProvider,
   runGeneration,
@@ -81,15 +82,39 @@ export function registerGenerationHandlers(): void {
   });
 
   // Start generation — the renderer tracks progress/complete events itself.
+  // Start generation — returns the request id immediately so the caller can
+  // cancel; progress streams on generation:progress and the settled result
+  // lands on generation:complete.
   ipcMain.handle('generation:start', async (event, requestData: Omit<GenerationRequest, 'id'>) => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    const result = await runGeneration(requestData, {
+    let startedId = '';
+
+    // Pre-validate synchronously so a missing key or unknown provider fails
+    // the invoke instead of only surfacing through the complete event.
+    const providerId = requestData.provider;
+    if (providerId) {
+      const summary = listGenerationProviders().find((p) => p.id === providerId);
+      if (!summary) return { success: false, error: `Unknown provider: ${providerId}` };
+      if (!summary.configured) {
+        return { success: false, error: `${summary.name} has no API key set.` };
+      }
+    } else if (configuredProvidersFor(requestData.type).length === 0) {
+      return {
+        success: false,
+        error: `No configured generation provider supports ${requestData.type}.`,
+      };
+    }
+
+    void runGeneration(requestData, {
       onProgress: (progress) => win?.webContents.send('generation:progress', progress),
+      onStart: (id) => { startedId = id; },
+    }).then((result) => {
+      win?.webContents.send('generation:complete', result);
     });
-    win?.webContents.send('generation:complete', result);
-    return result.status === 'completed'
-      ? { success: true, id: result.id }
-      : { success: false, id: result.id, error: result.error };
+
+    return startedId
+      ? { success: true, id: startedId }
+      : { success: false, error: 'Generation failed to start.' };
   });
 
   // Cancel generation

@@ -149,6 +149,10 @@ const api = {
       ipcRenderer.invoke('generation:set-key', providerId, key),
     models: (providerId: string, type: 'image' | 'video' | 'audio') =>
       ipcRenderer.invoke('generation:models', providerId, type),
+    /** Fire-and-forget: resolves with the request id; result lands on generation:complete. */
+    start: (request: Record<string, unknown>) =>
+      ipcRenderer.invoke('generation:start', request),
+    cancel: (requestId: string) => ipcRenderer.invoke('generation:cancel', requestId),
   },
 
   // â”€â”€ Event subscriptions (main â†’ renderer) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -166,6 +170,8 @@ const api = {
       'ai:stream-end',
       'ai:tool-call',
       'ai:tool-result',
+      'generation:progress',
+      'generation:complete',
     ];
     if (!allowed.includes(channel)) {
       console.warn(`[preload] Blocked subscription to unknown channel: ${channel}`);

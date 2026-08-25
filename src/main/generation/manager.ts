@@ -99,6 +99,8 @@ export async function runGeneration(
   opts: {
     timeoutMs?: number;
     onProgress?: (progress: GenerationProgress) => void;
+    /** Called synchronously once the request has an id — fire-and-forget callers need it for cancel. */
+    onStart?: (id: string) => void;
   } = {},
 ): Promise<GenerationResult & { id: string }> {
   const providerId = request.provider;
@@ -113,6 +115,7 @@ export async function runGeneration(
   const id = nanoid();
   const full: GenerationRequest = { ...request, id };
   activeGenerations.set(id, { providerId });
+  opts.onStart?.(id);
 
   const timeoutMs = opts.timeoutMs ?? 600_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
