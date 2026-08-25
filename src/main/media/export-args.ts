@@ -30,6 +30,13 @@ export interface ExportArgOptions {
   quality: 'draft' | 'normal' | 'high';
   /** Timeline range export: only frames in [start, end) are rendered. */
   range?: { start: number; end: number };
+  /**
+   * Renderer-baked advanced title layers (#525/#529), keyed by clip id.
+   * A listed clip composites from its PNG instead of drawtext; an advanced
+   * clip without an entry degrades to drawtext color styling rather than
+   * failing the export.
+   */
+  bakedTitles?: ReadonlyArray<{ clipId: string; path: string }>;
 }
 
 /**
@@ -159,8 +166,11 @@ export function buildFfmpegArgs(
   const videoClips = options.format === 'audio' ? [] : sortedClips.filter((c) => c.type !== 'audio');
   const audioClips = sortedClips.filter((c) => c.type === 'audio');
 
-  // One input per unique source path, in first-use order (#546).
+  // One input per unique source path, in first-use order (#546). Baked title
+  // PNGs join the same registry but stream as looping stills, so overlay/
+  // blend nodes fed from them never end before the canvas does.
   const inputIndexByPath = new Map<string, number>();
+  const inputPreFlagsByPath = new Map<string, string[]>();
   const inputIndexFor = (assetPath: string): number => {
     const existing = inputIndexByPath.get(assetPath);
     if (existing !== undefined) return existing;
@@ -168,7 +178,16 @@ export function buildFfmpegArgs(
     inputIndexByPath.set(assetPath, index);
     return index;
   };
+  const inputIndexForStill = (assetPath: string): number => {
+    const index = inputIndexFor(assetPath);
+    if (!inputPreFlagsByPath.has(assetPath)) inputPreFlagsByPath.set(assetPath, ['-loop', '1']);
+    return index;
+  };
   const assetOf = (clip: Clip) => project.media.find((m) => m.id === clip.assetId);
+
+  const bakedByClipId = new Map(
+    (options.bakedTitles ?? []).map((entry) => [entry.clipId, entry.path] as const),
+  );
 
   const args: string[] = ['-y']; // overwrite output
   const audioOnly = options.format === 'audio';
@@ -184,6 +203,11 @@ export function buildFfmpegArgs(
 
   // Register inputs in clip order so indices are deterministic.
   for (const clip of videoClips) {
+    const bakedPath = bakedByClipId.get(clip.id);
+    if (bakedPath) {
+      inputIndexForStill(bakedPath);
+      continue;
+    }
     const asset = assetOf(clip);
     if (asset) inputIndexFor(asset.path);
   }
@@ -192,6 +216,7 @@ export function buildFfmpegArgs(
     if (asset) inputIndexFor(asset.path);
   }
   for (const inputPath of inputIndexByPath.keys()) {
+    for (const flag of inputPreFlagsByPath.get(inputPath) ?? []) args.push(flag);
     args.push('-i', inputPath);
   }
 
@@ -276,6 +301,41 @@ export function buildFfmpegArgs(
     for (const clip of sortedClips) {
       if (clip.type !== 'title' || !clip.text) continue;
       const outLabel = `[vt${titleIndex}]`;
+      const startSec = (clip.startFrame / fps).toFixed(4);
+      const endSec = ((clip.startFrame + clip.durationFrames) / fps).toFixed(4);
+
+      // Advanced titles composite from their baked full-canvas RGBA (#525/
+      // #529): footage overlays a band with knocked-out glyphs; inverted
+      // difference-blends a white silhouette. Fades ride alpha on the bake.
+      const bakedPath = bakedByClipId.get(clip.id);
+      if (bakedPath) {
+        const inputIdx = inputIndexByPath.get(bakedPath)!;
+        let chain = `[${inputIdx}:v]format=rgba`;
+        if (clip.opacity !== undefined && clip.opacity !== 1) {
+          chain += `,colorchannelmixer=aa=${Math.min(1, Math.max(0, clip.opacity)).toFixed(4)}`;
+        }
+        if (clip.fadeInFrames && clip.fadeInFrames > 0) {
+          chain += `,fade=t=in:st=0:d=${(clip.fadeInFrames / fps).toFixed(4)}:alpha=1`;
+        }
+        if (clip.fadeOutFrames && clip.fadeOutFrames > 0) {
+          const st = Math.max(0, (clip.durationFrames - clip.fadeOutFrames) / fps);
+          chain += `,fade=t=out:st=${st.toFixed(4)}:d=${(clip.fadeOutFrames / fps).toFixed(4)}:alpha=1`;
+        }
+        const baked = `[bk${titleIndex}]`;
+        filters.push(`${chain}${baked}`);
+        if (clip.titleFillMode === 'inverted') {
+          filters.push(`${currentVideo}${baked}blend=all_mode=difference${outLabel}`);
+        } else {
+          filters.push(
+            `${currentVideo}${baked}overlay=eof_action=pass`
+            + `:enable='between(t,${startSec},${endSec})'${outLabel}`,
+          );
+        }
+        currentVideo = outLabel;
+        titleIndex += 1;
+        continue;
+      }
+
       const styleParams = drawtextStyleParams(clip, height);
       const align = clip.titleAlign ?? 'center';
       const xExpr = align === 'left'
@@ -288,7 +348,7 @@ export function buildFfmpegArgs(
         + `:fontsize=${Math.round((clip.titleSizeRatio ?? 0.09) * height)}`
         + `:fontcolor=${clip.titleColor ?? 'white'}`
         + `:x=${xExpr}:y=(h-text_h)/2`
-        + `:enable='between(t,${(clip.startFrame / fps).toFixed(4)},${((clip.startFrame + clip.durationFrames) / fps).toFixed(4)})'`
+        + `:enable='between(t,${startSec},${endSec})'`
         + styleParams
         + `${outLabel}`,
       );

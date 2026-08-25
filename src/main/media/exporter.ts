@@ -11,7 +11,7 @@
 
 import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
-import { ipcMain, BrowserWindow, shell, dialog } from 'electron';
+import { ipcMain, BrowserWindow, shell, dialog, app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
 import fsSync from 'fs';
@@ -35,6 +35,15 @@ export interface ExportOptions {
   range?: { start: number; end: number };
   /** Write a WebVTT sidecar next to the output for title/caption clips. */
   exportCaptions?: boolean;
+  /** Hardware encoder preference (mp4 only; others fall back to software). */
+  hw?: 'x264' | 'nvenc' | 'qsv' | 'amf';
+  /**
+   * Renderer-baked advanced title layers (#525/#529): full-canvas RGBA PNGs
+   * keyed by clip id, composited instead of drawtext for those clips.
+   */
+  bakedTitles?: ReadonlyArray<{ clipId: string; path: string }>;
+  /** Directory holding `bakedTitles`; removed when the export settles. */
+  bakedTempDir?: string;
 }
 
 export interface ExportProgress {
@@ -113,8 +122,9 @@ export class Exporter {
       eta: 'Calculating...',
     } satisfies ExportProgress);
 
-    // Run FFmpeg
-    return new Promise<void>((resolve, reject) => {
+    // Run FFmpeg; the baked-title temp directory dies with the run whether it
+    // resolves, rejects, or is cancelled.
+    const run = new Promise<void>((resolve, reject) => {
       const proc = spawn('ffmpeg', args, {
         stdio: ['ignore', 'ignore', 'pipe'], // stderr for progress
         windowsHide: true,
@@ -215,6 +225,12 @@ export class Exporter {
         reject(err);
       });
     });
+    void run.finally(() => {
+      if (options.bakedTempDir) {
+        void fs.rm(options.bakedTempDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+    return run;
   }
 
   cancel(): void {
@@ -239,7 +255,16 @@ export class Exporter {
     // only supplies the native geometry callback (#546).
     return buildExportFfmpegArgs(
       project,
-      { outputPath: options.outputPath, format: options.format, quality: options.quality },
+      {
+        outputPath: options.outputPath,
+        format: options.format,
+        quality: options.quality,
+        // Both were silently dropped before: range exports rendered the head
+        // of the full timeline, and the encoder selector never reached FFmpeg.
+        ...(options.range ? { range: options.range } : {}),
+        ...(options.hw ? { hw: options.hw } : {}),
+        ...(options.bakedTitles ? { bakedTitles: options.bakedTitles } : {}),
+      },
       width,
       height,
       fps,
@@ -292,6 +317,38 @@ export function registerExportHandlers(getProject: () => Project | null): void {
 
   ipcMain.handle('export:history', () => {
     return { success: true, history: loadExportHistory() };
+  });
+
+  // Renderer-baked advanced title layers (#525/#529): the renderer draws
+  // each clip with the shared title renderer and ships PNG bytes; main only
+  // persists them to a per-export directory it reports back for cleanup.
+  ipcMain.handle('export:bake-titles', async (_event, payload: unknown) => {
+    const files = (payload as { files?: unknown } | null)?.files;
+    if (!Array.isArray(files) || files.length === 0 || files.length > 64) {
+      return { success: false, error: 'Invalid bake payload.' };
+    }
+    const dir = path.join(
+      app.getPath('userData'),
+      'baked-titles',
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      const paths: string[] = [];
+      for (const file of files as Array<{ clipId?: unknown; bytes?: unknown }>) {
+        if (typeof file.clipId !== 'string' || !(file.bytes instanceof ArrayBuffer)) {
+          return { success: false, error: 'Invalid bake entry.' };
+        }
+        // A clip id is a nanoid, but never let it steer the filesystem.
+        const safeName = file.clipId.replace(/[^A-Za-z0-9_-]/g, '_');
+        const filePath = path.join(dir, `${safeName}.png`);
+        await fs.writeFile(filePath, Buffer.from(file.bytes));
+        paths.push(filePath);
+      }
+      return { success: true, dir, paths };
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   ipcMain.handle('export:start', async (event, options: ExportOptions) => {

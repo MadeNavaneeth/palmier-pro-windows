@@ -1,9 +1,14 @@
 # Text Baking Layer — Design for #525 / #529 / #530 / #519
 
-Status: scoped, not implemented. This document pins upstream's exact
-semantics from source and defines the architecture that lets the four
-remaining advanced title styles work in BOTH render paths under our
-FFmpeg exporter.
+Status: implemented for footage, inverted, and blur (#525/#529/#530);
+perspective tilt (#519) remains pending. This document pins upstream's
+exact semantics from source and defines the architecture that lets the
+advanced title styles work in BOTH render paths under our FFmpeg
+exporter. Shipped form: `renderer/engine/title-render.ts` owns drawing
+(preview + bake share it); ExportPanel bakes advanced clips to PNGs via
+`export:bake-titles`; export-args swaps drawtext for `overlay`
+(footage), `blend=all_mode=difference` (inverted), or an in-bake
+`ctx.filter` blur, with alpha fades and drawtext fallback.
 
 ## Pinned upstream semantics (fetched sources)
 

@@ -7,6 +7,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useTimelineStore } from '../store/timeline';
+import { drawTitle, isAdvancedTitle } from '../engine/title-render';
 
 interface ExportPreset {
   id: string;
@@ -211,6 +212,40 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
     const ext =
       format === 'audio' ? 'm4a' : format === 'mov' ? 'mov' : format === 'webm' ? 'webm' : 'mp4';
 
+    // Advanced titles (#525/#529) bake to full-canvas RGBA PNGs using the
+    // exact renderer the preview draws with; export composites these instead
+    // of drawtext. A bake failure degrades those clips to solid styling
+    // rather than blocking the export.
+    let bakedTitles: Array<{ clipId: string; path: string }> | undefined;
+    let bakedTempDir: string | undefined;
+    const advanced = useTimelineStore
+      .getState()
+      .project.timeline.clips.filter(isAdvancedTitle);
+    if (advanced.length > 0) {
+      try {
+        const canvas = new OffscreenCanvas(width, height);
+        const ctx = canvas.getContext('2d')!;
+        const files: Array<{ clipId: string; bytes: ArrayBuffer }> = [];
+        for (const clip of advanced) {
+          ctx.clearRect(0, 0, width, height);
+          drawTitle(ctx, clip, { width, height });
+          const blob = await canvas.convertToBlob({ type: 'image/png' });
+          files.push({ clipId: clip.id, bytes: await blob.arrayBuffer() });
+        }
+        const res = await window.palmier.export.bakeTitles(files) as {
+          success: boolean; dir?: string; paths?: string[]; error?: string;
+        };
+        if (res.success && res.dir && res.paths) {
+          bakedTempDir = res.dir;
+          bakedTitles = res.paths.map((path, index) => ({ clipId: advanced[index]!.id, path }));
+        } else if (res.error) {
+          console.warn('[export] title bake failed, falling back:', res.error);
+        }
+      } catch (err) {
+        console.warn('[export] title bake failed, falling back:', err);
+      }
+    }
+
     const startRes = await window.palmier.export.start({
       outputPath: `output.${ext}`, // resolved by a save dialog in the main process
       format,
@@ -223,6 +258,7 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
         ? { range: { start: rangeStart, end: rangeEnd } }
         : {}),
       exportCaptions: exportCaptions && hasTitles,
+      ...(bakedTitles ? { bakedTitles, bakedTempDir } : {}),
     });
     if (startRes && !startRes.success && startRes.canceled) {
       setIsExporting(false); // user closed the save dialog; not an error

@@ -164,6 +164,72 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
     expect(graph).toContain('line_spacing=12');
   });
 
+  it('composites a baked footage band instead of drawtext (#525)', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{
+        type: 'title',
+        assetId: '__title__',
+        id: 'clip-1',
+        startFrame: 30,
+        durationFrames: 60,
+        text: 'Knockout',
+        titleFillMode: 'footage',
+      }],
+    );
+    const bakedTitles = [{ clipId: 'clip-1', path: 'C:/baked/clip-1.png' }];
+
+    const args = build(project, { bakedTitles });
+    const graph = args.find((arg) => arg.includes('overlay=eof_action=pass'))!;
+    expect(graph).toContain('[bk0]');
+    expect(graph).toContain("enable='between(t,1.0000,3.0000)'");
+    expect(graph).not.toContain('drawtext');
+
+    // The still streams as a loop so the node never starves mid-export.
+    const inputPos = args.indexOf('C:/baked/clip-1.png');
+    expect(args[inputPos - 1]).toBe('-i');
+    expect(args[inputPos - 2]).toBe('1');
+  });
+
+  it('difference-blends an inverted silhouette (#525)', () => {
+    const project = projectWithMedia(
+      [],
+      [{
+        type: 'title',
+        assetId: '__title__',
+        id: 'clip-0',
+        startFrame: 0,
+        durationFrames: 30,
+        text: 'Inverse',
+        titleFillMode: 'inverted',
+      }],
+    );
+
+    const graph = build(project, {
+      bakedTitles: [{ clipId: 'clip-0', path: 'C:/baked/inv.png' }],
+    }).find((arg) => arg.includes('blend'))!;
+    expect(graph).toContain('blend=all_mode=difference');
+    expect(graph).not.toContain('drawtext');
+  });
+
+  it('degrades an advanced title to solid drawtext when no bake exists', () => {
+    const project = projectWithMedia(
+      [],
+      [{
+        type: 'title',
+        assetId: '__title__',
+        startFrame: 0,
+        durationFrames: 30,
+        text: 'Fallback',
+        titleFillMode: 'footage',
+      }],
+    );
+
+    const args = build(project);
+    expect(args.some((arg) => arg.includes('drawtext'))).toBe(true);
+    expect(args.some((arg) => arg.includes('overlay=eof_action=pass'))).toBe(false);
+  });
+
   it('omits drawtext entirely when there are no titles (audio-only too)', () => {
     const project = projectWithMedia(
       [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
@@ -178,10 +244,18 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
   });
 });
 
-function build(project: Project): string[] {
+function build(
+  project: Project,
+  options?: { bakedTitles?: Array<{ clipId: string; path: string }> },
+): string[] {
   return buildFfmpegArgs(
     project,
-    { outputPath: 'out.mp4', format: 'mp4', quality: 'normal' },
+    {
+      outputPath: 'out.mp4',
+      format: 'mp4',
+      quality: 'normal',
+      ...(options?.bakedTitles ? { bakedTitles: options.bakedTitles } : {}),
+    },
     1920,
     1080,
     30,

@@ -133,6 +133,12 @@ const api = {
     reveal: (outputPath: string) => ipcRenderer.invoke('export:reveal', outputPath),
     /** Recent export history for the delivery panel (R2). */
     getHistory: () => ipcRenderer.invoke('export:history'),
+    /**
+     * Persist renderer-baked advanced title layers (#525/#529) to a per-export
+     * temp directory; returns { dir, paths } for export.start + cleanup.
+     */
+    bakeTitles: (files: Array<{ clipId: string; bytes: ArrayBuffer }>) =>
+      ipcRenderer.invoke('export:bake-titles', { files }),
   },
 
   // ── Event subscriptions (main → renderer) ───────────────────────────────────

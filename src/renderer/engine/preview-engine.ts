@@ -1,5 +1,5 @@
-/**
- * PreviewEngine — drives the 60fps real-time preview rendering loop.
+﻿/**
+ * PreviewEngine â€” drives the 60fps real-time preview rendering loop.
  *
  * Architecture:
  * 1. Each animation frame: collect visible layers at current playhead
@@ -15,9 +15,9 @@
 import type { Clip, Frame, Project, ProjectSettings } from '../../shared/types/project';
 import { frameToSeconds } from '../../shared/utils/time';
 import { colorGradeOf, toCanvasFilter } from '../../shared/editor/color-grade';
-import { TITLE_BACKGROUND_PADDING_DEFAULT, applyTitleFontCase } from '../../shared/editor/title';
+import { drawTitle } from './title-render';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export interface LayerFrame {
   clip: Clip;
@@ -33,7 +33,7 @@ export interface PreviewEngineConfig {
 
 export type EngineState = 'idle' | 'playing' | 'seeking' | 'rendering';
 
-// ─── Frame Cache (renderer-side) ─────────────────────────────────────────────
+// â”€â”€â”€ Frame Cache (renderer-side) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class FrameCache {
   private cache = new Map<string, ImageBitmap>();
@@ -68,7 +68,7 @@ class FrameCache {
   }
 }
 
-// ─── PreviewEngine ───────────────────────────────────────────────────────────
+// â”€â”€â”€ PreviewEngine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export class PreviewEngine {
   private canvas: HTMLCanvasElement;
@@ -106,7 +106,7 @@ export class PreviewEngine {
     this.ctx = ctx;
   }
 
-  // ─── Public API ──────────────────────────────────────────────────────────
+  // â”€â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   setProject(project: Project): void {
     this.project = project;
@@ -181,7 +181,7 @@ export class PreviewEngine {
     this.frameCache.clear();
   }
 
-  // ─── Render Loop ─────────────────────────────────────────────────────────
+  // â”€â”€â”€ Render Loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private scheduleNextFrame(): void {
     this.rafId = requestAnimationFrame(() => this.tick());
@@ -227,7 +227,7 @@ export class PreviewEngine {
    * Start a render without waiting for it.
    *
    * The rAF loop and the seek/playhead setters cannot await a decode, so the
-   * promise is detached — but explicitly, with a rejection handler, so a broken
+   * promise is detached â€” but explicitly, with a rejection handler, so a broken
    * render surfaces through `onError` instead of vanishing (#89).
    */
   private renderFrameDetached(frame: Frame): void {
@@ -280,83 +280,15 @@ export class PreviewEngine {
   }
 
   /**
-   * Draw a title clip's text, centered in its box (R3 foundation). The
-   * export path renders the same content via FFmpeg drawtext with the same
-   * centered alignment; fonts differ by platform but size ratio and color
-   * are shared through the clip fields.
+   * Delegates to the shared title renderer: the bake pipeline draws with
+   * the exact same function, so preview and export pixels cannot drift.
    */
   private renderTitleLayer(clip: Clip): void {
-    if (!this.project || !clip.text) return;
-    const fontSize = Math.max(
-      8,
-      Math.round((clip.titleSizeRatio ?? 0.09) * this.project.settings.height),
-    );
-    this.ctx.save();
-    this.ctx.globalAlpha = clip.opacity;
-
-    // The font must be set before any measureText: the fitted background box
-    // has to wrap the same glyphs the fill will draw, or preview and export
-    // disagree about the box size (#507).
-    const weight = clip.titleBold ? 'bold ' : '';
-    const family = clip.titleFontFamily || 'system-ui, sans-serif';
-    this.ctx.font = `${weight}${fontSize}px ${family}`;
-
-    // Case is applied to the string itself so every consumer — background
-    // measurement, stroke, fill, drawtext — sees identical glyphs (upstream
-    // #330). Line spacing adds to the shared 1.2 leading.
-    const textLines = applyTitleFontCase(clip.text, clip.titleFontCase).split('\n');
-    const lineSpacing = clip.titleLineSpacing ?? 0;
-    const lineH = fontSize * 1.2 + lineSpacing;
-
-    // Background box behind text, fitted per longest line with symmetric
-    // padding — matching drawtext's boxborderw on all four sides (#507).
-    if (clip.titleBackgroundColor) {
-      let maxW = 0;
-      for (const line of textLines) {
-        const m = this.ctx.measureText(line);
-        if (m.width > maxW) maxW = m.width;
-      }
-      const pad = Math.round(
-        clip.titleBackgroundPadding ?? TITLE_BACKGROUND_PADDING_DEFAULT,
-      );
-      const blockH = textLines.length * fontSize * 1.2 + (textLines.length - 1) * lineSpacing;
-      const centerX = clip.x + clip.width / 2;
-      const centerY = clip.y + clip.height / 2;
-      this.ctx.fillStyle = clip.titleBackgroundColor;
-      this.ctx.fillRect(
-        centerX - maxW / 2 - pad,
-        centerY - blockH / 2 - pad,
-        maxW + pad * 2,
-        blockH + pad * 2,
-      );
-    }
-
-    this.ctx.fillStyle = clip.titleColor ?? '#ffffff';
-    this.ctx.textAlign = clip.titleAlign === 'left' ? 'left' : clip.titleAlign === 'right' ? 'right' : 'center';
-    this.ctx.textBaseline = 'middle';
-
-    // Stroke outline behind fill
-    if (clip.titleStrokeWidth && clip.titleStrokeWidth > 0 && clip.titleStrokeColor) {
-      this.ctx.strokeStyle = clip.titleStrokeColor;
-      this.ctx.lineWidth = clip.titleStrokeWidth * 2; // canvas strokes centered
-      this.ctx.lineJoin = 'round';
-      const centerX = clip.x + clip.width / 2;
-      const centerY = clip.y + clip.height / 2;
-      for (const [i, line] of textLines.entries()) {
-        const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
-        this.ctx.strokeText(line, centerX, y);
-      }
-    }
-
-    const align = clip.titleAlign === 'left' ? 'left' : clip.titleAlign === 'right' ? 'right' : 'center';
-    this.ctx.textAlign = align as CanvasTextAlign;
-    const centerX = align === 'left' ? clip.x : align === 'right' ? clip.x + clip.width : clip.x + clip.width / 2;
-    const centerY = clip.y + clip.height / 2;
-    for (const [i, line] of textLines.entries()) {
-      const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
-      this.ctx.fillText(line, centerX, y);
-    }
-    this.ctx.restore();
+    if (!this.project) return;
+    drawTitle(this.ctx, clip, {
+      width: this.project.settings.width,
+      height: this.project.settings.height,
+    });
   }
 
   private async renderLayer(clip: Clip, currentFrame: Frame): Promise<void> {
@@ -408,7 +340,7 @@ export class PreviewEngine {
     // For video clips, request frame from main process
     try {
       const result = await window.palmier.media.thumbnail(
-        clip.assetId, // In real impl, resolve assetId → file path via project store
+        clip.assetId, // In real impl, resolve assetId â†’ file path via project store
         '', // outputDir handled by main
         timestampSec,
       );
@@ -447,7 +379,7 @@ export class PreviewEngine {
     }
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────────────────
+  // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private getVisibleLayers(frame: Frame): Clip[] {
     if (!this.project) return [];

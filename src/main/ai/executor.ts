@@ -285,7 +285,8 @@ export class ToolExecutor {
               entry.bold !== undefined, entry.fontFamily !== undefined,
               entry.align !== undefined, entry.backgroundColor !== undefined,
               entry.backgroundPadding !== undefined, entry.lineSpacing !== undefined,
-              entry.fontCase !== undefined,
+              entry.fontCase !== undefined, entry.fillMode !== undefined,
+              entry.blurRadius !== undefined,
             ];
             if (styleFields.some(Boolean)) {
               this.editor.applyClipProperties([clipId], 'Style title', (draft) => {
@@ -306,6 +307,13 @@ export class ToolExecutor {
                 }
                 if (entry.lineSpacing !== undefined) draft.titleLineSpacing = entry.lineSpacing;
                 if (entry.fontCase !== undefined) draft.titleFontCase = entry.fontCase;
+                // Absent stays solid; there is no explicit color entry here.
+                if (entry.fillMode !== undefined) draft.titleFillMode = entry.fillMode;
+                if (entry.blurRadius !== undefined) {
+                  // 0 clears rather than storing a no-op radius.
+                  if (entry.blurRadius === 0) delete draft.titleBlurRadius;
+                  else draft.titleBlurRadius = entry.blurRadius;
+                }
                 return true;
               });
             }
@@ -400,7 +408,7 @@ export class ToolExecutor {
               return { success: false, error: 'Clip not found, is not a title, or text is invalid.' };
             }
           }
-          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding, args.lineSpacing, args.fontCase];
+          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding, args.lineSpacing, args.fontCase, args.fillMode, args.blurRadius];
           if (styleFields.some((v) => v !== undefined)) {
             this.editor.applyClipProperties([args.clipId], 'Style title', (draft) => {
               if (draft.type !== 'title') return false;
@@ -419,6 +427,15 @@ export class ToolExecutor {
               if (args.backgroundPadding !== undefined) draft.titleBackgroundPadding = args.backgroundPadding;
               if (args.lineSpacing !== undefined) draft.titleLineSpacing = args.lineSpacing;
               if (args.fontCase !== undefined) draft.titleFontCase = args.fontCase;
+              // "color" is the documented way back to solid styling.
+              if (args.fillMode !== undefined) {
+                if (args.fillMode === 'color') delete draft.titleFillMode;
+                else draft.titleFillMode = args.fillMode;
+              }
+              if (args.blurRadius !== undefined) {
+                if (args.blurRadius === 0) delete draft.titleBlurRadius;
+                else draft.titleBlurRadius = args.blurRadius;
+              }
               return true;
             });
           }

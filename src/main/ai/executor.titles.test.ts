@@ -129,4 +129,28 @@ describe('set_title_text tool (R3)', () => {
     expect(updated.titleFontCase).toBe('lower');
     expect(updated.titleLineSpacing).toBe(4);
   });
+
+  it('carries fill mode and blur, clearing back to solid (#525/#529)', async () => {
+    const { editor, executor } = executorWithTracks();
+    await executor.execute('add_texts', {
+      entries: [{
+        trackId: 'v1', startFrame: 0, durationFrames: 30, text: 'Stencil',
+        fillMode: 'footage', blurRadius: 6,
+      }],
+    });
+    const added = editor.getClips().find((c) => c.type === 'title')!;
+    expect(added.titleFillMode).toBe('footage');
+    expect(added.titleBlurRadius).toBe(6);
+
+    const id = editor.addTitleClip({ trackId: 'v1', text: 'Inv', startFrame: 100, durationFrames: 30 });
+    await executor.execute('set_title_text', { clipId: id, fillMode: 'inverted', blurRadius: 3 });
+    const inverted = editor.getClips().find((c) => c.id === id)!;
+    expect(inverted.titleFillMode).toBe('inverted');
+    expect(inverted.titleBlurRadius).toBe(3);
+
+    await executor.execute('set_title_text', { clipId: id, fillMode: 'color', blurRadius: 0 });
+    const cleared = editor.getClips().find((c) => c.id === id)!;
+    expect(cleared.titleFillMode).toBeUndefined();
+    expect(cleared.titleBlurRadius).toBeUndefined();
+  });
 });

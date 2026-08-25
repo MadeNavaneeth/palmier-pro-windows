@@ -127,6 +127,14 @@ export interface Clip {
   titleLineSpacing?: number;
   /** Case applied to the text before rendering (upstream #330). */
   titleFontCase?: 'original' | 'upper' | 'lower';
+  /**
+   * Advanced fill mode (upstream TextFillMode): footage knocks the glyphs
+   * out of a matte band so the video shows through; inverted difference-
+   * blends a white silhouette against the frame. Absent = solid color.
+   */
+  titleFillMode?: 'footage' | 'inverted';
+  /** Gaussian blur applied to the rendered text layer, in px (#529). */
+  titleBlurRadius?: number;
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */
