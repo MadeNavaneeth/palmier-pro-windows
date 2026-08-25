@@ -20,8 +20,10 @@ import { SnapLine } from './timeline/SnapLine';
  *   height. Set by the `vertical` workspace preset when nothing else shares the
  *   timeline's column, matching upstream, where collapsing a split view item hands
  *   its space to the remaining siblings rather than leaving a hole.
+ * @param height Panel height in px when not filling (#286's timeline divider).
+ *   Clamped upstream of this component; the class floor below still applies.
  */
-export function Timeline({ fill = false }: { fill?: boolean } = {}) {
+export function Timeline({ fill = false, height }: { fill?: boolean; height?: number } = {}) {
   const tracks = useTimelineStore((s) => s.getTracks());
   const clips = useTimelineStore((s) => s.getClips());
   const addTrack = useTimelineStore((s) => s.addTrack);
@@ -178,8 +180,9 @@ export function Timeline({ fill = false }: { fill?: boolean } = {}) {
     // string as well would make the winner depend on build output.
     <section
       className={`flex flex-col overflow-hidden bg-surface-1 ${
-        fill ? 'min-h-0 flex-1' : 'h-[270px] min-h-[160px] shrink-0'
+        fill ? 'min-h-0 flex-1' : 'min-h-[160px] shrink-0'
       }`}
+      style={fill ? undefined : { height }}
     >
       <div className="panel-header flex items-center px-2">
         <div className="flex h-full items-center gap-1 border-b border-white/80 px-2 text-[10px] font-medium text-text-primary">

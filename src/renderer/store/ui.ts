@@ -21,6 +21,7 @@ import {
 const GUIDES_STORAGE_KEY = 'palmier.preview.guides';
 const PANELS_STORAGE_KEY = 'palmier.layout.panels';
 const LAYOUT_STORAGE_KEY = 'palmier.layout.preset';
+const SPLITS_STORAGE_KEY = 'palmier.layout.splits';
 
 /** Persisted layout preset, or the default when unset or unrecognized. */
 function loadLayout(): LayoutPreset {
@@ -110,6 +111,65 @@ function saveGuides(guides: ReadonlySet<GuideKind>): void {
   }
 }
 
+/**
+ * Draggable workspace dividers (upstream #286's resizable-splitters gap).
+ *
+ * Each key is one divider position in px. Defaults match the recorded
+ * first-run rendered matrix so enabling dragging changes nothing until the
+ * user actually drags.
+ */
+export type SplitKey = 'mediaWidth' | 'inspectorWidth' | 'previewWidth' | 'timelineHeight';
+
+const SPLIT_KEYS: readonly SplitKey[] = ['mediaWidth', 'inspectorWidth', 'previewWidth', 'timelineHeight'];
+
+export const SPLITS_DEFAULTS: Record<SplitKey, number> = {
+  mediaWidth: 480,
+  inspectorWidth: 320,
+  previewWidth: 608,
+  timelineHeight: 270,
+};
+
+/** Floors mirror the panel/preview/timeline minimums the layout already enforces. */
+export const SPLITS_LIMITS: Record<SplitKey, { min: number; max: number }> = {
+  mediaWidth: { min: 200, max: 720 },
+  inspectorWidth: { min: 200, max: 560 },
+  previewWidth: { min: 300, max: 1100 },
+  timelineHeight: { min: 160, max: 600 },
+};
+
+function clampSplit(key: SplitKey, value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return SPLITS_DEFAULTS[key];
+  const { min, max } = SPLITS_LIMITS[key];
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function loadSplits(): Record<SplitKey, number> {
+  try {
+    const raw = window.localStorage?.getItem(SPLITS_STORAGE_KEY);
+    if (!raw) return { ...SPLITS_DEFAULTS };
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return { ...SPLITS_DEFAULTS };
+    const stored = parsed as Partial<Record<SplitKey, unknown>>;
+    const splits = { ...SPLITS_DEFAULTS };
+    for (const key of SPLIT_KEYS) {
+      // Present-but-unusable falls back to the default; a usable value is
+      // clamped into range rather than rejected, matching main's settings.
+      if (stored[key] !== undefined) splits[key] = clampSplit(key, stored[key]);
+    }
+    return splits;
+  } catch {
+    return { ...SPLITS_DEFAULTS };
+  }
+}
+
+function saveSplits(splits: Record<SplitKey, number>): void {
+  try {
+    window.localStorage?.setItem(SPLITS_STORAGE_KEY, JSON.stringify(splits));
+  } catch {
+    // A full or unavailable storage quota must not break the drag itself.
+  }
+}
+
 interface UiState {
   /** Export dialog (Ctrl+M, or the title bar Export button). */
   exportOpen: boolean;
@@ -138,6 +198,11 @@ interface UiState {
    * decide which of them are present.
    */
   layout: LayoutPreset;
+  /**
+   * Divider positions for the workspace (upstream #286), in px. Persisted so
+   * a resized workspace survives a restart, like the panel flags above.
+   */
+  splits: Record<SplitKey, number>;
 
   openExport: () => void;
   closeExport: () => void;
@@ -152,6 +217,10 @@ interface UiState {
   /** Restore the first-run layout. */
   resetPanels: () => void;
   setLayout: (preset: LayoutPreset) => void;
+  /** Move one divider; the value is clamped into range and persisted. */
+  setSplit: (key: SplitKey, value: number) => void;
+  /** Restore every divider to its default position. */
+  resetSplits: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -160,6 +229,7 @@ export const useUiStore = create<UiState>((set) => ({
   guides: loadGuides(),
   panels: loadPanels(),
   layout: loadLayout(),
+  splits: loadSplits(),
 
   // Only one modal is meaningful at a time; opening one dismisses the other so
   // a stacked pair can't trap focus or leave an unreachable close button.
@@ -220,5 +290,21 @@ export const useUiStore = create<UiState>((set) => ({
       if (next === null || next === state.layout) return {};
       saveLayout(next);
       return { layout: next };
+    }),
+
+  setSplit: (key, value) =>
+    set((state) => {
+      const clamped = clampSplit(key, value);
+      if (clamped === state.splits[key]) return {};
+      const next = { ...state.splits, [key]: clamped };
+      saveSplits(next);
+      return { splits: next };
+    }),
+
+  resetSplits: () =>
+    set(() => {
+      const next = { ...SPLITS_DEFAULTS };
+      saveSplits(next);
+      return { splits: next };
     }),
 }));

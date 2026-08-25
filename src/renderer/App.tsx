@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+﻿import React, { useEffect, useRef, useState } from 'react';
 import { TitleBar } from './components/TitleBar';
 import { MediaBin } from './components/MediaBin';
 import { Timeline } from './components/Timeline';
@@ -9,7 +9,7 @@ import { Inspector } from './components/Inspector';
 import { ExportDialog } from './components/ExportDialog';
 import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
 import { useProjectStore } from './store/project';
-import { useUiStore, type PanelVisibility } from './store/ui';
+import { useUiStore, SPLITS_DEFAULTS, type PanelVisibility } from './store/ui';
 import type { LayoutPreset } from '../shared/ui/workspace-layout';
 import { initAiListeners } from './store/ai';
 import { useAutosave } from './hooks/useAutosave';
@@ -44,7 +44,7 @@ export function App() {
       try {
         const ffmpeg = await window.palmier.system.checkFfmpeg();
         if (!ffmpeg.available) {
-          console.warn('FFmpeg not found on PATH — media features will be limited.');
+          console.warn('FFmpeg not found on PATH â€” media features will be limited.');
         }
         await window.palmier.system.gpuInit();
       } catch (err) {
@@ -123,22 +123,20 @@ const PANEL_FRAME = 'flex flex-col overflow-hidden bg-surface-1';
  * fine until enough of them are open at once: at 1024 px with the Agent panel
  * showing, media + inspector + a 400 px preview asks for more than the row has,
  * and because the row is `overflow-hidden` the excess was silently clipped
- * instead of scrolling — the rightmost panel simply left the window. Rendered
+ * instead of scrolling â€” the rightmost panel simply left the window. Rendered
  * checks missed it because they measured document scrollbars and the two toolbar
  * rows, not the workspace row itself.
  *
  * So the panels shrink under pressure down to a stated floor, and nothing is
  * rigid except the Agent column, which is already at its minimum useful width.
- * At sizes where everything fits the preferred widths are unchanged.
  *
- * Wrapper columns need explicit floors rather than a content-derived minimum,
- * because they contain the timeline, whose min-content width is the full length
- * of the material.
+ * Since #286's resizable-splitters work, each side panel's preferred width is
+ * user-owned state (`ui.splits`) applied as an explicit basis; the viewport-
+ * relative clamps are gone. Under pressure flex still wins over the basis down
+ * to these floors, so nothing can be dragged or squeezed out of the window.
  */
 /** Narrowest a side panel is allowed to be squeezed to. */
 const PANEL_FLOOR = 'min-w-[200px]';
-const MEDIA_WIDTH = `w-[clamp(280px,30vw,500px)] ${PANEL_FLOOR}`;
-const INSPECTOR_WIDTH = `w-[clamp(240px,20vw,340px)] ${PANEL_FLOOR}`;
 /**
  * Narrowest preview worth showing.
  *
@@ -150,20 +148,108 @@ const INSPECTOR_WIDTH = `w-[clamp(240px,20vw,340px)] ${PANEL_FLOOR}`;
 const PREVIEW_MIN = 'min-w-[300px]';
 /** Preview floor + gap + inspector floor. */
 const PREVIEW_WITH_INSPECTOR_MIN = 'min-w-[505px]';
-/** Media floor + gap + inspector floor. */
-const MEDIA_WITH_INSPECTOR_MIN = 'min-w-[405px]';
 
 /**
- * The three arrangements from upstream PR #430.
+ * One draggable workspace divider (upstream #286).
  *
- * Expressed as nested flex rather than draggable splitters, which is the honest
- * shape of what exists today: the presets give the arrangements their value —
- * particularly `vertical`, where a tall preview column is what makes portrait
- * work practical — while resizable dividers remain a separate gap.
- *
- * `min-h-0` and `min-w-0` appear throughout on purpose. A flex child defaults to
- * its content's minimum size, so without them the timeline's scrollable content
- * pushes the whole column wider than the window instead of scrolling.
+ * Pointer capture keeps the drag alive outside the element; deltas stream into
+ * the store clamped, so the persisted value is always one the layout honors.
+ * Double-click restores that divider's default position. The strip occupies the
+ * same 5 px the flex gaps it replaces used, so first-run geometry is unchanged.
+ */
+function Divider({
+  axis,
+  apply,
+  reset,
+}: {
+  axis: 'x' | 'y';
+  /** Feed a pointer delta to the owning split; sign/direction live here. */
+  apply: (delta: number) => void;
+  reset: () => void;
+}) {
+  const dragging = useRef(false);
+  const last = useRef(0);
+
+  const position = (event: React.PointerEvent<HTMLDivElement>) =>
+    axis === 'x' ? event.clientX : event.clientY;
+
+  return (
+    <div
+      role="separator"
+      aria-orientation={axis === 'x' ? 'vertical' : 'horizontal'}
+      data-workspace-divider={axis}
+      className={
+        axis === 'x'
+          ? 'w-[5px] shrink-0 cursor-col-resize rounded bg-transparent transition-colors hover:bg-white/15'
+          : 'h-[5px] shrink-0 cursor-row-resize rounded bg-transparent transition-colors hover:bg-white/15'
+      }
+      onDoubleClick={reset}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragging.current = true;
+        last.current = position(event);
+      }}
+      onPointerMove={(event) => {
+        if (!dragging.current || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        const current = position(event);
+        apply(current - last.current);
+        last.current = current;
+      }}
+      onPointerUp={(event) => {
+        dragging.current = false;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+      }}
+    />
+  );
+}
+
+/** Hook the divider before the Inspector: dragging toward the preview narrows it. */
+function InspectorDivider() {
+  const width = useUiStore((state) => state.splits.inspectorWidth);
+  const setSplit = useUiStore((state) => state.setSplit);
+  return (
+    <Divider
+      axis="x"
+      apply={(delta) => setSplit('inspectorWidth', width - delta)}
+      reset={() => setSplit('inspectorWidth', SPLITS_DEFAULTS.inspectorWidth)}
+    />
+  );
+}
+
+/** The horizontal divider above a bottom-docked timeline: down grows it. */
+function TimelineDivider() {
+  const height = useUiStore((state) => state.splits.timelineHeight);
+  const setSplit = useUiStore((state) => state.setSplit);
+  return (
+    <Divider
+      axis="y"
+      apply={(delta) => setSplit('timelineHeight', height + delta)}
+      reset={() => setSplit('timelineHeight', SPLITS_DEFAULTS.timelineHeight)}
+    />
+  );
+}
+
+/** The vertical divider left of the vertical preset's preview column. */
+function PreviewColumnDivider() {
+  const width = useUiStore((state) => state.splits.previewWidth);
+  const setSplit = useUiStore((state) => state.setSplit);
+  return (
+    <Divider
+      axis="x"
+      apply={(delta) => setSplit('previewWidth', width - delta)}
+      reset={() => setSplit('previewWidth', SPLITS_DEFAULTS.previewWidth)}
+    />
+  );
+}
+
+/**
+ * The three arrangements from upstream PR #430, now separated by draggable
+ * dividers (#286). Each divider owns exactly one stored dimension; the panel
+ * on its "free" side absorbs slack via flex, so a drag never fights the
+ * pressure-shrink floors.
  */
 function WorkspacePresetLayout({
   layout,
@@ -172,39 +258,53 @@ function WorkspacePresetLayout({
   layout: LayoutPreset;
   panels: PanelVisibility;
 }) {
+  const splits = useUiStore((state) => state.splits);
+
   const media = panels.media ? (
-    <aside className={`${PANEL_FRAME} min-h-0 ${MEDIA_WIDTH}`}>
+    <aside
+      className={`${PANEL_FRAME} min-h-0 ${PANEL_FLOOR}`}
+      style={{ width: splits.mediaWidth }}
+    >
       <MediaBin />
     </aside>
   ) : null;
 
   const inspector = panels.inspector ? (
-    <aside className={`${PANEL_FRAME} min-h-0 ${INSPECTOR_WIDTH}`}>
+    <aside
+      className={`${PANEL_FRAME} min-h-0 ${PANEL_FLOOR}`}
+      style={{ width: splits.inspectorWidth }}
+    >
       <Inspector />
     </aside>
   ) : null;
 
   const hasSidePanel = media !== null || inspector !== null;
 
+  // Below-the-panels timeline dock: its divider feeds timelineHeight.
+  const timelineBelow = (
+    <>
+      <TimelineDivider />
+      <Timeline height={splits.timelineHeight} />
+    </>
+  );
+
   if (layout === 'media') {
     // [Media] | [Preview | Inspector] / [Timeline]
     // Media runs the full height, which is what makes sifting through a large
     // bin bearable.
     return (
-      <div className="flex min-h-0 min-w-0 flex-1 gap-[5px]">
+      <div className="flex min-h-0 min-w-0 flex-1">
         {media}
-        <div
-          className={`flex min-h-0 flex-1 flex-col gap-[5px] ${
-            inspector ? PREVIEW_WITH_INSPECTOR_MIN : PREVIEW_MIN
-          }`}
-        >
-          <div className="flex min-h-0 flex-1 gap-[5px]">
+        {media && <Gap />}
+        <div className={`flex min-h-0 flex-1 flex-col ${inspector ? PREVIEW_WITH_INSPECTOR_MIN : PREVIEW_MIN}`}>
+          <div className="flex min-h-0 flex-1">
             <main className={`flex min-h-0 flex-1 flex-col ${PREVIEW_MIN}`}>
               <Preview />
             </main>
+            {inspector && <InspectorDivider />}
             {inspector}
           </div>
-          <Timeline />
+          {timelineBelow}
         </div>
       </div>
     );
@@ -215,23 +315,28 @@ function WorkspacePresetLayout({
     // The preview takes a tall right-hand column so a 9:16 frame is shown large
     // instead of being letterboxed into a wide box.
     return (
-      <div className="flex min-h-0 min-w-0 flex-1 gap-[5px]">
-        <div
-          className={`flex min-h-0 flex-1 flex-col gap-[5px] ${
-            media && inspector ? MEDIA_WITH_INSPECTOR_MIN : PANEL_FLOOR
-          }`}
-        >
-          {hasSidePanel && (
-            <div className="flex min-h-0 flex-1 gap-[5px]">
-              {media}
-              {inspector}
-            </div>
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {hasSidePanel ? (
+            <>
+              <div className="flex min-h-0 flex-1">
+                {media}
+                {media && inspector && <Gap />}
+                {inspector}
+              </div>
+              {timelineBelow}
+            </>
+          ) : (
+            /* Nothing else claims this column when both side panels are hidden, so
+               the timeline takes the height instead of leaving it blank. */
+            <Timeline fill />
           )}
-          {/* Nothing else claims this column when both side panels are hidden, so
-              the timeline takes the height instead of leaving it blank. */}
-          <Timeline fill={!hasSidePanel} />
         </div>
-        <main className={`flex min-h-0 w-[clamp(320px,38vw,720px)] flex-col ${PREVIEW_MIN}`}>
+        <PreviewColumnDivider />
+        <main
+          className={`flex min-h-0 flex-col ${PREVIEW_MIN}`}
+          style={{ width: splits.previewWidth }}
+        >
           <Preview />
         </main>
       </div>
@@ -240,13 +345,22 @@ function WorkspacePresetLayout({
 
   // Default: [Media | Preview | Inspector] / [Timeline]
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 gap-[5px]">
+    <div className="flex min-h-0 min-w-0 flex-1">
       {media}
-      <main className={`flex min-h-0 flex-1 flex-col gap-[5px] ${PREVIEW_MIN}`}>
+      {media && <Gap />}
+      <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${PREVIEW_MIN}`}>
         <Preview />
-        <Timeline />
+        {timelineBelow}
       </main>
+      {inspector && <InspectorDivider />}
       {inspector}
     </div>
   );
 }
+
+/** The visual gap a Divider replaces where no resizable boundary exists. */
+function Gap() {
+  return <div className="w-[5px] shrink-0" />;
+}
+
+
