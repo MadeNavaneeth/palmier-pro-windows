@@ -153,4 +153,28 @@ describe('set_title_text tool (R3)', () => {
     expect(cleared.titleFillMode).toBeUndefined();
     expect(cleared.titleBlurRadius).toBeUndefined();
   });
+
+  it('carries perspective tilt with 0-clears semantics (#519)', async () => {
+    const { editor, executor } = executorWithTracks();
+    await executor.execute('add_texts', {
+      entries: [{
+        trackId: 'v1', startFrame: 0, durationFrames: 30, text: 'Tilted',
+        tiltX: -18, tiltY: 24,
+      }],
+    });
+    const added = editor.getClips().find((c) => c.type === 'title')!;
+    expect(added.titleTiltXDeg).toBe(-18);
+    expect(added.titleTiltYDeg).toBe(24);
+
+    const id = editor.addTitleClip({ trackId: 'v1', text: 'Flat', startFrame: 100, durationFrames: 30 });
+    await executor.execute('set_title_text', { clipId: id, tiltX: 10, tiltY: -5 });
+    const tilted = editor.getClips().find((c) => c.id === id)!;
+    expect(tilted.titleTiltXDeg).toBe(10);
+    expect(tilted.titleTiltYDeg).toBe(-5);
+
+    await executor.execute('set_title_text', { clipId: id, tiltX: 0, tiltY: 0 });
+    const cleared = editor.getClips().find((c) => c.id === id)!;
+    expect(cleared.titleTiltXDeg).toBeUndefined();
+    expect(cleared.titleTiltYDeg).toBeUndefined();
+  });
 });

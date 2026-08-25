@@ -286,7 +286,8 @@ export class ToolExecutor {
               entry.align !== undefined, entry.backgroundColor !== undefined,
               entry.backgroundPadding !== undefined, entry.lineSpacing !== undefined,
               entry.fontCase !== undefined, entry.fillMode !== undefined,
-              entry.blurRadius !== undefined,
+              entry.blurRadius !== undefined, entry.tiltX !== undefined,
+              entry.tiltY !== undefined,
             ];
             if (styleFields.some(Boolean)) {
               this.editor.applyClipProperties([clipId], 'Style title', (draft) => {
@@ -313,6 +314,14 @@ export class ToolExecutor {
                   // 0 clears rather than storing a no-op radius.
                   if (entry.blurRadius === 0) delete draft.titleBlurRadius;
                   else draft.titleBlurRadius = entry.blurRadius;
+                }
+                if (entry.tiltX !== undefined) {
+                  if (entry.tiltX === 0) delete draft.titleTiltXDeg;
+                  else draft.titleTiltXDeg = entry.tiltX;
+                }
+                if (entry.tiltY !== undefined) {
+                  if (entry.tiltY === 0) delete draft.titleTiltYDeg;
+                  else draft.titleTiltYDeg = entry.tiltY;
                 }
                 return true;
               });
@@ -408,7 +417,7 @@ export class ToolExecutor {
               return { success: false, error: 'Clip not found, is not a title, or text is invalid.' };
             }
           }
-          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding, args.lineSpacing, args.fontCase, args.fillMode, args.blurRadius];
+          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding, args.lineSpacing, args.fontCase, args.fillMode, args.blurRadius, args.tiltX, args.tiltY];
           if (styleFields.some((v) => v !== undefined)) {
             this.editor.applyClipProperties([args.clipId], 'Style title', (draft) => {
               if (draft.type !== 'title') return false;
@@ -435,6 +444,14 @@ export class ToolExecutor {
               if (args.blurRadius !== undefined) {
                 if (args.blurRadius === 0) delete draft.titleBlurRadius;
                 else draft.titleBlurRadius = args.blurRadius;
+              }
+              if (args.tiltX !== undefined) {
+                if (args.tiltX === 0) delete draft.titleTiltXDeg;
+                else draft.titleTiltXDeg = args.tiltX;
+              }
+              if (args.tiltY !== undefined) {
+                if (args.tiltY === 0) delete draft.titleTiltYDeg;
+                else draft.titleTiltYDeg = args.tiltY;
               }
               return true;
             });

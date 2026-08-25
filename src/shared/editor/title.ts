@@ -132,3 +132,79 @@ export function escapeDrawtext(text: string): string {
     .replace(/%/g, '\\%')
     .replace(/\n/g, '\\n');
 }
+
+
+/**
+ * Perspective tilt corner projection for title layers (#519), a faithful
+ * port of upstream TextTiltGeometry: X-then-Y tilt around a pivot with a
+ * rect-independent focal length, in top-left canvas coordinates.
+ */
+export interface TiltCorner {
+  x: number;
+  y: number;
+}
+
+export interface TiltCorners {
+  topLeft: TiltCorner;
+  topRight: TiltCorner;
+  bottomRight: TiltCorner;
+  bottomLeft: TiltCorner;
+}
+
+export function titleTiltCorners(
+  rect: { minX: number; minY: number; maxX: number; maxY: number },
+  pivot: { x: number; y: number },
+  rotationXDeg: number,
+  rotationYDeg: number,
+  canvasSize: { width: number; height: number },
+): TiltCorners {
+  const rad = (deg: number) => (deg * Math.PI) / 180;
+  const sinX = Math.sin(rad(rotationXDeg));
+  const cosX = Math.cos(rad(rotationXDeg));
+  const sinY = Math.sin(rad(rotationYDeg));
+  const cosY = Math.cos(rad(rotationYDeg));
+
+  const canvasExtent = Math.max(canvasSize.width, canvasSize.height);
+  if (!Number.isFinite(canvasExtent) || canvasExtent <= 0) {
+    return {
+      topLeft: { x: rect.minX, y: rect.minY },
+      topRight: { x: rect.maxX, y: rect.minY },
+      bottomRight: { x: rect.maxX, y: rect.maxY },
+      bottomLeft: { x: rect.minX, y: rect.maxY },
+    };
+  }
+
+  // Focal length is rect-independent so every surface shares one projection.
+  const maxHalfWidth = Math.max(
+    (canvasSize.width * 1) / 2,
+    Math.abs(pivot.x),
+    Math.abs(canvasSize.width - pivot.x),
+  );
+  const maxHalfHeight = Math.max(
+    canvasSize.height / 2,
+    Math.abs(pivot.y),
+    Math.abs(canvasSize.height - pivot.y),
+  );
+  const maxDepth = maxHalfWidth * Math.abs(sinY) + maxHalfHeight * Math.abs(sinX * cosY);
+  const focalLength = Math.max(canvasExtent * 2, maxDepth + canvasExtent / 4);
+
+  const project = (px: number, py: number): TiltCorner => {
+    const x = px - pivot.x;
+    const y = -(py - pivot.y);
+    const tiltedX = x * cosY + y * sinX * sinY;
+    const tiltedY = y * cosX;
+    const depth = -x * sinY + y * sinX * cosY;
+    const scale = focalLength / (focalLength + depth);
+    return {
+      x: pivot.x + tiltedX * scale,
+      y: pivot.y + -tiltedY * scale,
+    };
+  };
+
+  return {
+    topLeft: project(rect.minX, rect.minY),
+    topRight: project(rect.maxX, rect.minY),
+    bottomRight: project(rect.maxX, rect.maxY),
+    bottomLeft: project(rect.minX, rect.maxY),
+  };
+}

@@ -15,7 +15,11 @@
  */
 
 import type { Clip } from '../../shared/types/project';
-import { TITLE_BACKGROUND_PADDING_DEFAULT, applyTitleFontCase } from '../../shared/editor/title';
+import {
+  TITLE_BACKGROUND_PADDING_DEFAULT,
+  applyTitleFontCase,
+  titleTiltCorners,
+} from '../../shared/editor/title';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
@@ -34,7 +38,62 @@ function makeLayer(width: number, height: number): { canvas: OffscreenCanvas; ct
 export function isAdvancedTitle(clip: Clip): boolean {
   return clip.type === 'title'
     && Boolean(clip.text)
-    && (clip.titleFillMode !== undefined || (clip.titleBlurRadius ?? 0) > 0);
+    && (
+      clip.titleFillMode !== undefined
+      || (clip.titleBlurRadius ?? 0) > 0
+      || (clip.titleTiltXDeg ?? 0) !== 0
+      || (clip.titleTiltYDeg ?? 0) !== 0
+    );
+}
+
+/**
+ * Draw a full-canvas layer onto the target through the projected tilt quad.
+ * Canvas 2D has no projective transform, so the layer is composited in
+ * horizontal strips whose edges interpolate the four corners — visually
+ * faithful for the moderate tilts captions use, and identical between
+ * preview and bake because both run this same function.
+ */
+function drawLayerWithTilt(
+  ctx: Ctx2D,
+  layer: OffscreenCanvas,
+  corners: ReturnType<typeof titleTiltCorners>,
+): void {
+  const { width, height } = layer;
+  type Pt = { x: number; y: number };
+  const lerpPt = (a: Pt, b: Pt, t: number): Pt => ({
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+  });
+  // P(u,v): bilinear over the projected quad; u along the top edge.
+  const P = (u: number, v: number): Pt =>
+    lerpPt(
+      lerpPt(corners.topLeft, corners.topRight, u),
+      lerpPt(corners.bottomLeft, corners.bottomRight, u),
+      v,
+    );
+
+  const slices = Math.min(180, Math.max(24, Math.round(height / 8)));
+  const sliceSrcH = height / slices;
+  for (let i = 0; i < slices; i++) {
+    const v0 = i / slices;
+    const v1 = (i + 1) / slices;
+
+    // Affine approximation anchored on the strip's own left edge: origin at
+    // its top, u-axis along that row, v-axis down to the row below.
+    const topLeftRow = P(0, v0);
+    const topRightRow = P(1, v0);
+    const bottomLeftRow = P(0, v1);
+
+    const ux = (topRightRow.x - topLeftRow.x) / width;
+    const uy = (topRightRow.y - topLeftRow.y) / width;
+    const vx = (bottomLeftRow.x - topLeftRow.x) / sliceSrcH;
+    const vy = (bottomLeftRow.y - topLeftRow.y) / sliceSrcH;
+
+    ctx.save();
+    ctx.transform(ux, uy, vx, vy, topLeftRow.x, topLeftRow.y);
+    ctx.drawImage(layer, 0, i * sliceSrcH, width, sliceSrcH, 0, 0, width, sliceSrcH);
+    ctx.restore();
+  }
 }
 
 export function drawTitle(
@@ -62,96 +121,114 @@ export function drawTitle(
 
   const blur = (clip.titleBlurRadius ?? 0) > 0 ? (clip.titleBlurRadius as number) : null;
 
+  const tiltX = clip.titleTiltXDeg ?? 0;
+  const tiltY = clip.titleTiltYDeg ?? 0;
+  const tilted = tiltX !== 0 || tiltY !== 0;
+  const useLayer = clip.titleFillMode !== undefined || tilted;
+
+  // Solid styling pass, parameterized by target so it can draw straight to
+  // the canvas or onto a layer that tilt/blur will then compose.
+  const drawSolid = (g: Ctx2D): void => {
+    g.save();
+    g.globalAlpha = clip.opacity;
+    g.font = font;
+
+    if (clip.titleBackgroundColor) {
+      let maxW = 0;
+      for (const line of textLines) {
+        const m = g.measureText(line);
+        if (m.width > maxW) maxW = m.width;
+      }
+      const pad = Math.round(clip.titleBackgroundPadding ?? TITLE_BACKGROUND_PADDING_DEFAULT);
+      const blockH = textLines.length * fontSize * 1.2 + (textLines.length - 1) * lineSpacing;
+      g.fillStyle = clip.titleBackgroundColor;
+      g.fillRect(
+        centerX - maxW / 2 - pad,
+        centerY - blockH / 2 - pad,
+        maxW + pad * 2,
+        blockH + pad * 2,
+      );
+    }
+
+    g.fillStyle = clip.titleColor ?? '#ffffff';
+    g.textAlign = align;
+    g.textBaseline = 'middle';
+
+    if (clip.titleStrokeWidth && clip.titleStrokeWidth > 0 && clip.titleStrokeColor) {
+      g.strokeStyle = clip.titleStrokeColor;
+      g.lineWidth = clip.titleStrokeWidth * 2; // canvas strokes centered
+      g.lineJoin = 'round';
+      for (const [i, line] of textLines.entries()) {
+        const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
+        g.strokeText(line, centerX, y);
+      }
+    }
+
+    for (const [i, line] of textLines.entries()) {
+      const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
+      g.fillText(line, centerX, y);
+    }
+    g.restore();
+  };
+
   const withBlur = (draw: () => void): void => {
     if (blur !== null) ctx.filter = `blur(${blur}px)`;
     draw();
     if (blur !== null) ctx.filter = 'none';
   };
 
-  // ── footage / inverted render on their own layer ──────────────────────────
-  if (clip.titleFillMode === 'footage' || clip.titleFillMode === 'inverted') {
-    const { canvas: layer, ctx: lctx } = makeLayer(settings.width, settings.height);
-    lctx.font = font;
-    lctx.textBaseline = 'middle';
-
-    if (clip.titleFillMode === 'footage') {
-      // Matte band (upstream forces black when switching to footage), then
-      // erase the glyphs so overlaying leaves footage in the letterforms.
-      const bg = clip.titleBackgroundColor ?? '#000000';
-      let maxW = 0;
-      for (const line of textLines) {
-        const m = lctx.measureText(line);
-        if (m.width > maxW) maxW = m.width;
-      }
-      const pad = Math.round(clip.titleBackgroundPadding ?? TITLE_BACKGROUND_PADDING_DEFAULT);
-      const blockH = textLines.length * fontSize * 1.2 + (textLines.length - 1) * lineSpacing;
-      lctx.fillStyle = bg;
-      lctx.fillRect(centerX - maxW / 2 - pad, centerY - blockH / 2 - pad, maxW + pad * 2, blockH + pad * 2);
-      lctx.globalCompositeOperation = 'destination-out';
-      lctx.fillStyle = '#ffffff';
-      for (const [i, line] of textLines.entries()) {
-        lctx.fillText(line, centerX, centerY + (i - (textLines.length - 1) / 2) * lineH);
-      }
-    } else {
-      // Inverted: opaque white silhouette; the export graph difference-blends
-      // it, and preview mirrors that with the same composite operation below.
-      lctx.fillStyle = '#ffffff';
-      for (const [i, line] of textLines.entries()) {
-        lctx.fillText(line, centerX, centerY + (i - (textLines.length - 1) / 2) * lineH);
-      }
-    }
-
-    withBlur(() => ctx.drawImage(layer, 0, 0));
+  if (!useLayer) {
+    withBlur(() => drawSolid(ctx));
     return;
   }
 
-  // ── solid color path (unchanged behavior) ─────────────────────────────────
-  ctx.save();
-  ctx.globalAlpha = clip.opacity;
+  // ── layer path: fill modes and/or tilt ────────────────────────────────────
+  const { canvas: layer, ctx: lctx } = makeLayer(settings.width, settings.height);
+  lctx.font = font;
+  lctx.textBaseline = 'middle';
 
-  // The font must be set before any measureText: the fitted background box
-  // has to wrap the same glyphs the fill will draw, or preview and export
-  // disagree about the box size (#507).
-  ctx.font = font;
-
-  if (clip.titleBackgroundColor) {
+  if (clip.titleFillMode === 'footage') {
+    // Matte band (upstream forces black when switching to footage), then
+    // erase the glyphs so overlaying leaves footage in the letterforms.
+    const bg = clip.titleBackgroundColor ?? '#000000';
     let maxW = 0;
     for (const line of textLines) {
-      const m = ctx.measureText(line);
+      const m = lctx.measureText(line);
       if (m.width > maxW) maxW = m.width;
     }
     const pad = Math.round(clip.titleBackgroundPadding ?? TITLE_BACKGROUND_PADDING_DEFAULT);
     const blockH = textLines.length * fontSize * 1.2 + (textLines.length - 1) * lineSpacing;
-    const boxCenterX = clip.x + clip.width / 2;
-    const boxCenterY = clip.y + clip.height / 2;
-    ctx.fillStyle = clip.titleBackgroundColor;
-    withBlur(() => ctx.fillRect(
-      boxCenterX - maxW / 2 - pad,
-      boxCenterY - blockH / 2 - pad,
-      maxW + pad * 2,
-      blockH + pad * 2,
-    ));
+    lctx.fillStyle = bg;
+    lctx.fillRect(centerX - maxW / 2 - pad, centerY - blockH / 2 - pad, maxW + pad * 2, blockH + pad * 2);
+    lctx.globalCompositeOperation = 'destination-out';
+    lctx.fillStyle = '#ffffff';
+    for (const [i, line] of textLines.entries()) {
+      lctx.fillText(line, centerX, centerY + (i - (textLines.length - 1) / 2) * lineH);
+    }
+  } else if (clip.titleFillMode === 'inverted') {
+    // Inverted: opaque white silhouette; the export graph difference-blends
+    // it, and preview mirrors that with the same composite operation below.
+    lctx.fillStyle = '#ffffff';
+    for (const [i, line] of textLines.entries()) {
+      lctx.fillText(line, centerX, centerY + (i - (textLines.length - 1) / 2) * lineH);
+    }
+  } else {
+    drawSolid(lctx);
   }
 
-  ctx.fillStyle = clip.titleColor ?? '#ffffff';
-  ctx.textAlign = align;
-  ctx.textBaseline = 'middle';
-
-  if (clip.titleStrokeWidth && clip.titleStrokeWidth > 0 && clip.titleStrokeColor) {
-    ctx.strokeStyle = clip.titleStrokeColor;
-    ctx.lineWidth = clip.titleStrokeWidth * 2; // canvas strokes centered
-    ctx.lineJoin = 'round';
-    withBlur(() => {
-      for (const [i, line] of textLines.entries()) {
-        const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
-        ctx.strokeText(line, centerX, y);
-      }
-    });
+  if (tilted) {
+    // Project through the same corner math upstream's TextTiltGeometry uses,
+    // pivoting on the clip box center over a full-canvas raster.
+    const corners = titleTiltCorners(
+      { minX: 0, minY: 0, maxX: settings.width, maxY: settings.height },
+      { x: centerX, y: centerY },
+      tiltX,
+      tiltY,
+      settings,
+    );
+    drawLayerWithTilt(ctx, layer, corners);
+    return;
   }
 
-  for (const [i, line] of textLines.entries()) {
-    const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
-    withBlur(() => ctx.fillText(line, centerX, y));
-  }
-  ctx.restore();
+  withBlur(() => ctx.drawImage(layer, 0, 0));
 }

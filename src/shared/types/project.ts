@@ -135,6 +135,10 @@ export interface Clip {
   titleFillMode?: 'footage' | 'inverted';
   /** Gaussian blur applied to the rendered text layer, in px (#529). */
   titleBlurRadius?: number;
+  /** Perspective tilt around the vertical axis, in degrees (#519). */
+  titleTiltXDeg?: number;
+  /** Perspective tilt around the horizontal axis, in degrees (#519). */
+  titleTiltYDeg?: number;
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */

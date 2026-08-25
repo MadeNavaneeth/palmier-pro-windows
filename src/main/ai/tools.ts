@@ -395,6 +395,10 @@ export const tools = {
           .describe('Advanced fill (upstream TextFillMode). "footage" knocks the letters out of a matte band so the video shows through them; "inverted" difference-inverts the video inside the letterforms. Omit for solid color.'),
         blurRadius: z.number().int().min(0).max(64).optional()
           .describe('Gaussian blur on the text layer, in pixels. Default 0.'),
+        tiltX: z.number().finite().min(-89).max(89).optional()
+          .describe('Perspective tilt around the vertical axis, in degrees. Default 0.'),
+        tiltY: z.number().finite().min(-89).max(89).optional()
+          .describe('Perspective tilt around the horizontal axis, in degrees. Default 0.'),
       })).min(1).describe('Titles to add.'),
     }),
   },
@@ -447,11 +451,16 @@ export const tools = {
         .describe('Advanced fill. "footage"/"inverted" as in add_texts; "color" returns to solid styling.'),
       blurRadius: z.number().int().min(0).max(64).optional()
         .describe('Gaussian blur on the text layer, in pixels. 0 clears.'),
+      tiltX: z.number().finite().min(-89).max(89).optional()
+        .describe('Perspective tilt around the vertical axis, in degrees. 0 clears.'),
+      tiltY: z.number().finite().min(-89).max(89).optional()
+        .describe('Perspective tilt around the horizontal axis, in degrees. 0 clears.'),
     }).refine(
       (op) => op.text !== undefined || op.fontSize !== undefined || op.color !== undefined
         || op.bold !== undefined || op.fontFamily !== undefined || op.backgroundColor !== undefined
         || op.backgroundPadding !== undefined || op.lineSpacing !== undefined
-        || op.fontCase !== undefined || op.fillMode !== undefined || op.blurRadius !== undefined,
+        || op.fontCase !== undefined || op.fillMode !== undefined || op.blurRadius !== undefined
+        || op.tiltX !== undefined || op.tiltY !== undefined,
       { message: 'Pass at least one field to update.' },
     ),
   },
