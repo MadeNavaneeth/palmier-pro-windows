@@ -1,8 +1,8 @@
 /**
  * TimelineClip — a single clip rendered on a track lane.
  * Supports: selection, drag-to-move, trim handles (left/right edges),
- * and a context menu ("Save as audio" bakes the clip's trimmed source
- * window into a standalone library asset, upstream PR #562).
+ * and a context menu whose entries are gated individually (Save as audio,
+ * Duplicate, speed, settings copy/paste, link management #462).
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -65,6 +65,30 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   const setClipPan = useTimelineStore((s) => s.setClipPan);
   const duplicateSelected = useTimelineStore((s) => s.duplicateSelected);
   const selectedCount = selectedClipIds.size;
+
+  // ─── Armed media swap (#500 surface) ──────────────────────────────────────
+  const armedSwap = useMediaPanelStore((s) => s.armedSwap);
+  const armMediaSwap = useMediaPanelStore((s) => s.armMediaSwap);
+  const cancelMediaSwap = useMediaPanelStore((s) => s.cancelMediaSwap);
+  const isArmedForSwap = armedSwap?.clipId === clip.id;
+  const canArmSwap =
+    (clip.type === 'video' || clip.type === 'audio' || clip.type === 'image')
+    && !isOffline;
+  // Upstream cancels an armed swap when the timeline changes under it.
+  // The store verifies the same fingerprint at completion time; this effect
+  // makes the cancellation visible immediately instead of at pick time.
+  useEffect(() => {
+    if (!isArmedForSwap || !armedSwap) return;
+    const current = useTimelineStore
+      .getState()
+      .project.timeline.clips.find((candidate) => candidate.id === clip.id);
+    if (!current) {
+      cancelMediaSwap();
+      return;
+    }
+    const fingerprint = [current.trackId, current.startFrame, current.durationFrames, current.assetId].join(':');
+    if (fingerprint !== armedSwap.fingerprint) cancelMediaSwap();
+  }, [isArmedForSwap, armedSwap, clip.id, clip.trackId, clip.startFrame, clip.durationFrames, clip.assetId, cancelMediaSwap]);
 
   // ─── Normalize audio (R5) ────────────────────────────────────────────────
   const [normalizing, setNormalizing] = useState(false);
@@ -361,6 +385,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
         ${isSelected ? 'ring-2 ring-accent ring-offset-1 ring-offset-surface-0 shadow-lg' : ''}
         ${isHovered && !isSelected ? 'brightness-110 shadow-md' : ''}
       `}
+      data-armed-swap={isArmedForSwap || undefined}
       style={{
         left: `${left}px`,
         width: `${Math.max(width, 4)}px`, // minimum 4px visible
@@ -368,7 +393,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       data-offline={isOffline || undefined}
       onMouseDown={handleMouseDown}
       onClick={handleClick}
-      onContextMenu={canSaveAudio ? handleContextMenu : undefined}
+      onContextMenu={handleContextMenu}
       onMouseEnter={() => setHoveredClip(clip.id)}
       onMouseLeave={() => setHoveredClip(null)}
     >
@@ -540,6 +565,11 @@ export function TimelineClip({ clip }: TimelineClipProps) {
         )}
       </div>
 
+      {/* Armed swap: dashed accent ring above selection styling */}
+      {isArmedForSwap && (
+        <div className="pointer-events-none absolute -inset-0.5 z-10 rounded-sm border border-dashed border-accent" />
+      )}
+
       {/* Right trim handle */}
       {showsTrimHandles(width) && (
         <div
@@ -598,6 +628,19 @@ export function TimelineClip({ clip }: TimelineClipProps) {
                 className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
               >
                 Link selected clips
+              </button>
+            )}
+            {canArmSwap && (
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setMenuPos(null);
+                  if (isArmedForSwap) cancelMediaSwap();
+                  else armMediaSwap(clip.id);
+                }}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                {isArmedForSwap ? 'Cancel media swap' : 'Swap media…'}
               </button>
             )}
             {(clip.type === 'video' || clip.type === 'image') && (

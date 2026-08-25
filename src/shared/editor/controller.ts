@@ -2227,15 +2227,19 @@ export class EditorController {  private project: Project;
    * the new asset's duration (the Windows rendering of upstream's
    * trim-end-headroom bookkeeping).
    */
-  swapClipMedia(clipId: string, replacementAssetId: string): {
-    changedClipIds: string[];
-    oldAssetId: string;
-    newAssetId: string;
-  } {
+  /**
+   * Dry-run validation for `swapClipMedia` (upstream PR #500's arming
+   * preview): the UI uses this to show which library assets are eligible
+   * replacements before one is picked. Same rules, same wordings, no edit.
+   */
+  canSwapClipMedia(
+    clipId: string,
+    replacementAssetId: string,
+  ): { ok: true } | { ok: false; reason: string } {
     const anchor = this.findClipById(clipId);
-    if (!anchor) throw new Error(`Clip not found: ${clipId}`);
+    if (!anchor) return { ok: false, reason: `Clip not found: ${clipId}` };
     const replacement = this.project.media.find((asset) => asset.id === replacementAssetId);
-    if (!replacement) throw new Error(`No media asset "${replacementAssetId}" in this project.`);
+    if (!replacement) return { ok: false, reason: `No media asset "${replacementAssetId}" in this project.` };
 
     // Only linked partners sharing the anchor's source swap with it; a
     // manually linked clip with different media keeps its own source.
@@ -2253,9 +2257,9 @@ export class EditorController {  private project: Project;
 
     for (const target of targets) {
       if (target.type === 'title' || target.type === 'generated') {
-        throw new Error('This clip\'s source cannot be swapped.');
+        return { ok: false, reason: 'This clip\'s source cannot be swapped.' };
       }
-      // Checked before the generic kind mismatch so the common real case 
+      // Checked before the generic kind mismatch so the common real case
       // swapping a picture-plus-linked-audio pair to a silent video  gets
       // the precise reason instead of "video vs audio".
       if (
@@ -2263,22 +2267,40 @@ export class EditorController {  private project: Project;
         && replacement.type === 'video'
         && !replacement.audioCodec
       ) {
-        throw new Error('The replacement video has no audio stream to back this clip\'s audio.');
+        return { ok: false, reason: 'The replacement video has no audio stream to back this clip\'s audio.' };
       }
       if (sourceKindOf(target) !== replacement.type) {
-        throw new Error(
-          `Replacement is ${replacement.type} media; this clip's source is ${sourceKindOf(target)}.`,
-        );
+        return {
+          ok: false,
+          reason: `Replacement is ${replacement.type} media; this clip's source is ${sourceKindOf(target)}.`,
+        };
       }
       if (replacement.type !== 'image' && replacement.duration < target.outPoint - target.inPoint) {
-        throw new Error(
-          'The replacement media is too short for this clip\'s edit. Trim it shorter first or pick longer media.',
-        );
+        return {
+          ok: false,
+          reason: 'The replacement media is too short for this clip\'s edit. Trim it shorter first or pick longer media.',
+        };
       }
     }
     if (!this.canEditClipIds(targets.map((clip) => clip.id))) {
-      throw new Error('One or more clips are on a locked track.');
+      return { ok: false, reason: 'One or more clips are on a locked track.' };
     }
+    return { ok: true };
+  }
+
+  swapClipMedia(clipId: string, replacementAssetId: string): {
+    changedClipIds: string[];
+    oldAssetId: string;
+    newAssetId: string;
+  } {
+    const verdict = this.canSwapClipMedia(clipId, replacementAssetId);
+    if (!verdict.ok) throw new Error(verdict.reason);
+
+    const anchor = this.findClipById(clipId)!;
+    const targets = this.expandLinkedClipIds([clipId])
+      .map((id) => this.findClipById(id))
+      .filter((clip): clip is Clip => clip !== undefined)
+      .filter((clip) => clip.assetId === anchor.assetId);
 
     const targetIds = new Set(targets.map((clip) => clip.id));
     const clips = this.project.timeline.clips.map((clip) =>

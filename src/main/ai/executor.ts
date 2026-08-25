@@ -9,7 +9,14 @@ import { tools, getToolByName } from './tools';
 import { clampFrame } from '../../shared/utils/safe-number';
 import { detectSilenceForFile } from '../media/audio-envelope';
 import { loadSilenceSettings } from '../media/silence-settings';
-import { resolveSilenceConfig } from '../../shared/audio/silence-detector';
+import { resolveSilenceConfig, type SilenceConfig, type SilentRange } from '../../shared/audio/silence-detector';
+import {
+  resolveSilenceScope,
+  timelineSilenceRanges,
+  type SilenceScopeResolution,
+  type SilenceTrackScope,
+} from '../../shared/editor/silence-scoping';
+import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple';
 import {
   MAX_CANVAS_EDGE,
   aspectRatioLabel,
@@ -698,10 +705,11 @@ export class ToolExecutor {
       }
 
       case 'remove_silence': {
-        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
-        if (!clip) return { success: false, error: 'Clip not found.' };
-        const asset = this.editor.getMedia().find((m) => m.id === clip.assetId);
-        if (!asset) return { success: false, error: 'Source media for clip not found.' };
+        const legacySingle = args.clipId !== undefined;
+        const scoped = args.clipIds !== undefined;
+        if (legacySingle && scoped) {
+          return { success: false, error: 'Pass either clipId or clipIds, not both.' };
+        }
 
         // Resolved against the user's saved controls rather than the built-in
         // defaults, so a no-argument request performs the edit the Inspector
@@ -714,6 +722,18 @@ export class ToolExecutor {
           ...(args.minSilenceSeconds !== undefined ? { minSilenceSec: args.minSilenceSeconds } : {}),
           ...(args.edgePaddingSeconds !== undefined ? { edgePaddingSec: args.edgePaddingSeconds } : {}),
         });
+
+        if (scoped) {
+          return this.removeSilenceScoped(args.clipIds as string[], config);
+        }
+        if (!legacySingle) {
+          return this.removeSilenceTimeline(config);
+        }
+
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        const asset = this.editor.getMedia().find((m) => m.id === clip.assetId);
+        if (!asset) return { success: false, error: 'Source media for clip not found.' };
 
         try {
           const ranges = await detectSilenceForFile(asset.path, config);
@@ -821,5 +841,132 @@ export class ToolExecutor {
       default:
         return { success: false, error: `Unhandled tool: ${name}` };
     }
+  }
+
+  /**
+   * Scoped removal (upstream PR #426's `clipIds` contract): the selected
+   * audio clips are the detection sources, their silence maps to timeline
+   * ranges, and one ripple transaction per anchor track cuts them — linked
+   * partners and sync-locked tracks ride along. Detection runs before any
+   * edit, so a missing source refuses the whole request instead of
+   * half-editing it; one detector call per distinct source path.
+   */
+  private async removeSilenceScoped(clipIds: string[], config: SilenceConfig): Promise<ToolResult> {
+    let resolution: SilenceScopeResolution;
+    try {
+      resolution = resolveSilenceScope(this.editor.getClips(), clipIds);
+    } catch (err: unknown) {
+      return { success: false, error: `remove_silence: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    return this.removeSilenceViaRipple(resolution.scopes, config, 'in the selected clips', clipIds);
+  }
+
+  /** Whole-timeline removal: every audio track swept in track order (upstream's no-argument form). */
+  private async removeSilenceTimeline(config: SilenceConfig): Promise<ToolResult> {
+    const resolution = resolveSilenceScope(this.editor.getClips());
+    return this.removeSilenceViaRipple(resolution.scopes, config, 'on the timeline');
+  }
+
+  private async removeSilenceViaRipple(
+    scopes: SilenceTrackScope[],
+    config: SilenceConfig,
+    scopeLabel: string,
+    clipIds?: string[],
+  ): Promise<ToolResult> {
+    const fps = this.editor.getProject().settings.fps;
+    const tracksById = new Map(
+      this.editor.getProject().timeline.tracks.map((track) => [track.id, track]),
+    );
+    const clipsById = new Map(this.editor.getClips().map((clip) => [clip.id, clip]));
+    const mediaById = new Map(this.editor.getMedia().map((asset) => [asset.id, asset]));
+
+    let sections = 0;
+    let removedFrames = 0;
+    let editedAnyTrack = false;
+    const notes: string[] = [];
+
+    for (const scope of scopes) {
+      const detection: RippleRange[] = [];
+      const detectedByPath = new Map<string, SilentRange[]>();
+      for (const clipId of scope.clipIds) {
+        const clip = clipsById.get(clipId)!;
+        const asset = mediaById.get(clip.assetId);
+        if (!asset) {
+          return { success: false, error: `Source media for clip ${clipId} not found.` };
+        }
+        let ranges = detectedByPath.get(asset.path);
+        if (!ranges) {
+          try {
+            ranges = await detectSilenceForFile(asset.path, config);
+          } catch (err: unknown) {
+            return { success: false, error: `Silence detection failed: ${err instanceof Error ? err.message : String(err)}` };
+          }
+          detectedByPath.set(asset.path, ranges);
+        }
+        detection.push(...timelineSilenceRanges(clip, fps, ranges));
+      }
+
+      const merged = mergeRippleRanges(detection);
+      if (merged.length === 0) continue;
+
+      const track = tracksById.get(scope.trackId);
+      if (!track || track.locked) {
+        if (editedAnyTrack) {
+          notes.push('A later track refused: its anchor is locked. Earlier tracks were already edited.');
+          break;
+        }
+        return { success: false, error: 'remove_silence refused: the anchor track is locked.' };
+      }
+
+      const report = this.editor.rippleDeleteRanges(scope.trackId, merged);
+      if (!report) {
+        // The anchor was pre-checked; null here means the engine refused or
+        // nothing changed. A locked sync-locked track elsewhere blocks the
+        // shift for every pass, which must surface rather than skip quietly.
+        const shiftsLockedTrack = [...tracksById.values()].some(
+          (track) => track.locked && track.syncLocked !== false && track.id !== scope.trackId,
+        );
+        if (!shiftsLockedTrack) continue;
+        const reason = 'the ripple shifts a locked track';
+        if (editedAnyTrack) {
+          notes.push(`A later track refused: ${reason}. Earlier tracks were already edited.`);
+          break;
+        }
+        return { success: false, error: `remove_silence refused: ${reason}.` };
+      }
+      sections += merged.length;
+      removedFrames += report.removedFrames;
+      editedAnyTrack = true;
+    }
+
+    if (sections === 0 && notes.length === 0) {
+      return {
+        success: true,
+        data: {
+          removed: 0,
+          ranges: 0,
+          sectionsRemoved: 0,
+          removedFrames: 0,
+          minimumPauseSeconds: config.minSilenceSec,
+          speechPaddingSeconds: config.edgePaddingSec,
+          ...(clipIds ? { clipIds } : {}),
+          message: `No dead air ${scopeLabel}. Speech analysis may still be running, or the audio has no quiet non-speech sections.`,
+        },
+      };
+    }
+
+    return {
+      success: true,
+      data: {
+        removed: sections,
+        ranges: sections,
+        sectionsRemoved: sections,
+        removedFrames,
+        minimumPauseSeconds: config.minSilenceSec,
+        speechPaddingSeconds: config.edgePaddingSec,
+        ...(clipIds ? { clipIds } : {}),
+        ...(notes.length > 0 ? { notes } : {}),
+      },
+    };
   }
 }

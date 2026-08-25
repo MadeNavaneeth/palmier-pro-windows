@@ -202,3 +202,54 @@ describe('EditorController.swapClipMedia (#500)', () => {
     expect(ctrl.getClips().find((c) => c.id === clipId)?.assetId).toBe('video-b');
   });
 });
+
+describe('canSwapClipMedia dry-run (#500 arming preview)', () => {
+  it('accepts an eligible replacement without editing anything', () => {
+    const ctrl = controllerWithSources();
+    const clipId = ctrl.addClip({ assetId: 'video-a', trackId: 'v1', startFrame: 0 });
+
+    expect(ctrl.canSwapClipMedia(clipId, 'video-b')).toEqual({ ok: true });
+    // A dry run must not touch the project.
+    expect(ctrl.getClips().find((c) => c.id === clipId)?.assetId).toBe('video-a');
+  });
+
+  it('mirrors every refusal as a reason with the same wording', () => {
+    const ctrl = controllerWithSources();
+    const clipId = ctrl.addClip({
+      assetId: 'video-a',
+      trackId: 'v1',
+      startFrame: 0,
+      durationFrames: 200,
+    });
+    const audioId = ctrl.addClip({ assetId: 'audio-track', trackId: 'a1', startFrame: 0 });
+
+    expect(reasonOf(ctrl.canSwapClipMedia(clipId, 'video-short'))).toMatch(/too short/i);
+    expect(reasonOf(ctrl.canSwapClipMedia(audioId, 'video-b'))).toMatch(/no audio stream/i);
+    expect(reasonOf(ctrl.canSwapClipMedia(clipId, 'image-1'))).toMatch(/replacement is image media/i);
+    expect(reasonOf(ctrl.canSwapClipMedia(clipId, 'ghost'))).toMatch(/no media asset/i);
+    expect(reasonOf(ctrl.canSwapClipMedia('ghost', 'video-b'))).toMatch(/clip not found/i);
+
+    // None of the refused verdicts edited the project.
+    expect(ctrl.getClips().find((c) => c.id === clipId)?.assetId).toBe('video-a');
+  });
+
+  it('agrees with swapClipMedia: whatever it accepts never throws', () => {
+    const ctrl = controllerWithSources();
+    const clipId = ctrl.addClip({ assetId: 'video-a', trackId: 'v1', startFrame: 0 });
+
+    const verdict = ctrl.canSwapClipMedia(clipId, 'video-b');
+    expect(() => (verdict.ok ? ctrl.swapClipMedia(clipId, 'video-b') : undefined)).not.toThrow();
+
+    const refused = ctrl.canSwapClipMedia(clipId, 'video-short');
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(() => ctrl.swapClipMedia(clipId, 'video-short')).toThrow(new RegExp(refused.reason));
+    }
+  });
+});
+
+/** Narrow the verdict union for assertion ergonomics. */
+function reasonOf(verdict: { ok: true } | { ok: false; reason: string }): string {
+  expect(verdict.ok).toBe(false);
+  return verdict.ok ? '' : verdict.reason;
+}

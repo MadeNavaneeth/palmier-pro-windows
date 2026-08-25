@@ -19,6 +19,7 @@ import { useTimelineStore } from '../store/timeline';
 import { canExtractAudio, useMediaPanelStore } from '../store/media-panel';
 import { selectionModeFromModifiers } from '../../shared/media-panel/selection';
 import type { MediaAsset } from '../../shared/types/project';
+import { formatImportErrors } from '../../shared/media/import-summary';
 import { formatDuration } from '../../shared/utils/time';
 import { ASSET_DND_MIME, getDroppedFilePath, setDraggingAsset } from '../lib/dnd';
 
@@ -102,7 +103,9 @@ export function MediaBin() {
       importAssets(result.files);
       useProjectStore.getState().markDirty();
     }
-    setImportError(result.errors?.[0] || (result.success ? '' : 'No supported media files found.'));
+    setImportError(
+      formatImportErrors(result.errors) || (result.success ? '' : 'No supported media files found.'),
+    );
   }
 
   async function handleImport() {
@@ -231,6 +234,7 @@ export function MediaBin() {
               </div>
             )}
             <PanelNotice />
+            <ArmedSwapBanner />
             {mediaItems.length === 0 ? (
               <div className="flex h-full min-h-44 flex-col items-center justify-center px-5 text-center">
                 <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-surface-2 text-text-muted">
@@ -355,6 +359,9 @@ function MediaGrid({ items, fps }: { items: MediaAsset[]; fps: number }) {
           }
           return;
         case 'Escape':
+          if (useMediaPanelStore.getState().armedSwap) {
+            useMediaPanelStore.getState().cancelMediaSwap();
+          }
           clearSelection();
           return;
         case 'Delete':
@@ -613,6 +620,38 @@ function PanelPlaceholder({ tab }: { tab: Exclude<PanelTab, 'media'> }) {  const
   );
 }
 
+/**
+ * Armed media swap banner (#500): names the clip waiting for a replacement
+ * and how to leave the mode. The grid's tiles are the pick targets while
+ * this is up.
+ */
+function ArmedSwapBanner() {
+  const armedSwap = useMediaPanelStore((state) => state.armedSwap);
+  const cancelMediaSwap = useMediaPanelStore((state) => state.cancelMediaSwap);
+  const project = useTimelineStore((s) => s.project);
+  if (!armedSwap) return null;
+  const clip = project.timeline.clips.find((candidate) => candidate.id === armedSwap.clipId);
+  return (
+    <div
+      className="mb-2 flex items-center gap-2 border border-accent/50 bg-accent/10 px-2 py-1.5 text-[10px] text-accent"
+      data-armed-swap-banner
+    >
+      <span className="min-w-0 flex-1 truncate">
+        Picking a replacement for{' '}
+        <span className="font-semibold">{clip?.label || clip?.assetId || 'clip'}</span> — click
+        media to swap, Esc to cancel
+      </span>
+      <button
+        type="button"
+        onClick={cancelMediaSwap}
+        className="shrink-0 rounded border border-accent/60 px-1.5 py-0.5 text-[9px] font-medium hover:bg-accent/20"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
   const TypeIcon = item.type === 'video' ? Film : item.type === 'audio' ? Music2 : ImageIcon;
   const selectItem = useMediaPanelStore((state) => state.selectItem);
@@ -622,6 +661,15 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
   const selectedIds = useMediaPanelStore((state) => state.selection.selectedIds);
   const [menuOpen, setMenuOpen] = useState(false);
   const [extracting, setExtracting] = useState(false);
+
+  // ─── Armed swap pick mode (#500) ────────────────────────────────────────────
+  const armedSwap = useMediaPanelStore((state) => state.armedSwap);
+  const completeArmedSwap = useMediaPanelStore((state) => state.completeArmedSwap);
+  const controller = useTimelineStore((state) => state.controller);
+  const swapVerdict = useMemo(
+    () => (armedSwap ? controller.canSwapClipMedia(armedSwap.clipId, item.id) : null),
+    [armedSwap, controller, item.id],
+  );
 
   const project = useTimelineStore((state) => state.project);
 
@@ -684,7 +732,16 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
       role="option"
       aria-selected={isSelected}
       aria-label={item.filename}
-      onClick={(event) => selectItem(item.id, selectionModeFromModifiers(event))}
+      onClick={(event) => {
+        // While a swap is armed, a plain click picks this asset as the
+        // replacement (refusals keep the arm and surface the reason);
+        // modifier clicks keep their selection semantics.
+        if (armedSwap && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+          completeArmedSwap(item.id);
+          return;
+        }
+        selectItem(item.id, selectionModeFromModifiers(event));
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         // Right-clicking outside the selection retargets it, so the menu always
@@ -698,12 +755,21 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
         setDraggingAsset({ id: item.id, type: item.type });
       }}
       onDragEnd={() => setDraggingAsset(null)}
-      title={`Drag onto the timeline to add - ${item.filename}`}
-      className="group relative min-w-0 cursor-grab active:cursor-grabbing"
+      title={
+        swapVerdict
+          ? swapVerdict.ok
+            ? `Click to swap this media in — ${item.filename}`
+            : `Not eligible: ${swapVerdict.reason}`
+          : `Drag onto the timeline to add - ${item.filename}`
+      }
+      data-swap-eligible={armedSwap ? (swapVerdict?.ok ? 'yes' : 'no') : undefined}
+      className={`group relative min-w-0 cursor-grab active:cursor-grabbing ${armedSwap && !swapVerdict?.ok ? 'opacity-40' : ''}`}
     >
       <div
         data-selected={isSelected}
-        className="relative aspect-video overflow-hidden rounded-md border border-black bg-surface-2 outline outline-1 outline-white/10 transition group-hover:outline-white/30 data-[selected=true]:outline-2 data-[selected=true]:outline-accent"
+        className={`relative aspect-video overflow-hidden rounded-md border border-black bg-surface-2 outline outline-1 outline-white/10 transition group-hover:outline-white/30 data-[selected=true]:outline-2 data-[selected=true]:outline-accent ${
+          armedSwap && swapVerdict?.ok ? 'outline-dashed outline-accent/70' : ''
+        }`}
       >
         {item.thumbnailPath ? (
           <img

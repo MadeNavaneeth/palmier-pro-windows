@@ -11,6 +11,7 @@ import fs from 'fs/promises';
 import fsSync from 'fs';
 import crypto from 'crypto';
 import { loadPresets, savePresets } from '../media/export-presets';
+import { expandImportPaths } from '../media/import-expansion';
 
 const execFileAsync = promisify(execFile);
 
@@ -20,9 +21,6 @@ const MEDIA_FILTERS = [
   { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
   { name: 'All Media', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
 ];
-const SUPPORTED_MEDIA_EXTENSIONS = new Set(
-  MEDIA_FILTERS[MEDIA_FILTERS.length - 1].extensions.map((extension) => `.${extension}`),
-);
 
 export interface MediaProbeResult {
   path: string;
@@ -315,15 +313,13 @@ async function probeMediaPaths(filePaths: string[]): Promise<{
   files: MediaProbeResult[];
   errors: string[];
 }> {
+  // Folders expand here (upstream #453): a dropped directory imports the
+  // media inside instead of being refused as "not a supported media file",
+  // and every skipped top-level item comes back with a readable reason.
+  const { files: mediaFiles, errors } = await expandImportPaths(filePaths);
   const probed: MediaProbeResult[] = [];
-  const errors: string[] = [];
 
-  for (const filePath of [...new Set(filePaths)]) {
-    if (!SUPPORTED_MEDIA_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
-      errors.push(`${path.basename(filePath)} is not a supported media file`);
-      continue;
-    }
-
+  for (const filePath of mediaFiles) {
     try {
       probed.push(await probeMedia(filePath));
     } catch (err: unknown) {

@@ -18,6 +18,8 @@ import {
   type MediaSelectionMode,
   type MediaSelectionState,
 } from '../../shared/media-panel/selection';
+import { formatImportErrors } from '../../shared/media/import-summary';
+import type { Clip } from '../../shared/types/project';
 import { useTimelineStore } from './timeline';
 import { useProjectStore } from './project';
 import type { MediaProbeResult } from '../../main/ipc/media';
@@ -30,6 +32,13 @@ export interface MediaPanelState {
   columnCount: number;
   /** One-line status for panel actions (extraction failures, etc.). */
   notice: string | null;
+  /**
+   * The armed media swap (upstream PR #500): the clip waiting for a
+   * replacement pick in the media grid. The fingerprint pins the clip's edit
+   * state at arm time; if the timeline changes the clip underneath, the arm
+   * is stale and completes as a cancellation rather than a swap.
+   */
+  armedSwap: { clipId: string; fingerprint: string } | null;
 
   isSelected: (assetId: string) => boolean;
   publishVisibleItems: (orderedIds: readonly string[], columnCount: number) => void;
@@ -39,6 +48,16 @@ export interface MediaPanelState {
   clearSelection: () => void;
   consumeScrollTarget: () => void;
   setNotice: (notice: string | null) => void;
+  /** Arm (or toggle off) the pick-a-replacement flow for `clipId`. */
+  armMediaSwap: (clipId: string) => void;
+  /** Disarm without swapping (Escape, second tap on the same menu item). */
+  cancelMediaSwap: () => void;
+  /**
+   * Finish the armed swap with `assetId`. A refused replacement keeps the
+   * arm so another tile can be picked; an edit that moved the clip under
+   * the arm cancels it instead of swapping.
+   */
+  completeArmedSwap: (assetId: string) => { swapped: boolean };
   /** Delete the selection (or `targetId` when it sits outside the selection). */
   deleteSelection: (targetId?: string) => { removedAssetIds: string[]; removedClipIds: string[] } | null;
   /**
@@ -49,6 +68,11 @@ export interface MediaPanelState {
   extractAudioSelection: (
     targetId?: string,
   ) => Promise<{ imported: number; errors: string[] }>;
+}
+
+/** Identity of the clip's edit state at arm time. */
+function swapFingerprint(clip: Clip): string {
+  return [clip.trackId, clip.startFrame, clip.durationFrames, clip.assetId].join(':');
 }
 
 /** A video asset is an extraction candidate only when it carries audio. */
@@ -64,6 +88,52 @@ export const useMediaPanelStore = create<MediaPanelState>((set, get) => ({
   orderedIds: [],
   columnCount: 1,
   notice: null,
+  armedSwap: null,
+
+  armMediaSwap: (clipId) => {
+    set((state) => {
+      // Tapping the same clip's menu item again disarms it.
+      if (state.armedSwap?.clipId === clipId) return { armedSwap: null };
+      const clip = useTimelineStore
+        .getState()
+        .controller.getClips()
+        .find((candidate) => candidate.id === clipId);
+      if (!clip) return { armedSwap: null };
+      return { armedSwap: { clipId, fingerprint: swapFingerprint(clip) } };
+    });
+  },
+
+  cancelMediaSwap: () => set({ armedSwap: null }),
+
+  completeArmedSwap: (assetId) => {
+    const armed = get().armedSwap;
+    if (!armed) return { swapped: false };
+    const timeline = useTimelineStore.getState();
+    // Read through the controller: it owns the only current project, so an
+    // edit that has not been mirrored into the store yet is still caught.
+    const clip = timeline.controller
+      .getClips()
+      .find((candidate) => candidate.id === armed.clipId);
+
+    // The timeline moved under the arm (moved, trimmed, split, deleted):
+    // upstream cancels the armed swap rather than swapping a stale target.
+    if (!clip || swapFingerprint(clip) !== armed.fingerprint) {
+      set({ armedSwap: null, notice: 'Media swap cancelled — the clip changed on the timeline.' });
+      return { swapped: false };
+    }
+
+    try {
+      const receipt = timeline.controller.swapClipMedia(armed.clipId, assetId);
+      useProjectStore.getState().markDirty();
+      set({ armedSwap: null });
+      return { swapped: receipt.changedClipIds.length > 0 };
+    } catch (err: unknown) {
+      // A refused replacement keeps the arm so another tile can be picked;
+      // the domain refusal text is the reason the tile is dimmed.
+      set({ notice: err instanceof Error ? err.message : String(err) });
+      return { swapped: false };
+    }
+  },
 
   isSelected: (assetId) => get().selection.selectedIds.includes(assetId),
 
@@ -173,7 +243,7 @@ export const useMediaPanelStore = create<MediaPanelState>((set, get) => ({
     }
     set({
       notice: errors.length > 0
-        ? errors[0]
+        ? formatImportErrors(errors)
         : extracted.length > 0
           ? null
           : 'No selected video has extractable audio',

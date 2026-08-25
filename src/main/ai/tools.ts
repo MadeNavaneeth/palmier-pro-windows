@@ -245,9 +245,10 @@ export const tools = {
   removeSilence: {
     name: 'remove_silence',
     description:
-      'Detect and remove silent gaps in a clip with audio, rippling the remaining clips left to close the gaps. Runs on-device (no transcription). Works on audio or video clips. By default this uses the Minimum Pause, Speech Padding and Threshold controls shown in the Inspector; pass any of the optional values to override for this call only, without changing those controls.',
+      'Detect and remove silent gaps in audio, rippling the remaining clips left to close the gaps. Runs on-device (no transcription). Scope: pass clipIds to limit removal to those clips (they must resolve, include at least one audio clip, and share one track or one linked A/V unit), a single clipId for backwards compatibility, or nothing to sweep every audio track on the timeline. By default this uses the Minimum Pause, Speech Padding and Threshold controls shown in the Inspector; pass any of the optional values to override for this call only, without changing those controls.',
     parameters: z.object({
-      clipId: z.string().describe('The clip to de-silence.'),
+      clipId: z.string().optional().describe('One clip to de-silence (legacy single-clip form; may be an audio or video clip). Omit to sweep the whole timeline.'),
+      clipIds: z.array(z.string()).min(1).optional().describe('Clips to de-silence as one scoped edit (upstream PR #426). Must resolve; must include at least one audio clip; all targets share one track or one link group.'),
       // Bounds mirror SILENCE_LIMITS so the tool and the detector agree
       // (upstream PR #426).
       thresholdDb: z.number().finite().min(-120).max(0).optional().describe('Loudness below this (dBFS) counts as silence. Omit to use the current Threshold control.'),

@@ -16,6 +16,7 @@ import {
 } from '../../lib/dnd';
 import { parseSrt } from '../../../shared/editor/srt';
 import { parseVtt } from '../../../shared/editor/vtt-parse';
+import { formatImportErrors } from '../../../shared/media/import-summary';
 import { useProjectStore } from '../../store/project';
 
 interface TimelineTrackProps {
@@ -146,7 +147,7 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
         if (mediaPaths.length === 0) return;
         const imported = await window.palmier.media.importPaths(mediaPaths);
         if (imported.files.length === 0) {
-          setDropError(imported.errors?.[0] || 'No supported media files found.');
+          setDropError(formatImportErrors(imported.errors) || 'No supported media files found.');
           return;
         }
 
@@ -155,7 +156,7 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
           useTimelineStore.setState({ selectedClipIds: new Set(placed.clipIds) });
           setPlayhead(frame);
         }
-        if (imported.errors?.length) setDropError(imported.errors[0]);
+        if (imported.errors?.length) setDropError(formatImportErrors(imported.errors));
         useProjectStore.getState().markDirty();
         return;
       }
