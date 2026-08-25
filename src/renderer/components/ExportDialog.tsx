@@ -1,6 +1,8 @@
 /**
- * ExportDialog — modal for configuring and running video export.
- * Shows format/quality/resolution options and real-time progress.
+ * ExportPanel — the export workspace panel (#166): format/quality/resolution
+ * options, real-time progress, and re-runnable delivery history, docked as a
+ * column like Inspector or Agent so settings can be adjusted while a render
+ * runs. Formerly a modal dialog; Ctrl+M / the title-bar button toggle it.
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -14,8 +16,8 @@ interface ExportPreset {
   useRange: boolean;
 }
 
-interface ExportDialogProps {
-  isOpen: boolean;
+interface ExportPanelProps {
+  /** Hide the panel (the header close button, Cancel, Done, Escape). */
   onClose: () => void;
 }
 
@@ -55,7 +57,7 @@ const RESOLUTIONS = [
   { label: 'Project size', width: 0, height: 0 },
 ] as const;
 
-export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
+export function ExportPanel({ onClose }: ExportPanelProps) {
   const projectWidth = useTimelineStore((s) => s.project.settings.width);
   const projectHeight = useTimelineStore((s) => s.project.settings.height);
   const projectFps = useTimelineStore((s) => s.getProjectFps());
@@ -64,9 +66,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const [quality, setQuality] = useState<Quality>('normal');
   const [resIdx, setResIdx] = useState(0);
 
-  // Restore last-used export settings once per open.
+  // Restore last-used export settings when the panel mounts.
   useEffect(() => {
-    if (!isOpen) return;
     try {
       const saved = localStorage.getItem('palmier.export.settings');
       if (!saved) return;
@@ -83,16 +84,15 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     } catch {
       // Corrupted settings fall through to defaults.
     }
-  }, [isOpen]);
+  }, []);
 
-  // Persist settings whenever they change while the dialog is open.
+  // Persist settings whenever they change while the panel is open.
   useEffect(() => {
-    if (!isOpen) return;
     try {
       localStorage.setItem('palmier.export.settings',
         JSON.stringify({ format, quality, resIdx }));
     } catch { /* non-critical */ }
-  }, [format, quality, resIdx, isOpen]);
+  }, [format, quality, resIdx]);
 
   const [hw, setHw] = useState<HwEncoder>('x264');
   const [hwAvailable, setHwAvailable] = useState<HwEncoder[]>([]);
@@ -129,10 +129,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const width = res.width || projectWidth;
   const height = res.height || projectHeight;
 
-  // Subscribe to export events
+  // Subscribe to export events for as long as the panel is mounted.
   useEffect(() => {
-    if (!isOpen) return;
-
     const unsubProgress = window.palmier.on('export:progress', (data: unknown) => {
       setProgress(data as ExportProgress);
     });
@@ -152,11 +150,10 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       unsubComplete();
       unsubError();
     };
-  }, [isOpen]);
+  }, []);
 
-  // Load saved presets, export history, and detect HW encoders per open.
+  // Load saved presets, export history, and detect HW encoders on mount.
   useEffect(() => {
-    if (!isOpen) return;
     let cancelled = false;
     void window.palmier.media.hwEncoders().then((res: unknown) => {
       const r = res as { encoders?: HwEncoder[] } | undefined;
@@ -169,16 +166,15 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     return () => {
       cancelled = true;
     };
-  }, [isOpen]);
+  }, []);
 
-  // Load saved presets once per open.
+  // Load saved presets once per mount.
   useEffect(() => {
-    if (!isOpen) return;
     void window.palmier.media.getPresets().then((res: unknown) => {
       const r = res as { presets?: ExportPreset[] } | undefined;
       if (r?.presets) setPresets(r.presets);
     });
-  }, [isOpen]);
+  }, []);
 
   const applyPreset = useCallback((preset: ExportPreset) => {
     setFormat(preset.format);
@@ -238,12 +234,20 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     setIsExporting(false);
   }, []);
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-[420px] rounded-lg border border-surface-3 bg-surface-1 p-6 shadow-2xl animate-fade-in">
-        <h2 className="text-lg font-medium text-text-primary mb-4">Export Video</h2>
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+      <div className="panel-header flex h-9 shrink-0 items-center justify-between border-b border-white/10 px-2 text-[10px] font-medium text-text-primary">
+        <span>Export</span>
+        <button
+          onClick={onClose}
+          title="Hide export panel"
+          aria-label="Hide export panel"
+          className="rounded p-0.5 text-text-muted hover:bg-white/10 hover:text-text-primary"
+        >
+          ✕
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
 
         {!isExporting && !outputPath ? (
           <>
@@ -351,21 +355,6 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                     className="accent-[var(--color-accent)]"
                   />
                   Export In/Out range only ({rangeStart}–{rangeEnd})
-                </label>
-              </div>
-            )}
-
-            {/* Captions sidecar (R3) */}
-            {hasTitles && format !== 'audio' && (
-              <div className="mb-4">
-                <label className="flex items-center gap-2 text-xs text-text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={exportCaptions}
-                    onChange={(e) => setExportCaptions(e.target.checked)}
-                    className="accent-[var(--color-accent)]"
-                  />
-                  Export captions (.vtt sidecar)
                 </label>
               </div>
             )}

@@ -23,8 +23,8 @@ this file is the exhaustive per-issue record.
 
 | Disposition | Count |
 |---|---|
-| Implemented | 20 |
-| Partial | 1 |
+| Implemented | 21 |
+| Partial | 0 |
 | Planned | 23 |
 | N/A platform | 14 |
 | Needs investigation | 0 |
@@ -98,7 +98,7 @@ Ordered by issue number.
 | [#158](https://github.com/palmier-io/palmier-pro/issues/158) | Audio editing tools beyond volume control | Planned | Audio support is clip placement, fades, linked A/V, and silence detection. No EQ, compression, or gain automation. |
 | [#164](https://github.com/palmier-io/palmier-pro/issues/164) | Keyboard shortcuts for common editing actions (Premiere/Resolve parity) | Implemented | `shared/editor/shortcuts.ts` is a declarative catalogue with strict modifier matching and a conflict test; the handler dispatches on command id with a compile-time exhaustiveness guard, so an unbound command fails the build. Adds edit-point navigation, mark navigation, snapping, fit-to-window, project I/O, and guide toggles, and a generated shortcut sheet (F1 or `?`). `shortcuts.test.ts`, `edit-points.test.ts`, `timeline-navigation.test.ts`. |
 | [#165](https://github.com/palmier-io/palmier-pro/issues/165) | Noise reduction for audio clips | Planned | Same missing effect stack as #97, on the audio side. |
-| [#166](https://github.com/palmier-io/palmier-pro/issues/166) | Preview ignores aspect ratio; move export to a dedicated workspace panel | Partial | The aspect-ratio half is done: the preview reads the live canvas from project settings and resizes with it, and the compositor composites at the project canvas, so a ratio change shows immediately. The second half — export as a dedicated workspace panel rather than a modal — is still planned; export remains `ExportDialog`. |
+| [#166](https://github.com/palmier-io/palmier-pro/issues/166) | Preview ignores aspect ratio; move export to a dedicated workspace panel | Implemented | The aspect-ratio half: the preview reads the live canvas from project settings and resizes with it, and the compositor composites at the project canvas. The panel half: export docks as a right-hand workspace column riding the persisted panel flags (fourth `PanelKey`, title-bar toggle with active state, Ctrl+M, Escape), with mount-scoped effects and live event subscriptions — settings adjust between renders, which a modal could not do. Also fixed en route: a verbatim-duplicated captions checkbox block. |
 | [#167](https://github.com/palmier-io/palmier-pro/issues/167) | Viewer guides for the preview canvas | Implemented | `shared/preview/guides.ts` holds normalized geometry for a centre cross, thirds, a grid, and SMPTE action/title safe areas, with the cross aspect-corrected so its arms stay square on any canvas. `GuideOverlay` draws it as a non-interactive SVG above the canvas; it is never part of compositor or exporter input, so guides cannot be baked into an export. Toggles live in the preview toolbar and on `G` / `Shift+G`. `guides.test.ts`, `ui-guides.test.ts`. |
 | [#173](https://github.com/palmier-io/palmier-pro/issues/173) | Google sign-in stalls on macOS 26 | N/A platform | Depends on Clerk and `ASWebAuthenticationSession`. This port has no account system or OAuth flow; keys are user-supplied and stored via DPAPI. |
 | [#174](https://github.com/palmier-io/palmier-pro/issues/174) | Auto Remove Silence: detect and ripple-delete silent regions | Implemented | On-device RMS envelope detection (FFmpeg feed into a pure `SilenceDetector`), ripple close through a snapshot-undoable `ReplaceClipsCommand`, plus Inspector and `remove_silence` agent paths, both resolving the same saved Minimum Pause / Speech Padding / Threshold controls (PR #426). `silence-detector.test.ts`, `remove-silence.test.ts`, `silence-settings.test.ts`, `executor.silence.test.ts`. |

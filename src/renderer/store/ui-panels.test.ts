@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const STORAGE_KEY = 'palmier.layout.panels';
-const DEFAULTS = { media: true, inspector: true, agent: false };
+const DEFAULTS = { media: true, inspector: true, agent: false, export: false };
 
 /** Minimal localStorage stand-in; the store only needs get/set. */
 function installStorage(initial: Record<string, string> = {}): Map<string, string> {
@@ -74,7 +74,7 @@ describe('panel toggling', () => {
 
     // The reduced layout #286 asks for: timeline and video only.
     expect(useUiStore.getState().panels).toEqual({
-      media: false, inspector: false, agent: false,
+      media: false, inspector: false, agent: false, export: false,
     });
 
     useUiStore.getState().togglePanel('media');
@@ -102,7 +102,7 @@ describe('panel persistence', () => {
     useUiStore.getState().togglePanel('agent');
 
     expect(JSON.parse(storage.get(STORAGE_KEY)!)).toEqual({
-      media: true, inspector: true, agent: true,
+      media: true, inspector: true, agent: true, export: false,
     });
   });
 
@@ -113,7 +113,7 @@ describe('panel persistence', () => {
     const useUiStore = await loadStore();
 
     expect(useUiStore.getState().panels).toEqual({
-      media: false, inspector: false, agent: true,
+      media: false, inspector: false, agent: true, export: false,
     });
   });
 
@@ -123,7 +123,7 @@ describe('panel persistence', () => {
     const useUiStore = await loadStore();
 
     expect(useUiStore.getState().panels).toEqual({
-      media: false, inspector: true, agent: false,
+      media: false, inspector: true, agent: false, export: false,
     });
   });
 
@@ -134,7 +134,7 @@ describe('panel persistence', () => {
     const useUiStore = await loadStore();
 
     expect(useUiStore.getState().panels).toEqual({
-      media: true, inspector: true, agent: true,
+      media: true, inspector: true, agent: true, export: false,
     });
     expect('ghost' in useUiStore.getState().panels).toBe(false);
   });

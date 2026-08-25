@@ -6,7 +6,7 @@ import { Preview } from './components/Preview';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { ChatPanel, SettingsPanel } from './components/ai';
 import { Inspector } from './components/Inspector';
-import { ExportDialog } from './components/ExportDialog';
+import { ExportPanel } from './components/ExportDialog';
 import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
 import { useProjectStore } from './store/project';
 import { useUiStore, SPLITS_DEFAULTS, type PanelVisibility } from './store/ui';
@@ -27,10 +27,7 @@ export function App() {
 
   // Overlay visibility is shared with the keyboard layer (#164), which sits
   // outside this component and needs the same switches.
-  const exportOpen = useUiStore((s) => s.exportOpen);
   const shortcutHelpOpen = useUiStore((s) => s.shortcutHelpOpen);
-  const openExport = useUiStore((s) => s.openExport);
-  const closeExport = useUiStore((s) => s.closeExport);
   const closeShortcutHelp = useUiStore((s) => s.closeShortcutHelp);
 
   // Debounced crash-recovery autosave (upstream #211).
@@ -91,10 +88,11 @@ export function App() {
         mediaVisible={panels.media}
         inspectorVisible={panels.inspector}
         agentVisible={panels.agent}
+        exportVisible={panels.export}
         onToggleMedia={() => togglePanel('media')}
         onToggleInspector={() => togglePanel('inspector')}
         onToggleAgent={() => togglePanel('agent')}
-        onExport={openExport}
+        onToggleExport={() => togglePanel('export')}
       />
       <div className="flex min-h-0 flex-1 gap-[5px] overflow-hidden p-[5px] pt-0">
         {/* The Agent panel is a sibling column of the preset, not part of it, so
@@ -105,10 +103,16 @@ export function App() {
           </aside>
         )}
         <WorkspacePresetLayout layout={layout} panels={panels} />
+        {/* Export docks on the right (#166): settings stay reachable while a
+            render runs, which a modal could not offer. */}
+        {panels.export && (
+          <aside className="flex w-[340px] min-w-[260px] shrink-0 flex-col overflow-hidden bg-surface-1" data-export-panel>
+            <ExportPanel onClose={() => togglePanel('export')} />
+          </aside>
+        )}
       </div>
 
       <SettingsPanel />
-      <ExportDialog isOpen={exportOpen} onClose={closeExport} />
       <ShortcutHelpDialog isOpen={shortcutHelpOpen} onClose={closeShortcutHelp} />
     </div>
   );

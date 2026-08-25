@@ -40,15 +40,15 @@ function saveLayout(preset: LayoutPreset): void {
   }
 }
 
-/** The side panels a user can show or hide (upstream #286). */
-export type PanelKey = 'media' | 'inspector' | 'agent';
+/** The side panels a user can show or hide (upstream #286). Export joined them with #166. */
+export type PanelKey = 'media' | 'inspector' | 'agent' | 'export';
 
 export type PanelVisibility = Record<PanelKey, boolean>;
 
-const PANEL_KEYS: readonly PanelKey[] = ['media', 'inspector', 'agent'];
+const PANEL_KEYS: readonly PanelKey[] = ['media', 'inspector', 'agent', 'export'];
 
-/** Media and Inspector in, Agent out — the first-run editing layout. */
-const DEFAULT_PANELS: PanelVisibility = { media: true, inspector: true, agent: false };
+/** Media and Inspector in, Agent and Export out — the first-run editing layout. */
+const DEFAULT_PANELS: PanelVisibility = { media: true, inspector: true, agent: false, export: false };
 
 /**
  * Read the persisted panel layout, keeping only recognized boolean flags.
@@ -171,8 +171,6 @@ function saveSplits(splits: Record<SplitKey, number>): void {
 }
 
 interface UiState {
-  /** Export dialog (Ctrl+M, or the title bar Export button). */
-  exportOpen: boolean;
   /** Keyboard shortcut reference (F1 or ?). */
   shortcutHelpOpen: boolean;
   /**
@@ -204,10 +202,7 @@ interface UiState {
    */
   splits: Record<SplitKey, number>;
 
-  openExport: () => void;
-  closeExport: () => void;
-  openShortcutHelp: () => void;
-  closeShortcutHelp: () => void;
+  openShortcutHelp: () => void;  closeShortcutHelp: () => void;
   toggleShortcutHelp: () => void;
   toggleGuide: (kind: GuideKind) => void;
   /** Show or hide both safe-area guides together. */
@@ -224,21 +219,15 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  exportOpen: false,
   shortcutHelpOpen: false,
   guides: loadGuides(),
   panels: loadPanels(),
   layout: loadLayout(),
   splits: loadSplits(),
 
-  // Only one modal is meaningful at a time; opening one dismisses the other so
-  // a stacked pair can't trap focus or leave an unreachable close button.
-  openExport: () => set({ exportOpen: true, shortcutHelpOpen: false }),
-  closeExport: () => set({ exportOpen: false }),
-  openShortcutHelp: () => set({ shortcutHelpOpen: true, exportOpen: false }),
+  openShortcutHelp: () => set({ shortcutHelpOpen: true }),
   closeShortcutHelp: () => set({ shortcutHelpOpen: false }),
-  toggleShortcutHelp: () =>
-    set((state) => ({ shortcutHelpOpen: !state.shortcutHelpOpen, exportOpen: false })),
+  toggleShortcutHelp: () => set((state) => ({ shortcutHelpOpen: !state.shortcutHelpOpen })),
 
   // Replaced rather than mutated, so subscribers actually see the change.
   toggleGuide: (kind) =>

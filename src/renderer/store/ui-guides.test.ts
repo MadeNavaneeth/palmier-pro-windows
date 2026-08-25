@@ -162,20 +162,20 @@ describe('guide persistence', () => {
   });
 });
 
-describe('modal exclusivity', () => {
-  it('closes the other overlay when one opens', async () => {
+describe('overlay + panel toggles', () => {
+  it('the export surface is a workspace panel, not a modal (#166)', async () => {
     installStorage();
     const useUiStore = await loadStore();
 
-    useUiStore.getState().openExport();
-    expect(useUiStore.getState().exportOpen).toBe(true);
+    // Export rides the persisted panel flags now: Ctrl+M toggles it, and it
+    // does not fight the shortcut sheet for the screen.
+    expect(useUiStore.getState().panels.export).toBe(false);
+    useUiStore.getState().togglePanel('export');
+    expect(useUiStore.getState().panels.export).toBe(true);
 
     useUiStore.getState().openShortcutHelp();
     expect(useUiStore.getState().shortcutHelpOpen).toBe(true);
-    expect(useUiStore.getState().exportOpen).toBe(false);
-
-    useUiStore.getState().openExport();
-    expect(useUiStore.getState().shortcutHelpOpen).toBe(false);
+    expect(useUiStore.getState().panels.export).toBe(true);
   });
 
   it('toggles the shortcut sheet', async () => {

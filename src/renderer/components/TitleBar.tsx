@@ -20,20 +20,23 @@ interface TitleBarProps {
   mediaVisible?: boolean;
   inspectorVisible?: boolean;
   agentVisible?: boolean;
+  exportVisible?: boolean;
   onToggleMedia?: () => void;
   onToggleInspector?: () => void;
   onToggleAgent?: () => void;
-  onExport?: () => void;
+  /** Toggle the export workspace panel (#166) — no longer a modal. */
+  onToggleExport?: () => void;
 }
 
 export function TitleBar({
   mediaVisible = true,
   inspectorVisible = true,
   agentVisible = false,
+  exportVisible = false,
   onToggleMedia,
   onToggleInspector,
   onToggleAgent,
-  onExport,
+  onToggleExport,
 }: TitleBarProps) {
   const { name, hasUnsavedChanges, isLoaded, save } = useProjectStore();
 
@@ -96,11 +99,13 @@ export function TitleBar({
           </button>
         )}
         <LayoutSwitcher />
-        {onExport && (
+        {onToggleExport && (
           <button
-            onClick={onExport}
+            onClick={onToggleExport}
             className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
-            title="Export"
+            data-active={exportVisible}
+            title="Toggle export panel (Ctrl+M)"
+            aria-label="Toggle export panel"
           >
             <Share2 size={14} strokeWidth={1.7} />
             Export

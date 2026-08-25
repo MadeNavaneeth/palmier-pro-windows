@@ -66,7 +66,10 @@ export function useKeyboardShortcuts() {
     const project = useProjectStore.getState();
     const ui = useUiStore.getState();
 
-    const modalOpen = ui.exportOpen || ui.shortcutHelpOpen;
+    // The export surface is a workspace panel (#166), not a modal: shortcuts
+    // stay live while it is open, which is the point of being able to adjust
+    // settings between renders. Only the shortcut sheet blocks.
+    const modalOpen = ui.shortcutHelpOpen;
     if (modalOpen && !MODAL_SAFE_SHORTCUTS.has(shortcut.id)) return;
 
     event.preventDefault();
@@ -185,7 +188,7 @@ export function useKeyboardShortcuts() {
       case 'deselectAll':
         // Escape dismisses the frontmost overlay before touching selection.
         if (ui.shortcutHelpOpen) ui.closeShortcutHelp();
-        else if (ui.exportOpen) ui.closeExport();
+        else if (ui.panels.export) ui.togglePanel('export');
         else {
           timeline.clearMarkerSelection();
           timeline.deselectAll();
@@ -250,7 +253,7 @@ export function useKeyboardShortcuts() {
         });
         return;
       case 'exportProject':
-        ui.openExport();
+        ui.togglePanel('export');
         return;
 
       default: {
