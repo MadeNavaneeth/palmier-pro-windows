@@ -121,6 +121,8 @@ export interface Clip {
   titleAlign?: 'left' | 'center' | 'right';
   /** Semi-transparent background box behind text. Undefined = none. */
   titleBackgroundColor?: string;
+  /** Background box padding in px at project resolution (#507 fitted boxes). */
+  titleBackgroundPadding?: number;
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */

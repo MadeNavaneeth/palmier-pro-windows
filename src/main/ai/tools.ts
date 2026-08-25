@@ -385,6 +385,8 @@ export const tools = {
           .describe('Horizontal alignment within the clip box. Defaults to center.'),
         backgroundColor: z.string().regex(/^#[0-9a-fA-F]{8}$/).optional()
           .describe('Background box color as #RRGGBBAA (e.g. #00000080). Omit for no box.'),
+        backgroundPadding: z.number().int().min(0).max(128).optional()
+          .describe('Background box padding in pixels. Default 8.'),
       })).min(1).describe('Titles to add.'),
     }),
   },
@@ -427,9 +429,12 @@ export const tools = {
       fontFamily: z.string().optional().describe('Font family name.'),
       backgroundColor: z.string().regex(/^#[0-9a-fA-F]{8}$/).nullable().optional()
         .describe('Background box color (#RRGGBBAA) or null to remove the background.'),
+      backgroundPadding: z.number().int().min(0).max(128).optional()
+        .describe('Background box padding in pixels. Default 8.'),
     }).refine(
       (op) => op.text !== undefined || op.fontSize !== undefined || op.color !== undefined
-        || op.bold !== undefined || op.fontFamily !== undefined || op.backgroundColor !== undefined,
+        || op.bold !== undefined || op.fontFamily !== undefined || op.backgroundColor !== undefined
+        || op.backgroundPadding !== undefined,
       { message: 'Pass at least one field to update.' },
     ),
   },

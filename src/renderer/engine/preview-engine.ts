@@ -15,6 +15,7 @@
 import type { Clip, Frame, Project, ProjectSettings } from '../../shared/types/project';
 import { frameToSeconds } from '../../shared/utils/time';
 import { colorGradeOf, toCanvasFilter } from '../../shared/editor/color-grade';
+import { TITLE_BACKGROUND_PADDING_DEFAULT } from '../../shared/editor/title';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -293,27 +294,38 @@ export class PreviewEngine {
     this.ctx.save();
     this.ctx.globalAlpha = clip.opacity;
 
-    // Background box behind text
+    // The font must be set before any measureText: the fitted background box
+    // has to wrap the same glyphs the fill will draw, or preview and export
+    // disagree about the box size (#507).
+    const weight = clip.titleBold ? 'bold ' : '';
+    const family = clip.titleFontFamily || 'system-ui, sans-serif';
+    this.ctx.font = `${weight}${fontSize}px ${family}`;
+
+    // Background box behind text, fitted per longest line with symmetric
+    // padding — matching drawtext's boxborderw on all four sides (#507).
     if (clip.titleBackgroundColor) {
-      const metrics = this.ctx.measureText(clip.text || '');
-      // Approximate: measure longest line for box width
       const lines = clip.text.split('\n');
       let maxW = 0;
       for (const line of lines) {
         const m = this.ctx.measureText(line);
         if (m.width > maxW) maxW = m.width;
       }
-      const pad = 8;
-      const boxX = clip.x + clip.width / 2 - maxW / 2 - pad;
-      const boxY = clip.y + clip.height / 2 - (lines.length * fontSize * 1.2) / 2 - pad / 2;
+      const pad = Math.round(
+        clip.titleBackgroundPadding ?? TITLE_BACKGROUND_PADDING_DEFAULT,
+      );
+      const blockH = lines.length * fontSize * 1.2;
+      const centerX = clip.x + clip.width / 2;
+      const centerY = clip.y + clip.height / 2;
       this.ctx.fillStyle = clip.titleBackgroundColor;
-      this.ctx.fillRect(boxX, boxY, maxW + pad * 2, lines.length * fontSize * 1.2 + pad);
+      this.ctx.fillRect(
+        centerX - maxW / 2 - pad,
+        centerY - blockH / 2 - pad,
+        maxW + pad * 2,
+        blockH + pad * 2,
+      );
     }
 
     this.ctx.fillStyle = clip.titleColor ?? '#ffffff';
-    const weight = clip.titleBold ? 'bold ' : '';
-    const family = clip.titleFontFamily || 'system-ui, sans-serif';
-    this.ctx.font = `${weight}${fontSize}px ${family}`;
     this.ctx.textAlign = clip.titleAlign === 'left' ? 'left' : clip.titleAlign === 'right' ? 'right' : 'center';
     this.ctx.textBaseline = 'middle';
 

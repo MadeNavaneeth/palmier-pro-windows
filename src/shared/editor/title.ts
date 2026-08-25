@@ -30,11 +30,16 @@ export interface TitleStyle {
   align?: 'left' | 'center' | 'right';
   /** Background box color with alpha, e.g. '#00000080'. Undefined = none. */
   backgroundColor?: string;
+  /** Background box padding in px at project resolution. Default 8. */
+  backgroundPaddingPx?: number;
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   strokeWidthPx?: number;
   /** Outline stroke color. */
   strokeColor?: string;
 }
+
+/** Padding around the text inside the background box, both render paths. */
+export const TITLE_BACKGROUND_PADDING_DEFAULT = 8;
 
 export const DEFAULT_TITLE_STYLE: TitleStyle = {
   sizeRatio: 0.09,
@@ -49,7 +54,7 @@ export const DEFAULT_TITLE_STYLE: TitleStyle = {
  * @param height - Project height in pixels, for font size scaling.
  */
 export function drawtextStyleParams(
-  clip: { titleBold?: boolean; titleFontFamily?: string; titleBackgroundColor?: string; titleStrokeWidth?: number; titleStrokeColor?: string },
+  clip: { titleBold?: boolean; titleFontFamily?: string; titleBackgroundColor?: string; titleBackgroundPadding?: number; titleStrokeWidth?: number; titleStrokeColor?: string },
   height: number,
 ): string {
   const parts: string[] = [];
@@ -61,7 +66,10 @@ export function drawtextStyleParams(
   }
   if (clip.titleBackgroundColor) {
     const bg = clip.titleBackgroundColor.replace('#', '0x');
-    parts.push(`box=1:boxcolor=${bg}:boxborderw=8`);
+    const pad = Math.round(
+      clip.titleBackgroundPadding ?? TITLE_BACKGROUND_PADDING_DEFAULT,
+    );
+    parts.push(`box=1:boxcolor=${bg}:boxborderw=${pad}`);
   }
   if (clip.titleStrokeWidth && clip.titleStrokeWidth > 0 && clip.titleStrokeColor) {
     const sc = clip.titleStrokeColor.replace('#', '0x');

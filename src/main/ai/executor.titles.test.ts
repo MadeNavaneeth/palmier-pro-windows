@@ -89,4 +89,23 @@ describe('set_title_text tool (R3)', () => {
     expect((await executor.execute('set_title_text', { clipId: 'ghost', text: 'Hi' })).success)
       .toBe(false);
   });
+
+  it('carries background box styling including padding (#507)', async () => {
+    const { editor, executor } = executorWithTracks();
+    await executor.execute('add_texts', {
+      entries: [{
+        trackId: 'v1', startFrame: 0, durationFrames: 30, text: 'Boxed',
+        backgroundColor: '#00000080', backgroundPadding: 24,
+      }],
+    });
+    const added = editor.getClips().find((c) => c.type === 'title')!;
+    expect(added.titleBackgroundColor).toBe('#00000080');
+    expect(added.titleBackgroundPadding).toBe(24);
+
+    const id = editor.addTitleClip({ trackId: 'v1', text: 'Adjust', startFrame: 100, durationFrames: 30 });
+    await executor.execute('set_title_text', { clipId: id, backgroundColor: null, backgroundPadding: 0 });
+    const updated = editor.getClips().find((c) => c.id === id)!;
+    expect(updated.titleBackgroundColor).toBeUndefined();
+    expect(updated.titleBackgroundPadding).toBe(0);
+  });
 });

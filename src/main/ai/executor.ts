@@ -284,6 +284,7 @@ export class ToolExecutor {
               entry.fontSize !== undefined, entry.color !== undefined,
               entry.bold !== undefined, entry.fontFamily !== undefined,
               entry.align !== undefined, entry.backgroundColor !== undefined,
+              entry.backgroundPadding !== undefined,
             ];
             if (styleFields.some(Boolean)) {
               this.editor.applyClipProperties([clipId], 'Style title', (draft) => {
@@ -298,6 +299,9 @@ export class ToolExecutor {
                 }
                 if (entry.backgroundColor !== undefined) {
                   draft.titleBackgroundColor = entry.backgroundColor;
+                }
+                if (entry.backgroundPadding !== undefined) {
+                  draft.titleBackgroundPadding = entry.backgroundPadding;
                 }
                 return true;
               });
@@ -393,7 +397,7 @@ export class ToolExecutor {
               return { success: false, error: 'Clip not found, is not a title, or text is invalid.' };
             }
           }
-          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor];
+          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding];
           if (styleFields.some((v) => v !== undefined)) {
             this.editor.applyClipProperties([args.clipId], 'Style title', (draft) => {
               if (draft.type !== 'title') return false;
@@ -403,7 +407,13 @@ export class ToolExecutor {
               if (args.color !== undefined) draft.titleColor = args.color;
               if (args.bold !== undefined) draft.titleBold = args.bold;
               if (args.fontFamily !== undefined) draft.titleFontFamily = args.fontFamily;
-              if (args.backgroundColor !== undefined) draft.titleBackgroundColor = args.backgroundColor;
+              if (args.backgroundColor !== undefined) {
+                // Explicit null is the documented way to remove the box, so
+                // the field is cleared rather than stored as null.
+                if (args.backgroundColor === null) delete draft.titleBackgroundColor;
+                else draft.titleBackgroundColor = args.backgroundColor;
+              }
+              if (args.backgroundPadding !== undefined) draft.titleBackgroundPadding = args.backgroundPadding;
               return true;
             });
           }
