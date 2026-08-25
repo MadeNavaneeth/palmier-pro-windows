@@ -29,7 +29,7 @@ function installStorage(initial: Record<string, string> = {}): Map<string, strin
 async function loadStore() {
   vi.resetModules();
   const module = await import('./ui');
-  return module.useUiStore as typeof import('./ui').useUiStore;
+  return module.useUiStore;
 }
 
 beforeEach(() => {
