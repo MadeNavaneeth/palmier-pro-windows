@@ -20,7 +20,7 @@ import {
   clipTrimSeconds,
 } from '../../shared/media/source-time';
 import { selectExportClips } from '../../shared/media/export-eligibility';
-import { escapeDrawtext, drawtextStyleParams } from '../../shared/editor/title';
+import { escapeDrawtext, drawtextStyleParams, applyTitleFontCase } from '../../shared/editor/title';
 import { colorGradeOf, toFfmpegEq } from '../../shared/editor/color-grade';
 import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
 
@@ -284,7 +284,7 @@ export function buildFfmpegArgs(
           ? `w-text_w-${Math.round(clip.x + clip.width)}`
           : '(w-text_w)/2';
       filters.push(
-        `${currentVideo}drawtext=text='${escapeDrawtext(clip.text)}'`
+        `${currentVideo}drawtext=text='${escapeDrawtext(applyTitleFontCase(clip.text, clip.titleFontCase))}'`
         + `:fontsize=${Math.round((clip.titleSizeRatio ?? 0.09) * height)}`
         + `:fontcolor=${clip.titleColor ?? 'white'}`
         + `:x=${xExpr}:y=(h-text_h)/2`

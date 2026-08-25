@@ -143,6 +143,27 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
     expect(graph.match(/\[vt0\]/g)).toHaveLength(1);
   });
 
+  it('applies font case to the drawtext text and emits line spacing (#330)', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{
+        type: 'title',
+        assetId: '__title__',
+        startFrame: 0,
+        durationFrames: 30,
+        text: 'Mixed Case',
+        titleFontCase: 'upper',
+        titleLineSpacing: 12,
+      }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('drawtext'))!;
+    // Case is applied to the string before escaping, so both render paths
+    // see identical glyphs; spacing rides drawtext's native parameter.
+    expect(graph).toContain("text='MIXED CASE'");
+    expect(graph).toContain('line_spacing=12');
+  });
+
   it('omits drawtext entirely when there are no titles (audio-only too)', () => {
     const project = projectWithMedia(
       [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],

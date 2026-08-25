@@ -108,4 +108,25 @@ describe('set_title_text tool (R3)', () => {
     expect(updated.titleBackgroundColor).toBeUndefined();
     expect(updated.titleBackgroundPadding).toBe(0);
   });
+
+  it('carries line spacing and font case (#330)', async () => {
+    const { editor, executor } = executorWithTracks();
+    await executor.execute('add_texts', {
+      entries: [{
+        trackId: 'v1', startFrame: 0, durationFrames: 30, text: 'mixed case',
+        lineSpacing: 10, fontCase: 'upper',
+      }],
+    });
+    const added = editor.getClips().find((c) => c.type === 'title')!;
+    // Case is a render-time transform: stored text stays as authored.
+    expect(added.text).toBe('mixed case');
+    expect(added.titleFontCase).toBe('upper');
+    expect(added.titleLineSpacing).toBe(10);
+
+    const id = editor.addTitleClip({ trackId: 'v1', text: 'Second', startFrame: 100, durationFrames: 30 });
+    await executor.execute('set_title_text', { clipId: id, fontCase: 'lower', lineSpacing: 4 });
+    const updated = editor.getClips().find((c) => c.id === id)!;
+    expect(updated.titleFontCase).toBe('lower');
+    expect(updated.titleLineSpacing).toBe(4);
+  });
 });

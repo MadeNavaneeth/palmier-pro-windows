@@ -387,6 +387,10 @@ export const tools = {
           .describe('Background box color as #RRGGBBAA (e.g. #00000080). Omit for no box.'),
         backgroundPadding: z.number().int().min(0).max(128).optional()
           .describe('Background box padding in pixels. Default 8.'),
+        lineSpacing: z.number().int().min(0).max(200).optional()
+          .describe('Extra space between wrapped lines, in pixels. Default 0.'),
+        fontCase: z.enum(['original', 'upper', 'lower']).optional()
+          .describe('Case applied to the text before rendering. Default original.'),
       })).min(1).describe('Titles to add.'),
     }),
   },
@@ -431,10 +435,15 @@ export const tools = {
         .describe('Background box color (#RRGGBBAA) or null to remove the background.'),
       backgroundPadding: z.number().int().min(0).max(128).optional()
         .describe('Background box padding in pixels. Default 8.'),
+      lineSpacing: z.number().int().min(0).max(200).optional()
+        .describe('Extra space between wrapped lines, in pixels. Default 0.'),
+      fontCase: z.enum(['original', 'upper', 'lower']).optional()
+        .describe('Case applied to the text before rendering. Default original.'),
     }).refine(
       (op) => op.text !== undefined || op.fontSize !== undefined || op.color !== undefined
         || op.bold !== undefined || op.fontFamily !== undefined || op.backgroundColor !== undefined
-        || op.backgroundPadding !== undefined,
+        || op.backgroundPadding !== undefined || op.lineSpacing !== undefined
+        || op.fontCase !== undefined,
       { message: 'Pass at least one field to update.' },
     ),
   },

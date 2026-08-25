@@ -15,7 +15,7 @@
 import type { Clip, Frame, Project, ProjectSettings } from '../../shared/types/project';
 import { frameToSeconds } from '../../shared/utils/time';
 import { colorGradeOf, toCanvasFilter } from '../../shared/editor/color-grade';
-import { TITLE_BACKGROUND_PADDING_DEFAULT } from '../../shared/editor/title';
+import { TITLE_BACKGROUND_PADDING_DEFAULT, applyTitleFontCase } from '../../shared/editor/title';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -301,19 +301,25 @@ export class PreviewEngine {
     const family = clip.titleFontFamily || 'system-ui, sans-serif';
     this.ctx.font = `${weight}${fontSize}px ${family}`;
 
+    // Case is applied to the string itself so every consumer — background
+    // measurement, stroke, fill, drawtext — sees identical glyphs (upstream
+    // #330). Line spacing adds to the shared 1.2 leading.
+    const textLines = applyTitleFontCase(clip.text, clip.titleFontCase).split('\n');
+    const lineSpacing = clip.titleLineSpacing ?? 0;
+    const lineH = fontSize * 1.2 + lineSpacing;
+
     // Background box behind text, fitted per longest line with symmetric
     // padding — matching drawtext's boxborderw on all four sides (#507).
     if (clip.titleBackgroundColor) {
-      const lines = clip.text.split('\n');
       let maxW = 0;
-      for (const line of lines) {
+      for (const line of textLines) {
         const m = this.ctx.measureText(line);
         if (m.width > maxW) maxW = m.width;
       }
       const pad = Math.round(
         clip.titleBackgroundPadding ?? TITLE_BACKGROUND_PADDING_DEFAULT,
       );
-      const blockH = lines.length * fontSize * 1.2;
+      const blockH = textLines.length * fontSize * 1.2 + (textLines.length - 1) * lineSpacing;
       const centerX = clip.x + clip.width / 2;
       const centerY = clip.y + clip.height / 2;
       this.ctx.fillStyle = clip.titleBackgroundColor;
@@ -336,8 +342,6 @@ export class PreviewEngine {
       this.ctx.lineJoin = 'round';
       const centerX = clip.x + clip.width / 2;
       const centerY = clip.y + clip.height / 2;
-      const lineH = fontSize * 1.2;
-      const textLines = clip.text.split('\n');
       for (const [i, line] of textLines.entries()) {
         const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
         this.ctx.strokeText(line, centerX, y);
@@ -348,8 +352,6 @@ export class PreviewEngine {
     this.ctx.textAlign = align as CanvasTextAlign;
     const centerX = align === 'left' ? clip.x : align === 'right' ? clip.x + clip.width : clip.x + clip.width / 2;
     const centerY = clip.y + clip.height / 2;
-    const lineH = fontSize * 1.2;
-    const textLines = clip.text.split('\n');
     for (const [i, line] of textLines.entries()) {
       const y = centerY + (i - (textLines.length - 1) / 2) * lineH;
       this.ctx.fillText(line, centerX, y);

@@ -32,6 +32,10 @@ export interface TitleStyle {
   backgroundColor?: string;
   /** Background box padding in px at project resolution. Default 8. */
   backgroundPaddingPx?: number;
+  /** Extra space between wrapped lines, in px at project resolution. */
+  lineSpacingPx?: number;
+  /** Case applied to the text before rendering. Default original. */
+  fontCase?: 'original' | 'upper' | 'lower';
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   strokeWidthPx?: number;
   /** Outline stroke color. */
@@ -40,6 +44,20 @@ export interface TitleStyle {
 
 /** Padding around the text inside the background box, both render paths. */
 export const TITLE_BACKGROUND_PADDING_DEFAULT = 8;
+
+export type TitleFontCase = NonNullable<TitleStyle['fontCase']>;
+
+/**
+ * Apply the styled case to title text BEFORE it reaches either renderer.
+ * Case is a string transform rather than a render feature so canvas and
+ * drawtext consume byte-identical glyphs — the strongest form of the
+ * two-paths-agree rule.
+ */
+export function applyTitleFontCase(text: string, mode?: TitleFontCase): string {
+  if (mode === 'upper') return text.toUpperCase();
+  if (mode === 'lower') return text.toLowerCase();
+  return text;
+}
 
 export const DEFAULT_TITLE_STYLE: TitleStyle = {
   sizeRatio: 0.09,
@@ -54,7 +72,7 @@ export const DEFAULT_TITLE_STYLE: TitleStyle = {
  * @param height - Project height in pixels, for font size scaling.
  */
 export function drawtextStyleParams(
-  clip: { titleBold?: boolean; titleFontFamily?: string; titleBackgroundColor?: string; titleBackgroundPadding?: number; titleStrokeWidth?: number; titleStrokeColor?: string },
+  clip: { titleBold?: boolean; titleFontFamily?: string; titleBackgroundColor?: string; titleBackgroundPadding?: number; titleLineSpacing?: number; titleStrokeWidth?: number; titleStrokeColor?: string },
   height: number,
 ): string {
   const parts: string[] = [];
@@ -63,6 +81,9 @@ export function drawtextStyleParams(
     // Windows system fonts are addressed by name via fontconfig's fallback.
     const family = escapeDrawtext(clip.titleFontFamily);
     parts.push(`font='${family}'`);
+  }
+  if (clip.titleLineSpacing !== undefined && clip.titleLineSpacing > 0) {
+    parts.push(`line_spacing=${Math.round(clip.titleLineSpacing)}`);
   }
   if (clip.titleBackgroundColor) {
     const bg = clip.titleBackgroundColor.replace('#', '0x');

@@ -6,6 +6,7 @@ import {
   DEFAULT_TITLE_STYLE,
   drawtextStyleParams,
   TITLE_BACKGROUND_PADDING_DEFAULT,
+  applyTitleFontCase,
 } from './title';
 
 describe('sanitizeTitleText', () => {
@@ -76,5 +77,24 @@ describe('drawtextStyleParams background box (#507 fitted boxes)', () => {
 
   it('emits no box without a background color, padding alone included', () => {
     expect(drawtextStyleParams({ titleBackgroundPadding: 40 }, height)).toBe('');
+  });
+
+  it('emits line_spacing only when a positive spacing is set', () => {
+    expect(drawtextStyleParams({ titleLineSpacing: 12 }, height)).toContain('line_spacing=12');
+    expect(drawtextStyleParams({ titleLineSpacing: 0 }, height)).toBe('');
+    expect(drawtextStyleParams({}, height)).toBe('');
+  });
+});
+
+describe('applyTitleFontCase (upstream #330)', () => {
+  it('transforms the whole string including newlines', () => {
+    expect(applyTitleFontCase('Mixed Case\nsecond line', 'upper')).toBe('MIXED CASE\nSECOND LINE');
+    expect(applyTitleFontCase('Mixed Case', 'lower')).toBe('mixed case');
+  });
+
+  it('leaves text untouched for original and unset modes', () => {
+    const text = 'MiXeD';
+    expect(applyTitleFontCase(text, 'original')).toBe(text);
+    expect(applyTitleFontCase(text, undefined)).toBe(text);
   });
 });

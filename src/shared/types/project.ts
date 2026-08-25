@@ -123,6 +123,10 @@ export interface Clip {
   titleBackgroundColor?: string;
   /** Background box padding in px at project resolution (#507 fitted boxes). */
   titleBackgroundPadding?: number;
+  /** Extra space between wrapped lines in px at project resolution (#330). */
+  titleLineSpacing?: number;
+  /** Case applied to the text before rendering (upstream #330). */
+  titleFontCase?: 'original' | 'upper' | 'lower';
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */

@@ -284,7 +284,8 @@ export class ToolExecutor {
               entry.fontSize !== undefined, entry.color !== undefined,
               entry.bold !== undefined, entry.fontFamily !== undefined,
               entry.align !== undefined, entry.backgroundColor !== undefined,
-              entry.backgroundPadding !== undefined,
+              entry.backgroundPadding !== undefined, entry.lineSpacing !== undefined,
+              entry.fontCase !== undefined,
             ];
             if (styleFields.some(Boolean)) {
               this.editor.applyClipProperties([clipId], 'Style title', (draft) => {
@@ -303,6 +304,8 @@ export class ToolExecutor {
                 if (entry.backgroundPadding !== undefined) {
                   draft.titleBackgroundPadding = entry.backgroundPadding;
                 }
+                if (entry.lineSpacing !== undefined) draft.titleLineSpacing = entry.lineSpacing;
+                if (entry.fontCase !== undefined) draft.titleFontCase = entry.fontCase;
                 return true;
               });
             }
@@ -397,7 +400,7 @@ export class ToolExecutor {
               return { success: false, error: 'Clip not found, is not a title, or text is invalid.' };
             }
           }
-          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding];
+          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding, args.lineSpacing, args.fontCase];
           if (styleFields.some((v) => v !== undefined)) {
             this.editor.applyClipProperties([args.clipId], 'Style title', (draft) => {
               if (draft.type !== 'title') return false;
@@ -414,6 +417,8 @@ export class ToolExecutor {
                 else draft.titleBackgroundColor = args.backgroundColor;
               }
               if (args.backgroundPadding !== undefined) draft.titleBackgroundPadding = args.backgroundPadding;
+              if (args.lineSpacing !== undefined) draft.titleLineSpacing = args.lineSpacing;
+              if (args.fontCase !== undefined) draft.titleFontCase = args.fontCase;
               return true;
             });
           }
