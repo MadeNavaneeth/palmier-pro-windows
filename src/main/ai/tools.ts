@@ -564,13 +564,17 @@ export const tools = {
   // ── Generation (Phase 7+) ───────────────────────────────────────────────────
   generateMedia: {
     name: 'generate_media',
-    description: 'Generate new media using an AI provider (image, video, or audio).',
+    description:
+      'Generate an image, video, or audio asset from a text prompt using a configured generation provider (fal.ai, Replicate, or HiggsField — whichever has an API key set; pass providerId to choose). The finished file is imported into the project media library and its asset id is returned. Video generations can take a few minutes.',
     parameters: z.object({
-      prompt: z.string().describe('Generation prompt.'),
       type: z.enum(['image', 'video', 'audio']).describe('Type of media to generate.'),
-      provider: z.string().optional().describe('Provider name (e.g., "higgsfield", "fal", "replicate"). Defaults to user preference.'),
-      durationSeconds: z.number().finite().min(0).max(3600).optional().describe('Duration for video/audio generation (seconds, max 1 hour).'),
-      referenceAssetId: z.string().optional().describe('Asset to use as a visual reference / first frame.'),
+      prompt: z.string().min(1).max(2000).describe('Generation prompt.'),
+      negativePrompt: z.string().max(1000).optional().describe('What to avoid.'),
+      providerId: z.string().optional().describe('Provider id ("fal", "replicate", "higgsfield"). Defaults to the first configured provider supporting the type.'),
+      modelId: z.string().optional().describe('Provider-specific model id. Defaults to the provider\'s default for the type.'),
+      durationSeconds: z.number().finite().min(1).max(60).optional().describe('Duration for video/audio generation.'),
+      width: z.number().int().min(256).max(4096).optional().describe('Output width in pixels.'),
+      height: z.number().int().min(256).max(4096).optional().describe('Output height in pixels.'),
     }),
   },
 } as const;

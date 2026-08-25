@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IPC handlers for media operations.
  * Uses ffprobe for metadata extraction and thumbnail generation.
  */
@@ -12,6 +12,12 @@ import fsSync from 'fs';
 import crypto from 'crypto';
 import { loadPresets, savePresets } from '../media/export-presets';
 import { expandImportPaths } from '../media/import-expansion';
+// Probe lives in ../media/probe (electron-free) so the Agent executor can
+// import it without pulling Electron into unit tests.
+import { probeMedia } from '../media/probe';
+import type { MediaProbeResult } from '../media/probe';
+export { probeMedia };
+export type { MediaProbeResult };
 
 const execFileAsync = promisify(execFile);
 
@@ -22,23 +28,9 @@ const MEDIA_FILTERS = [
   { name: 'All Media', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
 ];
 
-export interface MediaProbeResult {
-  path: string;
-  filename: string;
-  duration: number; // seconds
-  width?: number;
-  height?: number;
-  fps?: number;
-  codec?: string;
-  audioCodec?: string;
-  sampleRate?: number;
-  channels?: number;
-  fileSize: number;
-  type: 'video' | 'audio' | 'image';
-}
 
 export function registerMediaHandlers(): void {
-  // ─── Import Media (open file dialog) ─────────────────────────────────────────
+  // â”€â”€â”€ Import Media (open file dialog) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('media:import', async () => {
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showOpenDialog(win!, {
@@ -67,7 +59,7 @@ export function registerMediaHandlers(): void {
     return probeMediaPaths(safePaths);
   });
 
-  // ─── Probe single file ───────────────────────────────────────────────────────
+  // â”€â”€â”€ Probe single file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('media:probe', async (_event, filePath: string) => {
     try {
       const info = await probeMedia(filePath);
@@ -77,7 +69,7 @@ export function registerMediaHandlers(): void {
     }
   });
 
-  // ─── Generate thumbnail ──────────────────────────────────────────────────────
+  // â”€â”€â”€ Generate thumbnail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('media:thumbnail', async (_event, filePath: string, outputDir: string, timestamp: number = 1) => {
     try {
       const thumbPath = await generateThumbnail(filePath, outputDir, timestamp);
@@ -87,7 +79,7 @@ export function registerMediaHandlers(): void {
     }
   });
 
-  // ─── Export presets (R2) ──────────────────────────────────────────────────────
+  // â”€â”€â”€ Export presets (R2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('export:get-presets', () => {
     return { success: true, presets: loadPresets() };
   });
@@ -97,7 +89,7 @@ export function registerMediaHandlers(): void {
     return { success: true };
   });
 
-  // ─── Offline check: which asset paths no longer exist on disk ────────────────
+  // â”€â”€â”€ Offline check: which asset paths no longer exist on disk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('media:check-offline', async (_event, paths: unknown) => {
     if (!Array.isArray(paths)) return { missing: [] };
     const missing = paths.filter(
@@ -106,7 +98,7 @@ export function registerMediaHandlers(): void {
     return { missing };
   });
 
-  // ─── Filmstrip: evenly spaced thumbnails across a video source (R1) ─────────
+  // â”€â”€â”€ Filmstrip: evenly spaced thumbnails across a video source (R1) â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('media:filmstrip', async (_event, filePath: unknown, count: unknown) => {
     if (typeof filePath !== 'string' || filePath.length === 0) {
       return { success: false, error: 'Invalid source path' };
@@ -160,7 +152,7 @@ export function registerMediaHandlers(): void {
     }
   });
 
-  // ─── Hardware encoder detection (R2) ─────────────────────────────────────────
+  // â”€â”€â”€ Hardware encoder detection (R2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   let hwEncoderCache: string[] | null = null;
   ipcMain.handle('media:hw-encoders', async () => {
     if (hwEncoderCache) return { encoders: hwEncoderCache };
@@ -182,7 +174,7 @@ export function registerMediaHandlers(): void {
     return { encoders };
   });
 
-  // ─── Folder picker ───────────────────────────────────────────────────────────
+  // â”€â”€â”€ Folder picker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('media:choose-folder', async () => {
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showOpenDialog(win!, {
@@ -236,7 +228,7 @@ export function registerMediaHandlers(): void {
   });
 
 
-  // ─── Extract audio from a video into a library asset (upstream PR #562) ─────
+  // â”€â”€â”€ Extract audio from a video into a library asset (upstream PR #562) â”€â”€â”€â”€â”€
   // An optional `window` bakes a source range into the extracted file, which
   // is how the timeline clip entry ("Save as audio") captures the clip's
   // trim; omitted, the full source is extracted (media-panel entry).
@@ -332,53 +324,8 @@ async function probeMediaPaths(filePaths: string[]): Promise<{
   return { success: probed.length > 0, files: probed, errors };
 }
 
-// ─── ffprobe wrapper ─────────────────────────────────────────────────────────
 
-async function probeMedia(filePath: string): Promise<MediaProbeResult> {
-  const { stdout } = await execFileAsync('ffprobe', [
-    '-v', 'quiet',
-    '-print_format', 'json',
-    '-show_format',
-    '-show_streams',
-    filePath,
-  ]);
-
-  const data = JSON.parse(stdout);
-  const format = data.format;
-  const videoStream = data.streams?.find((s: any) => s.codec_type === 'video');
-  const audioStream = data.streams?.find((s: any) => s.codec_type === 'audio');
-
-  const ext = path.extname(filePath).toLowerCase();
-  const imageExts = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
-  const audioExts = ['.mp3', '.wav', '.aac', '.ogg', '.flac', '.m4a'];
-
-  let type: 'video' | 'audio' | 'image' = 'video';
-  if (imageExts.includes(ext)) type = 'image';
-  else if (audioExts.includes(ext) || (!videoStream && audioStream)) type = 'audio';
-
-  const fpsStr = videoStream?.r_frame_rate || '0/1';
-  const [num, den] = fpsStr.split('/').map(Number);
-  const fps = den ? num / den : 0;
-
-  const stat = await fs.stat(filePath);
-
-  return {
-    path: filePath,
-    filename: path.basename(filePath),
-    duration: parseFloat(format.duration) || 0,
-    width: videoStream ? parseInt(videoStream.width) : undefined,
-    height: videoStream ? parseInt(videoStream.height) : undefined,
-    fps: fps > 0 ? Math.round(fps * 100) / 100 : undefined,
-    codec: videoStream?.codec_name,
-    audioCodec: audioStream?.codec_name,
-    sampleRate: audioStream ? parseInt(audioStream.sample_rate) : undefined,
-    channels: audioStream?.channels,
-    fileSize: stat.size,
-    type,
-  };
-}
-
-// ─── Thumbnail generation ────────────────────────────────────────────────────
+// â”€â”€â”€ Thumbnail generation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function generateThumbnail(
   filePath: string,
@@ -403,3 +350,5 @@ async function generateThumbnail(
 
   return thumbPath;
 }
+
+

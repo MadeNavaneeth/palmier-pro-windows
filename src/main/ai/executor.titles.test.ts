@@ -1,12 +1,17 @@
-/**
+﻿/**
  * Regression coverage for the add_texts and set_title_text agent tools
  * (R3): multi-entry placement, style overrides, refusal messages, and
  * text-only edits that never touch timing.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { promises as fs } from 'fs';
+import path from 'path';
+import os from 'os';
 import { ToolExecutor } from './executor';
 import { EditorController } from '../../shared/editor/controller';
+import type { GenerationProvider } from '../../main/generation/types';
+import { setGenerationProviders } from '../../main/generation/manager';
 
 function executorWithTracks() {
   const editor = new EditorController();
@@ -176,5 +181,128 @@ describe('set_title_text tool (R3)', () => {
     const cleared = editor.getClips().find((c) => c.id === id)!;
     expect(cleared.titleTiltXDeg).toBeUndefined();
     expect(cleared.titleTiltYDeg).toBeUndefined();
+  });
+});
+
+
+// ─── generate_media (PR #406 registry wiring) ────────────────────────────────
+
+/** A minimal valid mono 16-bit WAV so ffprobe can read real metadata. */
+function makeWav(seconds = 1, sampleRate = 8000): Buffer {
+  const dataSize = Math.floor(sampleRate * seconds) * 2;
+  const buf = Buffer.alloc(44 + dataSize);
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20); // PCM
+  buf.writeUInt16LE(1, 22); // mono
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write('data', 36);
+  buf.writeUInt32LE(dataSize, 40);
+  return buf;
+}
+
+describe('generate_media tool (PR #406 registry wiring)', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    setGenerationProviders([]);
+    tmpDir = '';
+  });
+  afterEach(async () => {
+    if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true });
+    setGenerationProviders([]);
+  });
+
+  function providerReturning(outputPath: string | Error): GenerationProvider {
+    return {
+      id: 'fakegen',
+      name: 'FakeGen',
+      supportedTypes: ['image', 'video', 'audio'],
+      isConfigured: () => true,
+      configure: () => {},
+      getModels: () => ['fake-model'],
+      generate: async (request) => {
+        if (outputPath instanceof Error) throw outputPath;
+        return {
+          id: request.id,
+          status: 'completed',
+          outputPath,
+          durationSeconds: 1,
+        };
+      },
+      cancel: async () => {},
+    };
+  }
+
+  function providerWith(overrides: Partial<GenerationProvider>): GenerationProvider {
+    return { ...providerReturning(''), ...overrides } as GenerationProvider;
+  }
+
+  it('imports the generated file as a library asset with provenance', async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'palmier-gen-'));
+    const wavPath = path.join(tmpDir, 'out.wav');
+    await fs.writeFile(wavPath, makeWav());
+
+    const editor = new EditorController();
+    const executor = new ToolExecutor(editor);
+    setGenerationProviders([providerReturning(wavPath)]);
+
+    const result = await executor.execute('generate_media', {
+      type: 'audio',
+      prompt: 'gentle rain',
+      providerId: 'fakegen',
+      durationSeconds: 1,
+    });
+
+    expect(result.success).toBe(true);
+    const assets = editor.getMedia();
+    expect(assets).toHaveLength(1);
+    expect(assets[0].path).toBe(wavPath);
+    expect(assets[0].type).toBe('audio');
+    // Provenance reaches the model so it can reference the asset later.
+    expect(result.data).toMatchObject({
+      assetId: assets[0].id,
+      provider: 'fakegen',
+      model: 'fake-model',
+    });
+  });
+
+  it('surfaces a provider failure as a failed tool call', async () => {
+    const editor = new EditorController();
+    const executor = new ToolExecutor(editor);
+    setGenerationProviders([
+      providerReturning(new Error('GPU quota exhausted')),
+    ]);
+
+    const result = await executor.execute('generate_media', {
+      type: 'video', prompt: 'ocean', providerId: 'fakegen',
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain('GPU quota exhausted');
+    expect(editor.getMedia()).toHaveLength(0);
+  });
+
+  it('refuses before generating when no configured provider supports the type', async () => {
+    const editor = new EditorController();
+    const executor = new ToolExecutor(editor);
+    setGenerationProviders([
+      providerWith({ id: 'img-only', supportedTypes: ['image'] }),
+    ]);
+    // The fake defaults to isConfigured:true; make the refusal case honest by
+    // clearing support rather than keys.
+
+    const result = await executor.execute('generate_media', {
+      type: 'audio', prompt: 'birds', providerId: 'img-only',
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain('No generation provider');
+    expect(editor.getMedia()).toHaveLength(0);
   });
 });

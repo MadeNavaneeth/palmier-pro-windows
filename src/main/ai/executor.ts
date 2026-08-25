@@ -5,10 +5,20 @@
 
 import { z } from 'zod';
 import { execFile } from 'child_process';
+import { nanoid } from 'nanoid';
 import { tools, getToolByName } from './tools';
 import { clampFrame } from '../../shared/utils/safe-number';
 import { detectSilenceForFile } from '../media/audio-envelope';
 import { loadSilenceSettings } from '../media/silence-settings';
+import { probeMedia } from '../media/probe';
+import {
+  configuredProvidersFor,
+  listGenerationProviders,
+  runGeneration,
+} from '../generation/manager';
+
+/** Bounded wait for a provider render; video gens can be minutes. */
+const GENERATION_TIMEOUT_MS = 600_000;
 import { resolveSilenceConfig, type SilenceConfig, type SilentRange } from '../../shared/audio/silence-detector';
 import {
   resolveSilenceScope,
@@ -883,9 +893,69 @@ export class ToolExecutor {
         // Phase 4 — placeholder
         return { success: false, error: 'Export not yet implemented (Phase 4).' };
 
-      case 'generate_media':
-        // Phase 7 — placeholder
-        return { success: false, error: 'Generation not yet implemented (Phase 7).' };
+      case 'generate_media': {
+        const configured = configuredProvidersFor(args.type);
+        if (configured.length === 0) {
+          return {
+            success: false,
+            error: `No generation provider with an API key supports ${args.type}. Add a key under Settings → Generation (providers: ${listGenerationProviders().map((p) => p.id).join(', ')}).`,
+          };
+        }
+        const provider = (args.providerId && configured.find((p) => p.id === args.providerId))
+          ?? configured[0]!;
+        const modelId = args.modelId ?? provider.getModels(args.type)[0];
+
+        // The generated file lands in the generation cache; import it as a
+        // first-class library asset so the model can place it like anything
+        // else. A probe failure still imports nothing but reports cleanly.
+        const result = await runGeneration(
+          {
+            type: args.type,
+            prompt: args.prompt,
+            provider: provider.id,
+            durationSeconds: args.durationSeconds,
+            width: args.width,
+            height: args.height,
+            negativePrompt: args.negativePrompt,
+            extra: { model: modelId },
+          },
+          { timeoutMs: GENERATION_TIMEOUT_MS },
+        );
+        if (result.status !== 'completed' || !result.outputPath) {
+          return {
+            success: false,
+            error: `Generation failed: ${result.error ?? 'provider returned no output'}`,
+          };
+        }
+
+        try {
+          const probed = await probeMedia(result.outputPath);
+          // The probe result carries technical metadata; the library asset
+          // adds identity and audit fields.
+          const assetId = nanoid();
+          this.editor.addMedia({
+            id: assetId,
+            addedAt: new Date().toISOString(),
+            ...probed,
+          });
+          return {
+            success: true,
+            data: {
+              assetId,
+              path: probed.path,
+              filename: probed.filename,
+              provider: provider.id,
+              model: modelId,
+              durationSec: probed.duration,
+            },
+          };
+        } catch (err: unknown) {
+          return {
+            success: false,
+            error: `Generated file could not be probed: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
 
       default:
         return { success: false, error: `Unhandled tool: ${name}` };
