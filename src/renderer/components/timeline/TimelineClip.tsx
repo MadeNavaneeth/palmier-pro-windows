@@ -20,6 +20,11 @@ import { getFilmstrip } from '../../lib/filmstrip-cache';
 import { normalizeGain } from '../../../shared/audio/normalize';
 import { frameToTimecode } from '../../../shared/utils/time';
 import { useMediaPanelStore } from '../../store/media-panel';
+import { useProjectStore } from '../../store/project';
+import { silenceSpanRects } from '../../../shared/editor/silence-scoping';
+import { getSilenceSpans } from '../../lib/silence-spans-cache';
+import type { RippleRange } from '../../../shared/editor/ripple';
+import type { SilentRange } from '../../../shared/audio/silence-detector';
 
 interface TimelineClipProps {
   clip: Clip;
@@ -202,6 +207,43 @@ export function TimelineClip({ clip }: TimelineClipProps) {
     };
   }, [videoPath]);
 
+  // ─── Shaded dead-air spans (#426 "Mark Silence") ──────────────────────────
+  const showSilenceSpans = useMediaPanelStore((s) => s.showSilenceSpans);
+  const [spans, setSpans] = useState<SilentRange[] | null>(null);
+  useEffect(() => {
+    if (!audioPath || !showSilenceSpans) {
+      setSpans(null);
+      return;
+    }
+    let cancelled = false;
+    const promise = getSilenceSpans(audioPath);
+    if (!promise) return;
+    promise
+      .then((ranges) => {
+        if (!cancelled && ranges.length > 0) setSpans(ranges);
+      })
+      .catch(() => {
+        if (!cancelled) setSpans(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [audioPath, showSilenceSpans]);
+
+  const handleRemoveSpan = useCallback(
+    (range: RippleRange) => {
+      const report = controller.rippleDeleteRanges(clip.trackId, [range]);
+      if (!report) {
+        useMediaPanelStore.getState().setNotice(
+          'That span cannot be removed — a locked track blocks the ripple.',
+        );
+        return;
+      }
+      useProjectStore.getState().markDirty();
+    },
+    [controller, clip.trackId],
+  );
+
 
 
 
@@ -259,6 +301,14 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       Math.min(180, Math.max(8, Math.floor(width / 2))),
     );
   }, [clip.type, peaks, width, asset, fps, clip.inPoint, clip.outPoint]);
+
+  // Silence bands in body-local pixels; empty until detection resolves.
+  const silenceBands = useMemo(() => {
+    if (!spans || !showSilenceSpans || width < 8) return [];
+    return silenceSpanRects(clip, fps, viewport.pixelsPerFrame, spans).filter(
+      (rect) => rect.width >= 1,
+    );
+  }, [spans, showSilenceSpans, width, clip, fps, viewport.pixelsPerFrame]);
 
   // Color based on clip type
   const colorClass = CLIP_COLORS[clip.type] || CLIP_COLORS.video;
@@ -493,6 +543,23 @@ export function TimelineClip({ clip }: TimelineClipProps) {
           ))}
         </div>
       )}
+
+      {/* Shaded dead-air spans (#426): click one to ripple-remove just that gap */}
+      {silenceBands.map((rect, index) => (
+        <div
+          key={`${rect.left}-${index}`}
+          role="button"
+          title="Silent span — click to remove it"
+          data-silence-span=""
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            handleRemoveSpan(rect.range);
+          }}
+          className="absolute inset-y-0 z-[5] cursor-pointer border-x border-red-400/40 bg-red-500/25 transition-colors hover:bg-red-500/45"
+          style={{ left: `${rect.left}px`, width: `${Math.max(rect.width, 2)}px` }}
+        />
+      ))}
 
       {/* Edit-state badges: speed, pan, color grade visible at a glance */}
       {(clip.speed !== undefined && clip.speed !== 1

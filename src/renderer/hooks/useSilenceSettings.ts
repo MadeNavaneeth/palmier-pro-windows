@@ -13,6 +13,7 @@ import {
   DEFAULT_SILENCE_CONFIG,
   type SilenceConfig,
 } from '../../shared/audio/silence-detector';
+import { resetSilenceSpansCache } from '../lib/silence-spans-cache';
 
 export interface SilenceSettingsHandle {
   /** Null until the first read resolves, so controls can stay disabled. */
@@ -55,6 +56,10 @@ export function useSilenceSettings(): SilenceSettingsHandle {
       .setSilenceSettings(patch)
       .then((result) => {
         if (mounted.current && result?.settings) setSettings(result.settings);
+        // The controls decide what counts as silent: a confirmed change
+        // invalidates every shaded span so the overlay matches the next
+        // removal (#426).
+        resetSilenceSpansCache();
       })
       .catch(() => {
         // The optimistic value still governs this session; a failed write only

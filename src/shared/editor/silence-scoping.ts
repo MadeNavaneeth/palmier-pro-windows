@@ -113,3 +113,30 @@ export function timelineSilenceRanges(
   }
   return out.sort((a, b) => a.start - b.start);
 }
+
+/** A detected span drawn inside one clip's body, in body-local pixels. */
+export interface SilenceSpanRect {
+  left: number;
+  width: number;
+  /** The timeline frame range the rectangle stands for; removing cuts this. */
+  range: RippleRange;
+}
+
+/**
+ * Pixel rectangles for the shaded dead-air overlay (#426's "Mark Silence").
+ * Spans outside the clip's trimmed window are clamped or dropped by the same
+ * mapping the removal uses, so what the user sees is exactly what a click
+ * would cut.
+ */
+export function silenceSpanRects(
+  clip: Clip,
+  fps: number,
+  pixelsPerFrame: number,
+  rangesSec: readonly SilentRange[],
+): SilenceSpanRect[] {
+  return timelineSilenceRanges(clip, fps, rangesSec).map((range) => ({
+    left: (range.start - clip.startFrame) * pixelsPerFrame,
+    width: (range.end - range.start) * pixelsPerFrame,
+    range,
+  }));
+}

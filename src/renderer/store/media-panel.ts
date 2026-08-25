@@ -39,6 +39,12 @@ export interface MediaPanelState {
    * is stale and completes as a cancellation rather than a swap.
    */
   armedSwap: { clipId: string; fingerprint: string } | null;
+  /**
+   * Whether audio clips shade their detected dead-air spans (#426's "Mark
+   * Silence"). Session-scoped view state; the spans are advisory until one is
+   * clicked, so it does not need to survive a restart to be useful.
+   */
+  showSilenceSpans: boolean;
 
   isSelected: (assetId: string) => boolean;
   publishVisibleItems: (orderedIds: readonly string[], columnCount: number) => void;
@@ -52,6 +58,8 @@ export interface MediaPanelState {
   armMediaSwap: (clipId: string) => void;
   /** Disarm without swapping (Escape, second tap on the same menu item). */
   cancelMediaSwap: () => void;
+  /** Show or hide the shaded dead-air spans on audio clips (#426). */
+  toggleSilenceSpans: (show: boolean) => void;
   /**
    * Finish the armed swap with `assetId`. A refused replacement keeps the
    * arm so another tile can be picked; an edit that moved the clip under
@@ -89,6 +97,9 @@ export const useMediaPanelStore = create<MediaPanelState>((set, get) => ({
   columnCount: 1,
   notice: null,
   armedSwap: null,
+  showSilenceSpans: false,
+
+  toggleSilenceSpans: (show) => set({ showSilenceSpans: show }),
 
   armMediaSwap: (clipId) => {
     set((state) => {

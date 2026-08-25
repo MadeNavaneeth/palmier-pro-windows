@@ -23,8 +23,8 @@ this file is the exhaustive per-issue record.
 
 | Disposition | Count |
 |---|---|
-| Implemented | 19 |
-| Partial | 2 |
+| Implemented | 20 |
+| Partial | 1 |
 | Planned | 23 |
 | N/A platform | 14 |
 | Needs investigation | 0 |
@@ -56,7 +56,7 @@ Three `Partial` issues also moved substantially without changing disposition:
 |---|---|---|
 | [#58](https://github.com/palmier-io/palmier-pro/issues/58) | An in-flight agent turn can be stopped: `ai:cancel`, a Stop button, and signal checks between rounds and before each remaining tool call. A long multi-step turn is now covered by a stress suite that pins replayed history to linear growth, project consistency across dozens of mutations, and undoability of the whole run (`main/ai/agent.ts`, `agent.stress.test.ts`) | Nothing outstanding for the freeze itself; a headless mode for batch MCP production remains under #302 |
 | [#286](https://github.com/palmier-io/palmier-pro/issues/286) | The panel layout is persisted, so a reduced "timeline and video only" workspace survives a restart, and the three named arrangements from PR #430 (`default`, `media`, `vertical`) are switchable from the title bar or `Ctrl+1/2/3` (`shared/ui/workspace-layout.ts`, `store/ui.ts`) | Tab grouping, detaching a panel into its own window, resizable splitters with remembered divider positions |
-| [PR #426](https://github.com/palmier-io/palmier-pro/pull/426) | Inspector sliders for Minimum Pause, Speech Padding and Threshold, with the saved settings owned by the main process so a no-argument `remove_silence` matches the visible controls (`main/media/silence-settings.ts`); scoped removal now also accepts upstream's optional `clipIds` (or sweeps every audio track when omitted) through `shared/editor/silence-scoping.ts` + the ripple engine | Scoping to the marked in/out subrange, and timeline shading of the removable spans |
+| [PR #426](https://github.com/palmier-io/palmier-pro/pull/426) | Inspector sliders for Minimum Pause, Speech Padding and Threshold with main-process ownership (`main/media/silence-settings.ts`); scoped removal via optional `clipIds` or whole-timeline sweep (`shared/editor/silence-scoping.ts` + the ripple engine); and the timeline surface — a Mark-Silence toggle shading detected spans over audio waveforms, click-to-remove on one span, spans re-detected when the saved controls change | None outstanding for #426 itself; scoping to a marked in/out subrange has no upstream analogue and was not invented |
 
 ## Complete disposition table
 

@@ -13,6 +13,7 @@ import { useProjectStore } from '../store/project';
 import { BLEND_MODES, BLEND_MODE_LABELS, type BlendMode } from '../../shared/types/blend-mode';
 import { DEFAULT_SILENCE_CONFIG, SILENCE_LIMITS } from '../../shared/audio/silence-detector';
 import { useSilenceSettings } from '../hooks/useSilenceSettings';
+import { useMediaPanelStore } from '../store/media-panel';
 import {
   ASPECT_PRESETS,
   QUALITY_PRESETS,
@@ -292,6 +293,8 @@ function SilenceRemovalControls({
   status: string | null;
 }) {
   const { settings, update, reset, isModified } = useSilenceSettings();
+  const showSilenceSpans = useMediaPanelStore((state) => state.showSilenceSpans);
+  const toggleSilenceSpans = useMediaPanelStore((state) => state.toggleSilenceSpans);
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1">
@@ -351,6 +354,18 @@ function SilenceRemovalControls({
       >
         {working ? 'Analyzing…' : 'Remove Silence'}
       </button>
+      <label
+        className="flex cursor-pointer items-center gap-1.5 text-2xs text-text-secondary"
+        title="Shade the silent spans on audio clips; click a shaded span to remove just that gap."
+      >
+        <input
+          type="checkbox"
+          checked={showSilenceSpans}
+          onChange={(event) => toggleSilenceSpans(event.target.checked)}
+          className="accent-[var(--color-accent)]"
+        />
+        Mark silent spans on the timeline
+      </label>
       {status && (
         <span className="text-2xs text-text-muted" role="status">
           {status}

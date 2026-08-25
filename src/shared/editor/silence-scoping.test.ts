@@ -12,6 +12,7 @@ import type { Clip } from '../types/project';
 import {
   resolveSilenceScope,
   timelineSilenceRanges,
+  silenceSpanRects,
 } from './silence-scoping';
 
 let seq = 0;
@@ -143,5 +144,35 @@ describe('timelineSilenceRanges', () => {
     // Source 6s is frame 180; minus in-point 150 -> timeline frame 30.
     expect(timelineSilenceRanges(clip, 30, [{ startSec: 6, endSec: 7 }]))
       .toEqual([{ start: 30, end: 60 }]);
+  });
+});
+
+describe('silenceSpanRects (#426 overlay)', () => {
+  const clip = mkClip({
+    trackId: 'a1',
+    type: 'audio',
+    startFrame: 300,
+    durationFrames: 300,
+    inPoint: 0,
+    outPoint: 300,
+  });
+
+  it('maps source seconds to body-local pixels through the timeline mapping', () => {
+    // 1-2s -> frames 330..360 on the timeline -> 30..60 within the clip body;
+    // at 2 px/frame that is left 60, width 60.
+    expect(silenceSpanRects(clip, 30, 2, [{ startSec: 1, endSec: 2 }])).toEqual([
+      { left: 60, width: 60, range: { start: 330, end: 360 } },
+    ]);
+  });
+
+  it('clamps spans to the trimmed window and drops the empty remainder', () => {
+    const rects = silenceSpanRects(clip, 30, 2, [
+      { startSec: -3, endSec: 20 }, // covers the whole clip -> one full-body band
+      { startSec: 11, endSec: 12 }, // entirely past the window -> dropped
+    ]);
+
+    expect(rects).toHaveLength(1);
+    expect(rects[0]).toMatchObject({ left: 0, width: 600 });
+    expect(rects[0].range).toEqual({ start: 300, end: 600 });
   });
 });
