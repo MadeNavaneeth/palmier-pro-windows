@@ -41,13 +41,22 @@ export class PalmierMcpServer {
           name,
           (args || {}) as Record<string, unknown>,
         );
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          }],
-          isError: !result.success,
-        };
+
+        // inspect_frame (#565) attaches its PNG so vision-capable clients see
+        // the frame directly instead of only receiving a path.
+        const data = result.data as { imageBase64?: string } | undefined;
+        const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [];
+        if (data?.imageBase64) {
+          content.push({ type: 'image', data: data.imageBase64, mimeType: 'image/png' });
+          const { imageBase64: _stripped, ...withoutImage } = data;
+          void _stripped;
+          result.data = withoutImage as typeof result.data;
+        }
+        content.push({
+          type: 'text' as const,
+          text: JSON.stringify(result, null, 2),
+        });
+        return { content, isError: !result.success };
       },
     );
   }

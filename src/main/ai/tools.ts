@@ -578,6 +578,17 @@ export const tools = {
     }),
   },
 
+  inspectFrame: {
+    name: 'inspect_frame',
+    description:
+      'Grab a single frame from a library video/image so you can look at it before or after editing (upstream #565). The frame is saved as a PNG and its absolute path is returned — read that file to view it. Over MCP, the image itself is attached.',
+    parameters: z.object({
+      assetId: z.string().describe('Library asset to sample from.'),
+      atSeconds: z.number().finite().min(0).describe('Offset into the source, in seconds.'),
+      width: z.number().int().min(160).max(1920).optional().describe('Output width. Default 640.'),
+    }),
+  },
+
   importFcpxml: {
     name: 'import_fcpxml',
     description:

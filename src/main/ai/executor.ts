@@ -7,6 +7,8 @@ import { z } from 'zod';
 import { execFile } from 'child_process';
 import fsSync from 'fs';
 import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { nanoid } from 'nanoid';
 import { tools, getToolByName } from './tools';
 import { clampFrame } from '../../shared/utils/safe-number';
@@ -31,6 +33,8 @@ import {
 import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
+import { createHash } from 'crypto';
+import { inspectFramePath, rgbaToPng } from '../media/frame-png';
 import {
   MAX_CANVAS_EDGE,
   aspectRatioLabel,
@@ -1002,6 +1006,62 @@ export class ToolExecutor {
         const xmlOut = exportFcpxml(this.editor.getProject());
         await fs.writeFile(args.path, xmlOut, 'utf8');
         return { success: true, data: { path: args.path } };
+      }
+
+      case 'inspect_frame': {
+        const asset = this.editor.getMedia().find((m) => m.id === args.assetId);
+        if (!asset) return { success: false, error: 'Asset not found.' };
+        if (asset.type === 'audio') {
+          return { success: false, error: 'Audio assets have no frames to inspect.' };
+        }
+        const atSeconds = Math.max(0, args.atSeconds);
+        const width = Math.min(1920, Math.max(160, args.width ?? 640));
+        const height = Math.max(90, Math.round((width / (asset.width ?? 16)) * (asset.height ?? 9)));
+
+        const { getFrameDecoder } = await import('../media/frame-decoder');
+        const decoded = await getFrameDecoder().getFrame({
+          assetPath: asset.path,
+          width,
+          height,
+          sourceSeconds: atSeconds,
+        });
+        if (!decoded?.data) {
+          return { success: false, error: `Could not decode a frame at ${atSeconds}s — check the offset against the asset duration.` };
+        }
+
+        const hash = createHash('sha1')
+          .update(`${asset.path}|${atSeconds}|${width}`)
+          .digest('hex')
+          .slice(0, 12);
+        // Real Electron stores frames under userData; tests (where the
+        // electron module is a stub) fall back to the OS temp dir.
+        let baseDir: string;
+        try {
+          type ElectronAppHost = { app?: { getPath(name: string): string }; default?: { app?: { getPath(name: string): string } } };
+          const electronModule = (await import('electron')) as unknown as ElectronAppHost;
+          const app = electronModule.app ?? electronModule.default?.app;
+          baseDir = app ? app.getPath('userData') : path.join(os.tmpdir(), 'palmier-inspect-frames');
+        } catch {
+          baseDir = path.join(os.tmpdir(), 'palmier-inspect-frames');
+        }
+        const outPath = inspectFramePath(baseDir, hash);
+        await rgbaToPng(decoded.data, width, height, outPath);
+
+        const timecode = `${Math.floor(atSeconds / 60)}:${String(Math.floor(atSeconds % 60)).padStart(2, '0')}`;
+        const imageBase64 = decoded.data.length < 2_000_000
+          ? (await fs.readFile(outPath)).toString('base64')
+          : undefined;
+        return {
+          success: true,
+          data: {
+            path: outPath,
+            width,
+            height,
+            timecode: `${timecode} (${atSeconds.toFixed(2)}s)`,
+            note: 'Open/read the PNG at `path` to view this frame.',
+            ...(imageBase64 ? { imageBase64 } : {}),
+          },
+        };
       }
 
       case 'generate_media': {        const configured = configuredProvidersFor(args.type);
