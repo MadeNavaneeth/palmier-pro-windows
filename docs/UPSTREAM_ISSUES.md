@@ -24,8 +24,8 @@ this file is the exhaustive per-issue record.
 | Disposition | Count |
 |---|---|
 | Implemented | 24 |
-| Partial | 0 |
-| Planned | 20 |
+| Partial | 1 |
+| Planned | 19 |
 | N/A platform | 14 |
 | Needs investigation | 0 |
 | **Total** | **58** |
@@ -67,7 +67,7 @@ Ordered by issue number.
 | [#14](https://github.com/palmier-io/palmier-pro/issues/14) | Support more macOS versions (15.x, 14.x) | N/A platform | A macOS deployment-target request. Windows support floor is set by Electron and the `win32` NSIS/portable targets in `package.json`. |
 | [#17](https://github.com/palmier-io/palmier-pro/issues/17) | Allow custom API base URL / endpoint | Implemented | `shared/ai/provider-config.ts` validates and normalizes a base URL; Anthropic accepts an optional gateway override, `openai-compatible` requires one. `provider-config.test.ts`. |
 | [#18](https://github.com/palmier-io/palmier-pro/issues/18) | Expose text/caption background styling through MCP tools | Implemented | The text domain landed since this row was written: `shared/editor/title.ts` owns the style model and the sanitizer shared by both render paths (canvas preview, FFmpeg drawtext), clips carry size/color/font/bold/align/background/stroke fields, and `set_title_text` exposes them to Agent/MCP â€” including `backgroundColor` as `#RRGGBBAA` with explicit `null` to remove it. Covered by `executor.titles.test.ts` and the title unit tests. |
-| [#20](https://github.com/palmier-io/palmier-pro/issues/20) | Linux support | Planned | Electron, FFmpeg, and wgpu are all portable, so nothing in the architecture prevents it. No Linux build target, native prebuild, or CI job exists yet. |
+| [#20](https://github.com/palmier-io/palmier-pro/issues/20) | Linux support | Partial | Packaging groundwork is in place: `package.json` carries a `linux` electron-builder config (AppImage + deb, x64, Video category) and a `dist:linux` script that compiles the Rust/wgpu addon on the host before packing. The native loader is already platform-agnostic — it requires `native/palmier-compositor.node` by fixed name and degrades to CPU compositing when absent. What remains for a shipped build: run `npm run dist:linux` on Linux (napi cross-compilation from Windows is not supported), verify FFmpeg discovery against distro installs, and add a CI job producing artifacts. |
 | [#21](https://github.com/palmier-io/palmier-pro/issues/21) | Timeline for Intel Mac support | N/A platform | An Apple-silicon-versus-Intel packaging question. Windows ships x64 portable plus x64/arm64 installers. |
 | [#37](https://github.com/palmier-io/palmier-pro/issues/37) | Installation via Homebrew | N/A platform | Homebrew is a macOS package manager. The Windows analogue (a winget manifest) is a distribution task tracked in the roadmap, not this issue. |
 | [#39](https://github.com/palmier-io/palmier-pro/issues/39) | Transcription locked to the system language | Partial | A transcription engine now exists without bundling one: `main/ai/transcribe.ts` speaks the OpenAI-compatible `/audio/transcriptions` contract (OpenAI, Groq) over the BYOK runtime from #17/#140, and the executor's `transcribe_audio` tool takes an explicit ISO-639-1 `language` hint per job â€” exactly the per-job-parameter requirement this issue raised. Local/offline STT remains a separate decision. |
@@ -235,6 +235,7 @@ table above.
 ---
 
 _Last reconciled with the parity workflow: 2026-08-21._
+
 
 
 

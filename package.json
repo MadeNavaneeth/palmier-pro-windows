@@ -29,7 +29,8 @@
     "ui:probe": "node scripts/ui-probe.mjs",
     "clean": "rimraf dist out",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:linux": "npm run build:rust && tsc && vite build && electron-builder --linux"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -115,6 +116,23 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "license": "LICENSE"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "Video",
+      "mimeTypes": ["video/*", "audio/*"],
+      "desktop": {
+        "Name": "Palmier Pro"
+      }
     },
     "publish": {
       "provider": "github",
