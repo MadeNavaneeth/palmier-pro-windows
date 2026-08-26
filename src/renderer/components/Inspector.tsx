@@ -14,6 +14,7 @@ import { BLEND_MODES, BLEND_MODE_LABELS, type BlendMode } from '../../shared/typ
 import { DEFAULT_SILENCE_CONFIG, SILENCE_LIMITS } from '../../shared/audio/silence-detector';
 import { useSilenceSettings } from '../hooks/useSilenceSettings';
 import { useMediaPanelStore } from '../store/media-panel';
+import { evaluateMotion } from '../../shared/media/motion';
 import {
   ASPECT_PRESETS,
   QUALITY_PRESETS,
@@ -255,6 +256,10 @@ export function Inspector() {
           </p>
         )}
 
+        {(clip.type === 'video' || clip.type === 'image') && (
+          <MotionControls clipId={clip.id} />
+        )}
+
         {/* Audio tools — available for audio and video clips (both can carry sound). */}
         {clip.type !== 'image' && clip.type !== 'title' && (
           <SilenceRemovalControls
@@ -264,6 +269,82 @@ export function Inspector() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Motion keyframes (keyframes v1): per-axis position tracks. "Set" captures
+ * the clip's current position at the playhead as a keyframe (or updates the
+ * existing one on that frame); chips list the points with remove buttons.
+ * Evaluation/sanitization live in shared/media/motion.ts — this UI only
+ * collects intent.
+ */
+function MotionControls({ clipId }: { clipId: string }) {
+  const clip = useTimelineStore((s) =>
+    s.project.timeline.clips.find((c) => c.id === clipId));
+  const playhead = useTimelineStore((s) => s.project.timeline.playheadFrame);
+  const applyClipProperties = useTimelineStore((s) => s.controller.applyClipProperties);
+
+  const Hint = ({ children }: { children: React.ReactNode }) => (
+    <p className="mt-1 text-[10px] text-text-muted">{children}</p>
+  );
+
+  if (!clip) return null;
+  const axes: Array<{ axis: 'x' | 'y'; label: string; track: typeof clip.motionX; base: number }> = [
+    { axis: 'x', label: 'X', track: clip.motionX, base: clip.x },
+    { axis: 'y', label: 'Y', track: clip.motionY, base: clip.y },
+  ];
+
+  const setAxis = (axis: 'x' | 'y', points: Array<{ frame: number; value: number }> | undefined) => {
+    applyClipProperties([clipId], axis === 'x' ? 'Motion X' : 'Motion Y', (draft) => {
+      if (points) {
+        if (axis === 'x') draft.motionX = points;
+        else draft.motionY = points;
+      } else if (axis === 'x') delete draft.motionX;
+      else delete draft.motionY;
+      return true;
+    });
+  };
+
+  const addKeyframe = (axis: 'x' | 'y') => {
+    const info = axes.find((a) => a.axis === axis)!;
+    const evaluated = evaluateMotion(info.track, playhead) ?? info.base;
+    const others = (info.track ?? []).filter((p) => p.frame !== playhead);
+    setAxis(axis, [...others, { frame: playhead, value: Math.round(evaluated) }]);
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1" data-motion-controls>
+      <label className="text-2xs uppercase tracking-wide text-text-muted">Motion</label>
+      <Hint>Keyframes interpolate the clip's position linearly between frames.</Hint>
+      {axes.map(({ axis, label, track }) => (
+        <div key={axis} className="rounded border border-surface-3 bg-surface-2 px-2 py-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium text-text-secondary">{label} position</span>
+            <div className="flex items-center gap-1">
+              {(track ?? []).map((point) => (
+                <button
+                  key={point.frame}
+                  title={`Frame ${point.frame}: ${point.value}px — click to remove`}
+                  onClick={() =>
+                    setAxis(axis, (track ?? []).filter((p) => p.frame !== point.frame))}
+                  className="rounded bg-surface-4/60 px-1 py-0.5 font-mono text-[8px] text-text-secondary hover:bg-red-500/20 hover:text-red-300"
+                >
+                  f{point.frame}:{Math.round(point.value)}×
+                </button>
+              ))}
+              <button
+                onClick={() => addKeyframe(axis)}
+                data-add-keyframe={axis}
+                className="rounded border border-surface-4 px-1 py-0.5 text-[9px] text-text-secondary hover:bg-white/10 hover:text-text-primary"
+              >
+                + Keyframe
+              </button>
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
