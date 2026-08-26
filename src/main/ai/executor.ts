@@ -1104,8 +1104,20 @@ export class ToolExecutor {
         const asset = this.editor.getMedia().find((m) => m.id === args.assetId);
         if (!asset) return { success: false, error: 'Asset not found.' };
 
-        const runtime = await (this.deps.getTranscriptionRuntime?.()
-          ?? Promise.resolve(null));
+        // Preference order (#287): an explicit custom STT server, then the
+        // AI provider runtime.
+        let runtime: { baseUrl: string; apiKey: string } | null = null;
+        try {
+          const { getTranscribeConfig } = await import('../media/transcribe-config');
+          const override = getTranscribeConfig();
+          if (override.baseUrl && override.apiKey) {
+            runtime = { baseUrl: override.baseUrl, apiKey: override.apiKey };
+            args = { ...args, model: args.model ?? override.model };
+          }
+        } catch { /* electron absent in tests */ }
+        if (!runtime) {
+          runtime = await (this.deps.getTranscriptionRuntime?.() ?? Promise.resolve(null));
+        }
         if (!runtime) {
           return {
             success: false,

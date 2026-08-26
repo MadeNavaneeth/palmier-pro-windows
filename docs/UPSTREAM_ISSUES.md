@@ -23,9 +23,9 @@ this file is the exhaustive per-issue record.
 
 | Disposition | Count |
 |---|---|
-| Implemented | 23 |
+| Implemented | 24 |
 | Partial | 0 |
-| Planned | 21 |
+| Planned | 20 |
 | N/A platform | 14 |
 | Needs investigation | 0 |
 | **Total** | **58** |
@@ -110,7 +110,7 @@ Ordered by issue number.
 | [#262](https://github.com/palmier-io/palmier-pro/issues/262) | Windows help | Implemented | Same request as #195; this port is the answer. |
 | [#264](https://github.com/palmier-io/palmier-pro/issues/264) | Agent crash: out-of-range integer frame arg traps Int arithmetic | Implemented | Frame arguments are validated at the Zod boundary (finite, integer, within `[0, MAX_FRAME]`), clamped again in `ToolExecutor`, and guarded in `EditorController` via `clampFrame`/`asValidFrame`. `safe-number.test.ts`, `controller.overflow.test.ts` including the upstream `1e19` repro. |
 | [#286](https://github.com/palmier-io/palmier-pro/issues/286) | Ability to restructure parts | Partial | The request is workspace layout, in CapCut's terms: rearrange the panels, detach the chat into its own window, or reduce the view to just the timeline and video. Nothing here is platform-specific, so it applies in full, and two of the three now work. Hiding panels already worked from the title bar, and that layout is persisted, so "only the timeline and video in view" survives a restart instead of resetting on every launch. Stored flags are narrowed on read, and a panel the saved layout does not mention falls back to its default, so a layout written by a build with a different set of panels still loads. Rearranging arrived with the named presets adopted from PR #430 â€” `default`, `media` and `vertical`, on `Ctrl+1/2/3` â€” which is the shape upstream chose over free-form dragging and the one that actually answers the vertical-video case. Missing: grouping panels as tabs, detaching one into a separate window, and resizable splitters with remembered divider positions. `shared/ui/workspace-layout.ts`, `store/ui.ts`, `ui-panels.test.ts`, `ui-layout.test.ts`. |
-| [#287](https://github.com/palmier-io/palmier-pro/issues/287) | Custom STT | Planned | The BYOK whisper-compatible engine (#39) covers the default path; a pluggable STT interface so users can swap engines remains open. |
+| [#287](https://github.com/palmier-io/palmier-pro/issues/287) | Custom STT | Implemented | Pluggable endpoint: the Captions tab takes a custom OpenAI-compatible server URL + key (self-hosted faster-whisper included), persisted via `main/media/transcribe-config.ts` with narrowing-on-read, and transcription prefers it over the AI provider runtime. |
 | [#289](https://github.com/palmier-io/palmier-pro/issues/289) | XML imports and exports | Planned | Duplicate of #154 in substance; tracked as one interchange work item. |
 | [#302](https://github.com/palmier-io/palmier-pro/issues/302) | Local MCP batch reel production: headless/stability + `manage_tracks` mis-targeting | Partial | The mis-targeting half is now closed on this port too: the `manage_tracks` tool (upstream PR #520's surface) addresses every entry by stable track id or current index â€” exactly one, never both â€” so a stale index cannot retarget an edit. Stability is covered by the #58 row. Missing: a headless or windowless mode â€” the MCP server currently requires the Electron app to be running with a window. |
 | [#310](https://github.com/palmier-io/palmier-pro/issues/310) | Hermes / Herm MCP client integration | Planned | The stdio MCP server is client-agnostic and `generateMcpConfig` emits a launch config, so a compliant client can already attach. No Hermes-specific config generation, install flow, or verification exists. |
@@ -235,4 +235,8 @@ table above.
 ---
 
 _Last reconciled with the parity workflow: 2026-08-21._
+
+
+
+
 

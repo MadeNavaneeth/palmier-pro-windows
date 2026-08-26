@@ -702,8 +702,19 @@ function CaptionsPanel() {
   const [assetId, setAssetId] = useState('');
   const [language, setLanguage] = useState('');
   const [model, setModel] = useState('');
+  const [serverUrl, setServerUrl] = useState('');
+  const [serverKey, setServerKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; message: string } | null>(null);
+
+  // Load any persisted custom server (#287) once.
+  useEffect(() => {
+    void window.palmier.media.getTranscribeConfig().then((res) => {
+      const cfg = (res as { config?: { baseUrl?: string; model?: string } }).config;
+      if (cfg?.baseUrl) setServerUrl(cfg.baseUrl);
+      if (cfg?.model) setModel((current) => current || cfg.model!);
+    }).catch(() => {});
+  }, []);
 
   const activeId = candidates.some((c) => c.id === assetId) ? assetId : candidates[0]?.id ?? '';
   const activeAsset = candidates.find((c) => c.id === activeId);
@@ -713,6 +724,13 @@ function CaptionsPanel() {
     setBusy(true);
     setNotice(null);
     try {
+      // A custom server (#287) persists before the run so main routes there.
+      if (serverUrl.trim()) {
+        await window.palmier.media.setTranscribeConfig({
+          baseUrl: serverUrl.trim(),
+          ...(serverKey.trim() ? { apiKey: serverKey.trim() } : {}),
+        });
+      }
       const res = await window.palmier.media.transcribe({
         path: activeAsset.path,
         language: language.trim() || undefined,
@@ -738,7 +756,7 @@ function CaptionsPanel() {
     } finally {
       setBusy(false);
     }
-  }, [activeAsset, controller, language, model]);
+  }, [activeAsset, controller, language, model, serverUrl, serverKey]);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
@@ -772,6 +790,28 @@ function CaptionsPanel() {
                 maxLength={12}
                 disabled={busy}
                 className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+              />
+            </Field>
+            <Field label="Custom server (optional, #287)">
+              <input
+                value={serverUrl}
+                onChange={(event) => setServerUrl(event.target.value)}
+                placeholder="http://localhost:8080/v1"
+                maxLength={200}
+                disabled={busy}
+                data-stt-server-url
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+              />
+            </Field>
+            <Field label="Server API key (optional)">
+              <input
+                type="password"
+                value={serverKey}
+                onChange={(event) => setServerKey(event.target.value)}
+                placeholder="Paste key if the server needs one"
+                disabled={busy}
+                data-stt-server-key
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               />
             </Field>
             <Field label="Model (optional)">

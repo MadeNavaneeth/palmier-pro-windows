@@ -66,6 +66,10 @@ const api = {
      */
     transcribe: (payload: { path: string; language?: string; model?: string }) =>
       ipcRenderer.invoke('media:transcribe', payload),
+    /** Custom STT server preference (#287): read + persist. */
+    getTranscribeConfig: () => ipcRenderer.invoke('media:get-transcribe-config'),
+    setTranscribeConfig: (patch: { baseUrl?: string; apiKey?: string; model?: string }) =>
+      ipcRenderer.invoke('media:set-transcribe-config', patch),
     /**
      * Extract a video's audio into a standalone library asset (upstream PR
      * #562). The optional window bakes a source range in (timeline clip entry).

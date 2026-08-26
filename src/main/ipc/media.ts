@@ -15,6 +15,7 @@ import { expandImportPaths } from '../media/import-expansion';
 // Probe lives in ../media/probe (electron-free) so the Agent executor can
 // import it without pulling Electron into unit tests.
 import { probeMedia } from '../media/probe';
+import { getTranscribeConfig, setTranscribeConfig } from '../media/transcribe-config';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import type { MediaProbeResult } from '../media/probe';
 export { probeMedia };
@@ -247,6 +248,14 @@ export function registerMediaHandlers(): void {
    * match wins. Bounded walk so a huge tree cannot hang the main process.
    */
   // ─── Caption transcription (#39/#91) ─────────────────────────────────────
+  // Custom STT server preference (#287): read for the form, write on save.
+  ipcMain.handle('media:get-transcribe-config', () => {
+    return { success: true, config: getTranscribeConfig() };
+  });
+  ipcMain.handle('media:set-transcribe-config', (_event, patch: unknown) => {
+    return { success: true, config: setTranscribeConfig((patch ?? {}) as Record<string, string>) };
+  });
+
   // Electron-bound runtime resolution (decrypted AI provider keys) + the
   // pure transport + planner run here; the returned cue plan is materialized
   // by the renderer onto its own controller via shared/captions/apply.ts.
@@ -256,17 +265,23 @@ export function registerMediaHandlers(): void {
       return { success: false, error: 'No asset selected.' };
     }
     const { getOpenAiCompatibleRuntime } = await import('../ai/ipc');
-    const runtime = getOpenAiCompatibleRuntime();
+    const { getTranscribeConfig } = await import('../media/transcribe-config');
+    const override = getTranscribeConfig();
+    const runtime =
+      override.baseUrl && override.apiKey
+        ? { baseUrl: override.baseUrl, apiKey: override.apiKey }
+        : getOpenAiCompatibleRuntime();
     if (!runtime) {
       return {
         success: false,
-        error: 'No OpenAI-compatible AI provider has an API key. Add one under AI Settings.',
+        error: 'No transcription endpoint configured. Add an AI provider key, or set a custom server in the Captions tab.',
       };
     }
+    const model = typeof req.model === 'string' && req.model.trim() ? req.model.trim() : undefined;
     try {
       const { transcribeAudio } = await import('../ai/transcribe');
       const transcription = await transcribeAudio(runtime, req.path, {
-        model: typeof req.model === 'string' && req.model.trim() ? req.model.trim() : undefined,
+        model: model ?? (override.baseUrl ? override.model : undefined),
         language: typeof req.language === 'string' && req.language.trim() ? req.language.trim() : undefined,
       });
       const { planCaptions } = await import('../../shared/captions/planner');
@@ -442,6 +457,8 @@ async function generateThumbnail(
 
   return thumbPath;
 }
+
+
 
 
 
