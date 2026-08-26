@@ -1,5 +1,5 @@
-/**
- * Tool Executor — runs tool calls against the EditorController.
+﻿/**
+ * Tool Executor â€” runs tool calls against the EditorController.
  * Shared by both the in-app agent and the MCP server.
  */
 
@@ -32,6 +32,7 @@ import {
 } from '../../shared/editor/silence-scoping';
 import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple';
 import { sanitizeCrop } from '../../shared/media/source-crop';
+import { planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
 import { createHash } from 'crypto';
@@ -132,8 +133,20 @@ export function resolveProjectSettings(
   };
 }
 
+/** Injected capability seams â€” Electron-bound defaults live in ./ipc. */
+export interface ToolExecutorDeps {
+  /**
+   * OpenAI-compatible runtime (baseUrl + decrypted key) for audio
+   * transcription. Null = no usable provider configured.
+   */
+  getTranscriptionRuntime?: () => Promise<{ baseUrl: string; apiKey: string } | null>;
+}
+
 export class ToolExecutor {
-  constructor(private editor: EditorController) {}
+  private deps: ToolExecutorDeps;
+  constructor(private editor: EditorController, deps: ToolExecutorDeps = {}) {
+    this.deps = deps;
+  }
 
   async execute(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
     const tool = getToolByName(toolName);
@@ -155,7 +168,7 @@ export class ToolExecutor {
 
   private async dispatch(name: string, args: any): Promise<ToolResult> {
     switch (name) {
-      // ── Read operations ───────────────────────────────────────────────────
+      // â”€â”€ Read operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       case 'get_timeline': {
         // The tool contract promises project settings alongside the timeline, and
         // set_project_settings is only useful if the agent can read the canvas
@@ -641,7 +654,7 @@ export class ToolExecutor {
         }
       }
 
-      // ── Write operations ──────────────────────────────────────────────────
+      // â”€â”€ Write operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       case 'add_clip': {
         if (args.mode !== undefined || args.source !== undefined) {
           const placed = this.editor.placeClipWithMode({
@@ -745,7 +758,7 @@ export class ToolExecutor {
       case 'split_clip': {
         const newClipId = this.editor.splitClip(args.clipId, clampFrame(args.atFrame));
         if (!newClipId) {
-          return { success: false, error: 'Split failed — invalid frame or clip not found.' };
+          return { success: false, error: 'Split failed â€” invalid frame or clip not found.' };
         }
         return { success: true, data: { originalClipId: args.clipId, newClipId } };
       }
@@ -766,7 +779,7 @@ export class ToolExecutor {
         if (!applied) {
           return {
             success: false,
-            error: 'Blend mode not applied — clip not found or is an audio clip (audio has no compositing stage).',
+            error: 'Blend mode not applied â€” clip not found or is an audio clip (audio has no compositing stage).',
           };
         }
         return { success: true, data: { clipId: args.clipId, blendMode: args.blendMode } };
@@ -783,7 +796,7 @@ export class ToolExecutor {
         // defaults, so a no-argument request performs the edit the Inspector
         // describes; supplied arguments override for this call only and do not
         // rewrite the controls. Normalizing both layers matters because the MCP
-        // socket is another caller — an out-of-range threshold would otherwise
+        // socket is another caller â€” an out-of-range threshold would otherwise
         // report the whole clip silent (upstream PR #426).
         const config = resolveSilenceConfig(loadSilenceSettings(), {
           ...(args.thresholdDb !== undefined ? { thresholdDb: args.thresholdDb } : {}),
@@ -831,7 +844,7 @@ export class ToolExecutor {
         if (!ok) {
           return {
             success: false,
-            error: 'Cross-dissolve failed — clips must be adjacent on the same track and longer than the dissolve.',
+            error: 'Cross-dissolve failed â€” clips must be adjacent on the same track and longer than the dissolve.',
           };
         }
         return { success: true, data: { durationFrames: d } };
@@ -899,7 +912,7 @@ export class ToolExecutor {
       }
 
       case 'export_project':
-        // Phase 4 — placeholder
+        // Phase 4 â€” placeholder
         return { success: false, error: 'Export not yet implemented (Phase 4).' };
 
       case 'import_fcpxml': {
@@ -1027,7 +1040,7 @@ export class ToolExecutor {
           sourceSeconds: atSeconds,
         });
         if (!decoded?.data) {
-          return { success: false, error: `Could not decode a frame at ${atSeconds}s — check the offset against the asset duration.` };
+          return { success: false, error: `Could not decode a frame at ${atSeconds}s â€” check the offset against the asset duration.` };
         }
 
         const hash = createHash('sha1')
@@ -1087,11 +1100,68 @@ export class ToolExecutor {
         };
       }
 
+      case 'transcribe_audio': {
+        const asset = this.editor.getMedia().find((m) => m.id === args.assetId);
+        if (!asset) return { success: false, error: 'Asset not found.' };
+
+        const runtime = await (this.deps.getTranscriptionRuntime?.()
+          ?? Promise.resolve(null));
+        if (!runtime) {
+          return {
+            success: false,
+            error: 'No OpenAI-compatible provider with an API key is configured for transcription. Add one under AI Settings.',
+          };
+        }
+
+        const { transcribeAudio } = await import('./transcribe');
+        const transcription = await transcribeAudio(runtime, asset.path, {
+          model: args.model,
+          language: args.language,
+        });
+        if (transcription.words.length === 0 && transcription.segments.length === 0) {
+          return {
+            success: true,
+            data: { cues: 0, text: transcription.text, note: 'Transcription returned no timed words â€” nothing was placed.' },
+          };
+        }
+
+        const cues = planCaptions(transcription.words);
+        const fps = this.editor.getProject().settings.fps;
+        const trackId = this.editor.addTrack('video');
+
+        let placed = 0;
+        for (const cue of cues) {
+          const startFrame = Math.max(0, Math.round(cue.startSec * fps));
+          const durationFrames = Math.max(
+            1,
+            Math.round(cue.endSec * fps) - startFrame,
+          );
+          this.editor.addTitleClip({
+            trackId,
+            text: cue.text,
+            startFrame,
+            durationFrames,
+          });
+          placed += 1;
+        }
+
+        return {
+          success: true,
+          data: {
+            cues: placed,
+            trackId,
+            words: transcription.words.length,
+            model: transcription.model,
+            previewText: cues[0]?.text ?? '',
+          },
+        };
+      }
+
       case 'generate_media': {        const configured = configuredProvidersFor(args.type);
         if (configured.length === 0) {
           return {
             success: false,
-            error: `No generation provider with an API key supports ${args.type}. Add a key under Settings → Generation (providers: ${listGenerationProviders().map((p) => p.id).join(', ')}).`,
+            error: `No generation provider with an API key supports ${args.type}. Add a key under Settings â†’ Generation (providers: ${listGenerationProviders().map((p) => p.id).join(', ')}).`,
           };
         }
         const provider = (args.providerId && configured.find((p) => p.id === args.providerId))
@@ -1158,7 +1228,7 @@ export class ToolExecutor {
   /**
    * Scoped removal (upstream PR #426's `clipIds` contract): the selected
    * audio clips are the detection sources, their silence maps to timeline
-   * ranges, and one ripple transaction per anchor track cuts them — linked
+   * ranges, and one ripple transaction per anchor track cuts them â€” linked
    * partners and sync-locked tracks ride along. Detection runs before any
    * edit, so a missing source refuses the whole request instead of
    * half-editing it; one detector call per distinct source path.
@@ -1282,3 +1352,4 @@ export class ToolExecutor {
     };
   }
 }
+

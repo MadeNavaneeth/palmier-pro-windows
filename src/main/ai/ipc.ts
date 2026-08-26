@@ -1,5 +1,5 @@
-/**
- * AI IPC handlers — wires the PalmierAgent to the renderer via IPC.
+﻿/**
+ * AI IPC handlers â€” wires the PalmierAgent to the renderer via IPC.
  * Streams tokens, tool calls, and results back as events.
  * Manages API key storage via Electron safeStorage.
  */
@@ -68,8 +68,32 @@ function decryptStoredKey(providerId: string): string {
   }
 }
 
+/**
+ * OpenAI-compatible runtime for audio transcription (#39 groundwork):
+ * prefers an explicit provider id, otherwise the first openai-compatible
+ * provider holding a decrypted key. Null when nothing usable is configured.
+ */
+export function getOpenAiCompatibleRuntime(preferredProviderId?: string): { baseUrl: string; apiKey: string } | null {
+  const candidates = preferredProviderId
+    ? [preferredProviderId, ...PROVIDER_PRESETS.filter((p) => p.id !== preferredProviderId && p.kind === 'openai-compatible').map((p) => p.id)]
+    : PROVIDER_PRESETS.filter((p) => p.kind === 'openai-compatible').map((p) => p.id);
+  for (const id of candidates) {
+    if (!isSafeProviderId(id)) continue;
+    const preset = presetById(id);
+    if (!preset || preset.kind !== 'openai-compatible') continue;
+    const config = loadProviderConfig(id);
+    const apiKey = decryptStoredKey(id);
+    if (apiKey.length > 0 && config) {
+      const baseUrl = config.baseUrl ?? preset.baseUrl;
+      if (!baseUrl) continue;
+      return { baseUrl, apiKey };
+    }
+  }
+  return null;
+}
+
 export function registerAiHandlers(getEditor: () => EditorController): void {
-  // ─── Chat ──────────────────────────────────────────────────────────────────
+  // â”€â”€â”€ Chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('ai:chat', async (event, messages: any[], provider: string) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return;
@@ -135,12 +159,12 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
     await agent.chat(lastUserMsg.content, callbacks);
   });
 
-  // ─── Cancellation (upstream #58) ───────────────────────────────────────────
+  // â”€â”€â”€ Cancellation (upstream #58) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Its own channel rather than a flag on `ai:chat`, because the point is to be
   // answerable while that handler's promise is still pending.
   ipcMain.handle('ai:cancel', () => ({ cancelled: agent?.cancel() ?? false }));
 
-  // ─── Key Management ────────────────────────────────────────────────────────
+  // â”€â”€â”€ Key Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('ai:set-key', async (_event, provider: string, key: string) => {
     if (!isSafeProviderId(provider)) {
       return { success: false, error: 'Unknown AI provider.' };
@@ -166,7 +190,7 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
     return { success: true };
   });
 
-  // ─── Provider configuration (#17, #140) ────────────────────────────────────
+  // â”€â”€â”€ Provider configuration (#17, #140) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle(
     'ai:set-provider-config',
     (_event, provider: string, config: { kind?: unknown; baseUrl?: unknown; model?: unknown }) => {
@@ -205,3 +229,7 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
 function getLastFour(provider: string): string {
   return decryptStoredKey(provider).slice(-4);
 }
+
+
+
+
