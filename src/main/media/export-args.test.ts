@@ -610,3 +610,37 @@ describe('position motion keyframes (keyframes v1)', () => {
   });
 });
 
+
+describe('rotation export (static + keyframes v1)', () => {
+  it('emits a rotate filter for statically rotated clips', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{ type: 'video', assetId: 'v', startFrame: 0, durationFrames: 60, rotation: 45 }],
+    );
+    const graph = build(project).find((arg) => arg.includes('rotate='))!;
+    expect(graph).toContain("rotate='(45.000000)*PI/180':c=black@0");
+  });
+
+  it('emits a piecewise rotation expression from motionRot', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{
+        type: 'video', assetId: 'v', startFrame: 0, durationFrames: 60,
+        motionRot: [{ frame: 0, value: 0 }, { frame: 30, value: 90 }],
+      }],
+    );
+    const graph = build(project).find((arg) => arg.includes('rotate='))!;
+    expect(graph).toContain('PI/180');
+    expect(graph).toContain('if(lte(t,1.000000)');
+    expect(graph).not.toMatch(/rotate='\(0\.000000\)\*PI\/180'/); // zero static stays absent
+  });
+
+  it('omits rotate for unrotated clips without motion', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{ type: 'video', assetId: 'v', startFrame: 0, durationFrames: 60 }],
+    );
+    const graph = build(project).find((arg) => arg.includes('scale='))!;
+    expect(graph).not.toContain('rotate=');
+  });
+});

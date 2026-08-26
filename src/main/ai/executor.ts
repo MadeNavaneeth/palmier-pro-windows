@@ -1087,7 +1087,9 @@ export class ToolExecutor {
         }
         if (Array.isArray(args.points) && args.points.length === 0) {
           this.editor.applyClipProperties([args.clipId], 'Clear motion', (draft) => {
-            if (args.axis === 'x') delete draft.motionX; else delete draft.motionY;
+            if (args.axis === 'x') delete draft.motionX;
+            else if (args.axis === 'y') delete draft.motionY;
+            else delete draft.motionRot;
             return true;
           });
           return { success: true, data: { clipId: args.clipId, axis: args.axis, cleared: true } };
@@ -1098,7 +1100,8 @@ export class ToolExecutor {
         }
         this.editor.applyClipProperties([args.clipId], 'Set motion', (draft) => {
           if (args.axis === 'x') draft.motionX = track;
-          else draft.motionY = track;
+          else if (args.axis === 'y') draft.motionY = track;
+          else draft.motionRot = track;
           return true;
         });
         return {
@@ -1397,5 +1400,6 @@ export class ToolExecutor {
     };
   }
 }
+
 
 

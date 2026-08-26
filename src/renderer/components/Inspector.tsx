@@ -292,12 +292,13 @@ function MotionControls({ clipId }: { clipId: string }) {
 
   if (!clip) return null;
   type MotionPointWithEasing = { frame: number; value: number; easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' };
-  const axes: Array<{ axis: 'x' | 'y'; label: string; track: MotionPointWithEasing[] | undefined; base: number }> = [
+  const axes: Array<{ axis: 'x' | 'y' | 'r'; label: string; track: MotionPointWithEasing[] | undefined; base: number }> = [
     { axis: 'x', label: 'X', track: clip.motionX, base: clip.x },
     { axis: 'y', label: 'Y', track: clip.motionY, base: clip.y },
+    { axis: 'r', label: 'Rotation', track: clip.motionRot, base: clip.rotation },
   ];
 
-  const setAxis = (axis: 'x' | 'y', points: Array<{ frame: number; value: number }> | undefined) => {
+  const setAxis = (axis: 'x' | 'y' | 'r', points: Array<{ frame: number; value: number }> | undefined) => {
     applyClipProperties([clipId], axis === 'x' ? 'Motion X' : 'Motion Y', (draft) => {
       if (points) {
         if (axis === 'x') draft.motionX = points;
@@ -308,7 +309,7 @@ function MotionControls({ clipId }: { clipId: string }) {
     });
   };
 
-  const addKeyframe = (axis: 'x' | 'y') => {
+  const addKeyframe = (axis: 'x' | 'y' | 'r') => {
     const info = axes.find((a) => a.axis === axis)!;
     const evaluated = evaluateMotion(info.track, playhead) ?? info.base;
     const others = (info.track ?? []).filter((p) => p.frame !== playhead);
@@ -911,4 +912,6 @@ function InspectorValue({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+
 

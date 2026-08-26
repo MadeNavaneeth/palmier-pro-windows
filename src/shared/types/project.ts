@@ -147,6 +147,8 @@ export interface Clip {
    */
   motionX?: Array<{ frame: number; value: number }>;
   motionY?: Array<{ frame: number; value: number }>;
+  /** Rotation motion track in degrees (keyframes v1). */
+  motionRot?: Array<{ frame: number; value: number }>;
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */

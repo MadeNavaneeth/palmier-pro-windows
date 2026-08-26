@@ -404,14 +404,18 @@ function buildFilterGraph(
     const inputIdx = inputIndexByPath.get(asset.path)!;
     const inTime = clip.startFrame / fps;
     const outTime = (clip.startFrame + clip.durationFrames) / fps;
+    // Rotation uses the same per-frame seconds as the overlay expressions.
+    const rotSecPerFrame = 1 / fps;
 
-    // NOTE (tracked gap): the native addon exposes to_ffmpeg_filter with
-    // rotation support, but this graph never consumed it -- exports have
-    // used the inline scale+overlay below (rotation dropped) since before
-    // the #546 refactor. Wiring rotate= here requires reworking the
-    // per-chain frame sizing around rotw/roth; tracked as an R2
-    // conformance-fixture item so preview/export rotation parity gets a
-    // real test instead of a silent divergence.
+    // Rotation (static + animated, keyframes v1): applied to the scaled RGBA
+    // frame with a transparent fill (c=black@0), so rotated corners composite
+    // over the layers below exactly like the canvas preview's ctx.rotate.
+    // Closes the long-standing "rotation dropped" gap noted here since R2.
+    const rotDegExpr = motionExpression(clip.motionRot, rotSecPerFrame)
+      ?? (clip.rotation !== 0 ? clip.rotation.toFixed(6) : null);
+    const rotateChain = rotDegExpr
+      ? `,rotate='(${rotDegExpr})*PI/180':c=black@0`
+      : '';
 
     // Trim window in source seconds, through the shared mapping so export and
     // preview address the source identically (#68).
@@ -472,7 +476,7 @@ function buildFilterGraph(
       }
 
       filters.push(
-        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale=${scaledW}:${scaledH}:flags=bilinear${colorChain}${fadeChain}[${scaledLabel}]`,
+        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale=${scaledW}:${scaledH}:flags=bilinear${rotateChain}${colorChain}${fadeChain}[${scaledLabel}]`,
       );
 
     // Overlay with enable condition (time window). Motion tracks (#535 v1)
