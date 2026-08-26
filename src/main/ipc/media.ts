@@ -15,6 +15,7 @@ import { expandImportPaths } from '../media/import-expansion';
 // Probe lives in ../media/probe (electron-free) so the Agent executor can
 // import it without pulling Electron into unit tests.
 import { probeMedia } from '../media/probe';
+import { parseFcpxml } from '../../shared/fcpxml/importer';
 import type { MediaProbeResult } from '../media/probe';
 export { probeMedia };
 export type { MediaProbeResult };
@@ -97,6 +98,61 @@ export function registerMediaHandlers(): void {
     );
     return { missing };
   });
+
+  // ─── FCPXML import/export UI bridges (#154) ──────────────────────────────
+  // Open + parse + probe in one step; the renderer applies the returned plan
+  // to its own controller via shared/fcpxml/apply.ts.
+  ipcMain.handle('media:fcpxml-open', async () => {
+    const win = BrowserWindow.getFocusedWindow();
+    const result = await dialog.showOpenDialog(win!, {
+      title: 'Import Final Cut XML',
+      filters: [{ name: 'Final Cut XML', extensions: ['fcpxml', 'xml'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { success: false, canceled: true };
+
+    try {
+      const xml = await fs.readFile(result.filePaths[0], 'utf8');
+      const plan = parseFcpxml(xml);
+      if (!plan.fps) {
+        return { success: false, error: 'The file has no usable <format frameDuration>.' };
+      }
+      // Probe every unique asset up front so the renderer gets library ids.
+      const assets = [];
+      for (const entry of plan.assets) {
+        let assetId: string | null = null;
+        let probe: MediaProbeResult | null = null;
+        if (fsSync.existsSync(entry.path)) {
+          try {
+            probe = await probeMedia(entry.path);
+            assetId = crypto.randomUUID();
+          } catch { /* falls through as offline */ }
+        }
+        assets.push({ ...entry, assetId, probe });
+      }
+      return { success: true, plan, assets };
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // Save-dialog + write; the renderer generates the XML from its live project.
+  ipcMain.handle('media:fcpxml-write', async (_event, payload: unknown) => {
+    const xml = (payload as { xml?: unknown } | null)?.xml;
+    if (typeof xml !== 'string' || xml.length === 0) {
+      return { success: false, error: 'Nothing to write.' };
+    }
+    const win = BrowserWindow.getFocusedWindow();
+    const result = await dialog.showSaveDialog(win!, {
+      title: 'Export Final Cut XML',
+      defaultPath: 'timeline.fcpxml',
+      filters: [{ name: 'Final Cut XML', extensions: ['fcpxml'] }],
+    });
+    if (result.canceled || !result.filePath) return { success: false, canceled: true };
+    await fs.writeFile(result.filePath, xml, 'utf8');
+    return { success: true, path: result.filePath };
+  });
+
 
   // â”€â”€â”€ Filmstrip: evenly spaced thumbnails across a video source (R1) â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('media:filmstrip', async (_event, filePath: unknown, count: unknown) => {

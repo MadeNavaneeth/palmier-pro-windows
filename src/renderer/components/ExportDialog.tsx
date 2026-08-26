@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useTimelineStore } from '../store/timeline';
 import { drawTitle, isAdvancedTitle } from '../engine/title-render';
+import { exportFcpxml } from '../../shared/fcpxml/exporter';
 
 interface ExportPreset {
   id: string;
@@ -270,6 +271,20 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
     setIsExporting(false);
   }, []);
 
+  // ─── Interchange XML (#154) ──────────────────────────────────────────────
+  const [xmlNote, setXmlNote] = useState('');
+  const handleExportXml = useCallback(async () => {
+    setXmlNote('');
+    try {
+      const xml = exportFcpxml(useTimelineStore.getState().project);
+      const res = await window.palmier.media.writeFcpxml(xml) as { success: boolean; path?: string; error?: string; canceled?: boolean };
+      if (res.success && res.path) setXmlNote(`Written to ${res.path}`);
+      else if (!res.canceled) setError(res.error ?? 'Could not write the XML file.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not write the XML file.');
+    }
+  }, []);
+
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
       <div className="panel-header flex h-9 shrink-0 items-center justify-between border-b border-white/10 px-2 text-[10px] font-medium text-text-primary">
@@ -306,6 +321,23 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
                 </select>
               </div>
             )}
+
+            {/* Interchange (#154): project XML for Resolve / FCP / Premiere */}
+            <div className="mb-4">
+              <button
+                onClick={handleExportXml}
+                disabled={isExporting}
+                data-export-xml
+                className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 text-xs text-text-secondary transition hover:border-surface-4 hover:text-text-primary disabled:opacity-40"
+              >
+                Export project XML (Final Cut)…
+              </button>
+              {xmlNote && (
+                <p className="mt-1 flex items-center gap-1.5 text-[10px] text-emerald-400">
+                  ✓ {xmlNote}
+                </p>
+              )}
+            </div>
 
             {/* Format */}
             <div className="mb-4">

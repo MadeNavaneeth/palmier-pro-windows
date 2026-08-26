@@ -57,6 +57,9 @@ const api = {
      */
     scanRelink: (filenames: string[], folder: string) =>
       ipcRenderer.invoke('media:scan-relink', filenames, folder),
+    /** FCPXML UI bridges (#154): open+parse+probe / save-dialog+write. */
+    openFcpxml: () => ipcRenderer.invoke('media:fcpxml-open'),
+    writeFcpxml: (xml: string) => ipcRenderer.invoke('media:fcpxml-write', { xml }),
     /**
      * Extract a video's audio into a standalone library asset (upstream PR
      * #562). The optional window bakes a source range in (timeline clip entry).

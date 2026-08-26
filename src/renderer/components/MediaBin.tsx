@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownUp,
   AudioLines,
+  FileInput,
   Film,
   Folder,
   Grid2X2,
@@ -24,6 +25,7 @@ import { formatImportErrors } from '../../shared/media/import-summary';
 import { formatDuration } from '../../shared/utils/time';
 import { ASSET_DND_MIME, getDroppedFilePath, setDraggingAsset } from '../lib/dnd';
 import { GenerateDialog } from './GenerateDialog';
+import { applyFcpxmlPlan } from '../../shared/fcpxml/apply';
 
 /** Minimum tile width in the media grid; must match the grid template below. */
 const MEDIA_TILE_MIN_WIDTH = 112;
@@ -115,6 +117,52 @@ export function MediaBin() {
     addImportedFiles(await window.palmier.media.import());
   }
 
+  /** FCPXML import (#154): main parses+probes; we materialize the plan. */
+  const handleImportXml = useCallback(async () => {
+    setImportError('');
+    const res = await window.palmier.media.openFcpxml() as {
+      success: boolean;
+      canceled?: boolean;
+      error?: string;
+      plan?: Parameters<typeof applyFcpxmlPlan>[1];
+      assets?: Array<{
+        path: string;
+        assetId: string | null;
+        probe: MediaAsset | null;
+      }>;
+    };
+    if (!res.success || !res.plan) {
+      if (!res.canceled) setImportError(res.error || 'Could not import the XML file.');
+      return;
+    }
+
+    // Register probed assets first so the applier can resolve paths→ids.
+    const assetIdByPath = new Map<string, string>();
+    for (const entry of res.assets ?? []) {
+      if (entry.assetId && entry.probe) {
+        const id = `fcpxml-${entry.assetId}`;
+        useTimelineStore.getState().controller.addMedia({
+          ...entry.probe,
+          id,
+          addedAt: new Date().toISOString(),
+        });
+        assetIdByPath.set(entry.path, id);
+      }
+    }
+
+    const result = applyFcpxmlPlan(
+      useTimelineStore.getState().controller,
+      res.plan,
+      assetIdByPath,
+    );
+    useProjectStore.getState().markDirty();
+    const skipped = (res.assets ?? []).filter((a) => !a.assetId).length;
+    const parts = [`${result.placedClips} clips`, `${result.titles} titles`, `${result.tracksCreated} tracks`];
+    if (skipped > 0) parts.push(`${skipped} offline`);
+    // Reuse the notice banner as the outcome surface; success clears itself.
+    setImportError(`Imported: ${parts.join(', ')}.`);
+  }, []);
+
   async function handleFileDrop(event: React.DragEvent<HTMLDivElement>) {
     if (!event.dataTransfer.types.includes('Files')) return;
     event.preventDefault();
@@ -188,6 +236,15 @@ export function MediaBin() {
               data-generate-open
             >
               <Sparkles size={14} strokeWidth={1.7} />
+            </button>
+            <button
+              onClick={handleImportXml}
+              className="icon-button"
+              title="Import Final Cut XML"
+              aria-label="Import Final Cut XML"
+              data-import-xml
+            >
+              <FileInput size={14} strokeWidth={1.7} />
             </button>
             <button className="icon-button" title="More media actions" aria-label="More media actions">
               <MoreHorizontal size={15} />
