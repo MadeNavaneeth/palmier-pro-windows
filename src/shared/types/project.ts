@@ -141,6 +141,12 @@ export interface Clip {
   titleTiltYDeg?: number;
   /** Static source crop as edge fractions, applied before position/scale (#568). */
   crop?: { left: number; right: number; top: number; bottom: number };
+  /**
+   * Position motion tracks (keyframes v1): linear x/y over the timeline.
+   * Video/image clips only; titles are static in v1. Absent = static x/y.
+   */
+  motionX?: Array<{ frame: number; value: number }>;
+  motionY?: Array<{ frame: number; value: number }>;
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */

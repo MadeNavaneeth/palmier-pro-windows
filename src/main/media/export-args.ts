@@ -24,6 +24,7 @@ import { escapeDrawtext, drawtextStyleParams, applyTitleFontCase } from '../../s
 import { colorGradeOf, toFfmpegEq } from '../../shared/editor/color-grade';
 import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
 import { isCropped, cropRect } from '../../shared/media/source-crop';
+import { motionExpression } from '../../shared/media/motion';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -474,9 +475,17 @@ function buildFilterGraph(
         `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale=${scaledW}:${scaledH}:flags=bilinear${colorChain}${fadeChain}[${scaledLabel}]`,
       );
 
-    // Overlay with enable condition (time window)
+    // Overlay with enable condition (time window). Motion tracks (#535 v1)
+    // drive x/y via piecewise-linear expressions in output seconds; the
+    // expression is clamped outside the first/last keyframe, matching the
+    // preview's evaluateMotion exactly.
+    const secPerFrame = 1 / fps;
+    const motionXExpr = motionExpression(clip.motionX, secPerFrame);
+    const motionYExpr = motionExpression(clip.motionY, secPerFrame);
+    const posX = motionXExpr ?? `${Math.round(clip.x)}`;
+    const posY = motionYExpr ?? `${Math.round(clip.y)}`;
     filters.push(
-      `[${lastLabel}][${scaledLabel}]overlay=x=${Math.round(clip.x)}:y=${Math.round(clip.y)}:enable='between(t,${inTime.toFixed(4)},${outTime.toFixed(4)})'${overlayOut}`,
+      `[${lastLabel}][${scaledLabel}]overlay=x=${posX}:y=${posY}:enable='between(t,${inTime.toFixed(4)},${outTime.toFixed(4)})'${overlayOut}`,
     );
 
     if (i < videoClips.length - 1) {

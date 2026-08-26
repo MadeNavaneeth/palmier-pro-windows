@@ -573,3 +573,39 @@ describe('static crop (#568)', () => {
 
 
 
+
+describe('position motion keyframes (keyframes v1)', () => {
+  it('emits piecewise-linear overlay x/y expressions', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{
+        type: 'video',
+        assetId: 'v',
+        startFrame: 0,
+        durationFrames: 90,
+        motionX: [
+          { frame: 0, value: 100 },
+          { frame: 30, value: 400 },
+          { frame: 60, value: 200 },
+        ],
+      }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('overlay='))!;
+    // Nested ifs: seg1 slope +300/s from 100@0s; seg2 -200/s from 400@1s.
+    expect(graph).toContain('overlay=x=');
+    expect(graph).toContain('+300.000000*(t-0.000000)');
+    expect(graph).toContain('400.0000+-200.000000*(t-1.000000)');
+    expect(graph).toContain(',200.0000)');
+    expect(graph).not.toContain('overlay=x=0');
+  });
+
+  it('keeps static x/y when no motion track exists', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{ type: 'video', assetId: 'v', startFrame: 0, durationFrames: 60, x: 42, y: 17 }],
+    );
+    const graph = build(project).find((arg) => arg.includes('overlay='))!;
+    expect(graph).toContain('overlay=x=42:y=17');
+  });
+});

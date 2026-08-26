@@ -16,6 +16,7 @@ import type { Clip, Frame, Project, ProjectSettings } from '../../shared/types/p
 import { frameToSeconds } from '../../shared/utils/time';
 import { colorGradeOf, toCanvasFilter } from '../../shared/editor/color-grade';
 import { drawTitle } from './title-render';
+import { evaluateMotion } from '../../shared/media/motion';
 
 // â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -309,9 +310,12 @@ export class PreviewEngine {
       this.ctx.filter = toCanvasFilter(grade);
     }
 
-    // Transform: translate to position, rotate around anchor, scale
-    const cx = clip.x + clip.anchorX;
-    const cy = clip.y + clip.anchorY;
+    // Transform: translate to position (motion tracks override static x/y,
+    // keyframes v1), rotate around anchor, scale
+    const mx = evaluateMotion(clip.motionX, currentFrame) ?? clip.x;
+    const my = evaluateMotion(clip.motionY, currentFrame) ?? clip.y;
+    const cx = mx + clip.anchorX;
+    const cy = my + clip.anchorY;
 
     this.ctx.translate(cx, cy);
     if (clip.rotation !== 0) {

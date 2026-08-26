@@ -28,6 +28,7 @@ import { ByteBudgetLru } from './render-cache';
 import { loadProxyMode } from './proxy-mode';
 import { visualClipsAtFrame } from './visible-clips';
 import { isCropped, cropRect } from '../../shared/media/source-crop';
+import { evaluateMotion } from '../../shared/media/motion';
 
 //  Types 
 
@@ -182,10 +183,18 @@ export class PreviewCompositor {
       layerDescs.push({
         width: frameWidth,
         height: frameHeight,
-        // Keep the box centered: cropping shrinks the source, so re-center the
-        // desc on the clip's midpoint rather than its top-left.
-        x: Math.round(clip.x + (clip.width - frameWidth) / 2 + slide.dx),
-        y: Math.round(clip.y + (clip.height - frameHeight) / 2 + slide.dy),
+        // Motion tracks (keyframes v1) override static x/y; cropping keeps the
+        // box centered since it shrinks the source rather than moving it.
+        x: Math.round(
+          (evaluateMotion(clip.motionX, frameIndex) ?? clip.x)
+          + (clip.width - frameWidth) / 2
+          + slide.dx,
+        ),
+        y: Math.round(
+          (evaluateMotion(clip.motionY, frameIndex) ?? clip.y)
+          + (clip.height - frameHeight) / 2
+          + slide.dy,
+        ),
         // Fade ramps multiply the base opacity (transition rendering).
         opacity: effectiveOpacity(clip, frameIndex),
         rotation_deg: clip.rotation,

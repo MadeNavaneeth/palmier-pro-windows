@@ -32,6 +32,7 @@ import {
 } from '../../shared/editor/silence-scoping';
 import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple';
 import { sanitizeCrop } from '../../shared/media/source-crop';
+import { sanitizeMotion } from '../../shared/media/motion';
 import { planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
@@ -1078,6 +1079,38 @@ export class ToolExecutor {
         };
       }
 
+      case 'set_clip_motion': {
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'video' && clip.type !== 'image') {
+          return { success: false, error: 'Position animation applies to video and image clips only (titles are static in v1).' };
+        }
+        if (Array.isArray(args.points) && args.points.length === 0) {
+          this.editor.applyClipProperties([args.clipId], 'Clear motion', (draft) => {
+            if (args.axis === 'x') delete draft.motionX; else delete draft.motionY;
+            return true;
+          });
+          return { success: true, data: { clipId: args.clipId, axis: args.axis, cleared: true } };
+        }
+        const track = sanitizeMotion(args.points);
+        if (!track) {
+          return { success: false, error: 'Need at least two keyframes with finite frame and value.' };
+        }
+        this.editor.applyClipProperties([args.clipId], 'Set motion', (draft) => {
+          if (args.axis === 'x') draft.motionX = track;
+          else draft.motionY = track;
+          return true;
+        });
+        return {
+          success: true,
+          data: {
+            clipId: args.clipId,
+            axis: args.axis,
+            keyframes: track,
+          },
+        };
+      }
+
       case 'set_clip_crop': {
         const clip = this.editor.getClips().find((c) => c.id === args.clipId);
         if (!clip) return { success: false, error: 'Clip not found.' };
@@ -1364,4 +1397,5 @@ export class ToolExecutor {
     };
   }
 }
+
 

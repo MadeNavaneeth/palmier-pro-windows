@@ -616,6 +616,20 @@ export const tools = {
     ),
   },
 
+  setClipMotion: {
+    name: 'set_clip_motion',
+    description:
+      'Animate a video/image clip\'s position with linear keyframes (#535 groundwork): at least two {frame, value} points per axis; values interpolate between frames and clamp at the ends. An empty points array clears that axis. Titles are static in v1.',
+    parameters: z.object({
+      clipId: z.string().describe('The video or image clip to animate.'),
+      axis: z.enum(['x', 'y']).describe('Which position axis to animate.'),
+      points: z.array(z.object({
+        frame: z.number().int().min(0).describe('Timeline frame for this keyframe.'),
+        value: z.number().finite().describe('Position value in pixels.'),
+      })).describe('Keyframes for this axis. At least two to animate; an empty array clears the axis.'),
+    }),
+  },
+
   importFcpxml: {
     name: 'import_fcpxml',
     description:
@@ -683,5 +697,8 @@ function zodFieldToSchema(field: z.ZodType<any>): Record<string, unknown> {
   if (field instanceof z.ZodDefault) return zodFieldToSchema(field.removeDefault());
   return { type: 'string' };
 }
+
+
+
 
 
