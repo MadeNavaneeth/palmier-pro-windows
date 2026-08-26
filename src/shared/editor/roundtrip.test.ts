@@ -179,4 +179,57 @@ describe('project round-trip: all fields survive save/load', () => {
     const restored = new EditorController(JSON.parse(json));
     expect(restored.getMedia()[0].proxyPath).toBe('C:/proxies/heavy.mp4');
   });
+
+  it('round-trips every field added by the 2026-08 styling/motion/crop/bake passes', () => {
+    const ctrl = new EditorController();
+    ctrl.addMedia({
+      id: 'a-v', path: '/test/v.mp4', filename: 'v.mp4', type: 'video',
+      duration: 5000, fileSize: 1, addedAt: new Date().toISOString(),
+    });
+
+    // Advanced title styles (bake layer + #330/#507)
+    const titleId = ctrl.addTitleClip({
+      trackId: 'v1', text: 'Styled', startFrame: 0, durationFrames: 60,
+    });
+    ctrl.applyClipProperties([titleId], 'Style', (d) => {
+      d.titleFillMode = 'footage';
+      d.titleBlurRadius = 5;
+      d.titleTiltXDeg = -12;
+      d.titleTiltYDeg = 18;
+      d.titleBackgroundPadding = 22;
+      d.titleLineSpacing = 9;
+      d.titleFontCase = 'upper';
+      return true;
+    });
+
+    // Static crop (#568) and position motion (keyframes v1)
+    const videoId = ctrl.addClip({ assetId: 'a-v', trackId: 'v1', startFrame: 100, durationFrames: 120 });
+    ctrl.applyClipProperties([videoId], 'Crop+Motion', (d) => {
+      d.crop = { left: 0.1, right: 0.15, top: 0, bottom: 0.05 };
+      d.motionX = [{ frame: 0, value: 100 }, { frame: 45, value: 400 }];
+      d.motionY = [{ frame: 10, value: 50 }, { frame: 80, value: 20 }];
+      return true;
+    });
+
+    const json = ctrl.serialize();
+    const restored = new EditorController(JSON.parse(json));
+
+    const restoredTitle = restored.getClips().find((c) => c.id === titleId)!;
+    expect(restoredTitle.titleFillMode).toBe('footage');
+    expect(restoredTitle.titleBlurRadius).toBe(5);
+    expect(restoredTitle.titleTiltXDeg).toBe(-12);
+    expect(restoredTitle.titleTiltYDeg).toBe(18);
+    expect(restoredTitle.titleBackgroundPadding).toBe(22);
+    expect(restoredTitle.titleLineSpacing).toBe(9);
+    expect(restoredTitle.titleFontCase).toBe('upper');
+
+    const restoredVideo = restored.getClips().find((c) => c.id === videoId)!;
+    expect(restoredVideo.crop).toEqual({ left: 0.1, right: 0.15, top: 0, bottom: 0.05 });
+    expect(restoredVideo.motionX).toEqual([{ frame: 0, value: 100 }, { frame: 45, value: 400 }]);
+    expect(restoredVideo.motionY).toEqual([{ frame: 10, value: 50 }, { frame: 80, value: 20 }]);
+
+    // A second round-trip must be byte-stable (no serialization drift).
+    const second = JSON.parse(restored.serialize());
+    expect(second).toEqual(JSON.parse(json));
+  });
 });
