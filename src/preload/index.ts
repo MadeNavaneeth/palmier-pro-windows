@@ -61,6 +61,12 @@ const api = {
     openFcpxml: () => ipcRenderer.invoke('media:fcpxml-open'),
     writeFcpxml: (xml: string) => ipcRenderer.invoke('media:fcpxml-write', { xml }),
     /**
+     * Transcribe an audio/video file over the BYOK whisper-compatible
+     * runtime and return caption cues (#39/#91); renderer materializes them.
+     */
+    transcribe: (payload: { path: string; language?: string; model?: string }) =>
+      ipcRenderer.invoke('media:transcribe', payload),
+    /**
      * Extract a video's audio into a standalone library asset (upstream PR
      * #562). The optional window bakes a source range in (timeline clip entry).
      */

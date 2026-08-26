@@ -246,6 +246,42 @@ export function registerMediaHandlers(): void {
    * recursively and match each given filename case-insensitively, first
    * match wins. Bounded walk so a huge tree cannot hang the main process.
    */
+  // ─── Caption transcription (#39/#91) ─────────────────────────────────────
+  // Electron-bound runtime resolution (decrypted AI provider keys) + the
+  // pure transport + planner run here; the returned cue plan is materialized
+  // by the renderer onto its own controller via shared/captions/apply.ts.
+  ipcMain.handle('media:transcribe', async (_event, payload: unknown) => {
+    const req = (payload ?? {}) as { path?: unknown; language?: unknown; model?: unknown };
+    if (typeof req.path !== 'string' || req.path.length === 0) {
+      return { success: false, error: 'No asset selected.' };
+    }
+    const { getOpenAiCompatibleRuntime } = await import('../ai/ipc');
+    const runtime = getOpenAiCompatibleRuntime();
+    if (!runtime) {
+      return {
+        success: false,
+        error: 'No OpenAI-compatible AI provider has an API key. Add one under AI Settings.',
+      };
+    }
+    try {
+      const { transcribeAudio } = await import('../ai/transcribe');
+      const transcription = await transcribeAudio(runtime, req.path, {
+        model: typeof req.model === 'string' && req.model.trim() ? req.model.trim() : undefined,
+        language: typeof req.language === 'string' && req.language.trim() ? req.language.trim() : undefined,
+      });
+      const { planCaptions } = await import('../../shared/captions/planner');
+      const cues = planCaptions(transcription.words);
+      return {
+        success: true,
+        cues,
+        words: transcription.words.length,
+        text: transcription.text,
+        model: transcription.model,
+      };
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
   ipcMain.handle('media:scan-relink', async (_event, filenames: unknown, folder: unknown) => {
     if (!Array.isArray(filenames) || typeof folder !== 'string' || folder.length === 0) {
       return { success: false, error: 'Invalid scan request', matches: {} };
@@ -406,5 +442,6 @@ async function generateThumbnail(
 
   return thumbPath;
 }
+
 
 

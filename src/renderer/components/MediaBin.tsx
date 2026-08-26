@@ -8,6 +8,7 @@ import {
   Grid2X2,
   Image as ImageIcon,
   ListFilter,
+  Loader2,
   MoreHorizontal,
   Music2,
   Plus,
@@ -26,6 +27,7 @@ import { formatDuration } from '../../shared/utils/time';
 import { ASSET_DND_MIME, getDroppedFilePath, setDraggingAsset } from '../lib/dnd';
 import { GenerateDialog } from './GenerateDialog';
 import { applyFcpxmlPlan } from '../../shared/fcpxml/apply';
+import { applyCaptionCues } from '../../shared/captions/apply';
 
 /** Minimum tile width in the media grid; must match the grid template below. */
 const MEDIA_TILE_MIN_WIDTH = 112;
@@ -343,6 +345,8 @@ export function MediaBin() {
             />
           )}
         </div>
+      ) : activeTab === 'captions' ? (
+        <CaptionsPanel />
       ) : (
         <PanelPlaceholder tab={activeTab} />
       )}
@@ -684,6 +688,130 @@ function PanelNotice() {  const notice = useMediaPanelStore((state) => state.not
   );
 }
 
+/**
+ * Captions tab (#39/#91): transcribe a library audio/video asset over the
+ * BYOK whisper-compatible runtime and materialize the planned cues as title
+ * clips on one fresh track.
+ */
+function CaptionsPanel() {
+  const project = useTimelineStore((s) => s.project);
+  const controller = useTimelineStore((s) => s.controller);
+  const candidates = project.media.filter(
+    (m) => m.type === 'audio' || (m.type === 'video' && Boolean(m.audioCodec)),
+  );
+  const [assetId, setAssetId] = useState('');
+  const [language, setLanguage] = useState('');
+  const [model, setModel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; message: string } | null>(null);
+
+  const activeId = candidates.some((c) => c.id === assetId) ? assetId : candidates[0]?.id ?? '';
+  const activeAsset = candidates.find((c) => c.id === activeId);
+
+  const run = useCallback(async () => {
+    if (!activeAsset) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const res = await window.palmier.media.transcribe({
+        path: activeAsset.path,
+        language: language.trim() || undefined,
+        model: model.trim() || undefined,
+      }) as {
+        success: boolean; error?: string;
+        cues?: Array<{ startSec: number; endSec: number; text: string }>;
+        words?: number;
+      };
+      if (!res.success) {
+        setNotice({ kind: 'error', message: res.error ?? 'Transcription failed.' });
+        return;
+      }
+      if (!res.cues || res.cues.length === 0) {
+        setNotice({ kind: 'error', message: 'No speech detected in that asset.' });
+        return;
+      }
+      const applied = applyCaptionCues(controller, res.cues);
+      useProjectStore.getState().markDirty();
+      setNotice({ kind: 'ok', message: `Placed ${applied.count} caption clips on a new track.` });
+    } catch (err) {
+      setNotice({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  }, [activeAsset, controller, language, model]);
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col">
+      <div className="panel-header flex items-center px-3 text-[11px] font-medium text-text-secondary">
+        Captions
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3" data-captions-panel>
+        {candidates.length === 0 ? (
+          <p className="text-[11px] text-text-muted">
+            Add an audio or video asset to the library first.
+          </p>
+        ) : (
+          <>
+            <Field label="Asset">
+              <select
+                value={activeId}
+                onChange={(event) => setAssetId(event.target.value)}
+                disabled={busy}
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] text-text-primary focus:border-accent focus:outline-none"
+              >
+                {candidates.map((c) => (
+                  <option key={c.id} value={c.id} className="bg-surface-2">{c.filename}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Language (optional)">
+              <input
+                value={language}
+                onChange={(event) => setLanguage(event.target.value)}
+                placeholder="en"
+                maxLength={12}
+                disabled={busy}
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+              />
+            </Field>
+            <Field label="Model (optional)">
+              <input
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+                placeholder="whisper-1"
+                maxLength={64}
+                disabled={busy}
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+              />
+            </Field>
+            <button
+              onClick={() => void run()}
+              disabled={busy || !activeId}
+              data-transcribe-run
+              className="flex items-center justify-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
+              {busy ? 'Transcribing…' : 'Generate captions'}
+            </button>
+            {notice && (
+              <p
+                role="status"
+                className={`rounded px-2 py-1.5 text-[10px] ${
+                  notice.kind === 'ok'
+                    ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                    : 'border border-red-500/30 bg-red-500/10 text-red-400'
+                }`}
+              >
+                {notice.message}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PanelPlaceholder({ tab }: { tab: Exclude<PanelTab, 'media'> }) {  const Icon = tab === 'captions' ? Subtitles : AudioLines;
   const title = tab === 'captions' ? 'Captions' : 'Audio';
   return (
@@ -933,6 +1061,17 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="mb-1 block text-[10px] uppercase tracking-wide text-text-secondary">
+        {label}
+      </label>
+      {children}
     </div>
   );
 }
