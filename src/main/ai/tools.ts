@@ -352,8 +352,7 @@ export const tools = {
   },
 
   setClipPanTool: {
-    name: 'set_clip_pan',
-    description:
+    name: 'set_clip_pan',    description:
       'Set stereo balance on an audio clip. -1 is hard left, +1 is hard right, '
       + '0 is center (default). Visual clips are refused.',
     parameters: z.object({
@@ -589,6 +588,23 @@ export const tools = {
     }),
   },
 
+  setClipCrop: {
+    name: 'set_clip_crop',
+    description:
+      'Crop edges off the source frame of a video/image clip, as fractions of the source (0-0.45 per edge) applied before position and scale. Static — not animatable. Passing all zeros clears the crop.',
+    parameters: z.object({
+      clipId: z.string().describe('The video or image clip to crop.'),
+      left: z.number().finite().min(0).max(0.45).optional().describe('Fraction cropped from the left edge.'),
+      right: z.number().finite().min(0).max(0.45).optional().describe('Fraction cropped from the right edge.'),
+      top: z.number().finite().min(0).max(0.45).optional().describe('Fraction cropped from the top edge.'),
+      bottom: z.number().finite().min(0).max(0.45).optional().describe('Fraction cropped from the bottom edge.'),
+    }).refine(
+      (op) => op.left !== undefined || op.right !== undefined
+        || op.top !== undefined || op.bottom !== undefined,
+      { message: 'Pass at least one crop edge.' },
+    ),
+  },
+
   importFcpxml: {
     name: 'import_fcpxml',
     description:
@@ -656,4 +672,5 @@ function zodFieldToSchema(field: z.ZodType<any>): Record<string, unknown> {
   if (field instanceof z.ZodDefault) return zodFieldToSchema(field.removeDefault());
   return { type: 'string' };
 }
+
 

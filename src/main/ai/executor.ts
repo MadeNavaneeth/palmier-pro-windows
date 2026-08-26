@@ -31,6 +31,7 @@ import {
   type SilenceTrackScope,
 } from '../../shared/editor/silence-scoping';
 import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple';
+import { sanitizeCrop } from '../../shared/media/source-crop';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
 import { createHash } from 'crypto';
@@ -1060,6 +1061,28 @@ export class ToolExecutor {
             timecode: `${timecode} (${atSeconds.toFixed(2)}s)`,
             note: 'Open/read the PNG at `path` to view this frame.',
             ...(imageBase64 ? { imageBase64 } : {}),
+          },
+        };
+      }
+
+      case 'set_clip_crop': {
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'video' && clip.type !== 'image') {
+          return { success: false, error: 'Only video and image clips can be cropped.' };
+        }
+        const sanitized = sanitizeCrop(args);
+        this.editor.applyClipProperties([args.clipId], 'Set crop', (draft) => {
+          if (sanitized) draft.crop = sanitized;
+          else delete draft.crop;
+          return true;
+        });
+        return {
+          success: true,
+          data: {
+            clipId: args.clipId,
+            ...(sanitized ? { crop: sanitized } : {}),
+            ...(sanitized ? {} : { cleared: true }),
           },
         };
       }

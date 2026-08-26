@@ -139,6 +139,8 @@ export interface Clip {
   titleTiltXDeg?: number;
   /** Perspective tilt around the horizontal axis, in degrees (#519). */
   titleTiltYDeg?: number;
+  /** Static source crop as edge fractions, applied before position/scale (#568). */
+  crop?: { left: number; right: number; top: number; bottom: number };
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */

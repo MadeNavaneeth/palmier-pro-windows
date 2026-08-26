@@ -23,6 +23,7 @@ import { selectExportClips } from '../../shared/media/export-eligibility';
 import { escapeDrawtext, drawtextStyleParams, applyTitleFontCase } from '../../shared/editor/title';
 import { colorGradeOf, toFfmpegEq } from '../../shared/editor/color-grade';
 import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
+import { isCropped, cropRect } from '../../shared/media/source-crop';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -434,6 +435,15 @@ function buildFilterGraph(
     const scaledW = Math.round(clip.width * clip.scaleX);
     const scaledH = Math.round(clip.height * clip.scaleY);
 
+    // Static crop (#568) in source-pixel space, ahead of scale — matching the
+    // preview's proportional sub-rect of the uniformly scaled decode. Skipped
+    // when the source never reported dimensions.
+    let cropChain = '';
+    if (isCropped(clip.crop) && asset.width && asset.height) {
+      const rect = cropRect(clip.crop, asset.width, asset.height);
+      cropChain = `,crop=${rect.width}:${rect.height}:${rect.x}:${rect.y}`;
+    }
+
     // Transition fades ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â applied in the clip's own (0-based, post-setpts) time
     // so they match the preview's effective-opacity ramp exactly. alpha=1 makes
     // the fade affect transparency so it composites over the layers below.
@@ -461,7 +471,7 @@ function buildFilterGraph(
       }
 
       filters.push(
-        `[${trimmedLabel}]fps=${fps},scale=${scaledW}:${scaledH}:flags=bilinear,format=rgba${colorChain}${fadeChain}[${scaledLabel}]`,
+        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale=${scaledW}:${scaledH}:flags=bilinear${colorChain}${fadeChain}[${scaledLabel}]`,
       );
 
     // Overlay with enable condition (time window)

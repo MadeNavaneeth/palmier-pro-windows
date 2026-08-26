@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Regression coverage for the export argument builder (upstream PR #546):
  * each unique source path becomes exactly one FFmpeg input, shared by every
  * clip referencing it, with filter-graph and audio-map indices remapped to
@@ -12,7 +12,7 @@ import type { Clip, Project } from '../../shared/types/project';
 import { buildFfmpegArgs, videoCodecArgs } from './export-args';
 
 function projectWithMedia(
-  media: Array<{ id: string; path: string; type: 'video' | 'audio' | 'image'; duration: number; audioCodec?: string }>,
+  media: Array<{ id: string; path: string; type: 'video' | 'audio' | 'image'; duration: number; audioCodec?: string; width?: number; height?: number }>,
   clips: Partial<Clip>[],
 ): Project {
   const project = createEmptyProject();
@@ -23,6 +23,8 @@ function projectWithMedia(
     type: asset.type,
     duration: asset.duration,
     ...(asset.audioCodec ? { audioCodec: asset.audioCodec } : {}),
+    ...(asset.width ? { width: asset.width } : {}),
+    ...(asset.height ? { height: asset.height } : {}),
     fileSize: 1,
     addedAt: new Date().toISOString(),
   }));
@@ -90,7 +92,7 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
     expect(args).toContain('h264_nvenc');
   });
 
-  // ─── Color grading (R4) ──────────────────────────────────────────────────
+  // â”€â”€â”€ Color grading (R4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   it('emits eq filter for color-graded clips and omits it for ungraded ones', () => {
     const project = projectWithMedia(
@@ -113,7 +115,7 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
     expect(plainArgs).not.toContain('eq=');
   });
 
-  // ─── Title drawtext (R3) ──────────────────────────────────────────────────
+  // â”€â”€â”€ Title drawtext (R3) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   it('emits escaped, centered, time-gated drawtext for title clips', () => {
     const project = projectWithMedia(
@@ -134,7 +136,7 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
 
     const graph = build(project).find((arg) => arg.includes('drawtext'))!;
     expect(graph).toContain("drawtext=text='Episode\\: \\'One\\' 100\\%\\nTake two'");
-    expect(graph).toContain('fontsize=108'); // 0.1 × 1080
+    expect(graph).toContain('fontsize=108'); // 0.1 Ã— 1080
     expect(graph).toContain('fontcolor=#ffcc00');
     expect(graph).toContain(':x=(w-text_w)/2:y=(h-text_h)/2');
     expect(graph).toContain("between(t,1.0000,3.0000)");
@@ -315,7 +317,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     );
 
     const graph = build(project).find((arg) => arg.includes('trim='))!;
-    // Both chains read [1:v] — the single consolidated input.
+    // Both chains read [1:v] â€” the single consolidated input.
     expect(graph.match(/\[1:v\]trim=/g)).toHaveLength(2);
     expect(graph).not.toContain('[2:');
   });
@@ -346,7 +348,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(graph).toContain(
       '[2:a]atrim=start=1.0000:end=4.3333,asetpts=PTS-STARTPTS,volume=0.5000,adelay=3000:all=1[a0]',
     );
-    // Clip B: default 100-frame source window starting at frame 300 → 10s
+    // Clip B: default 100-frame source window starting at frame 300 â†’ 10s
     // delay, unity gain.
     expect(graph).toContain('[2:a]atrim=start=0.0000:end=3.3333,asetpts=PTS-STARTPTS,adelay=10000:all=1[a1]');
     expect(graph).toContain('[a0][a1]amix=inputs=2:normalize=0[aout]');
@@ -427,7 +429,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(args).toContain('-t');
   });
 
-  // ─── Range export (R2) ─────────────────────────────────────────────────────
+  // â”€â”€â”€ Range export (R2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   function buildWithRange(project: Project, start: number, end: number): string[] {
     return buildFfmpegArgs(
@@ -492,7 +494,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     );
 
     const graph = buildWithRange(project, 150, 600).find((arg) => arg.includes('atrim'))!;
-    // Absolute delay would be 10s; inside a range starting at 5s → 5s.
+    // Absolute delay would be 10s; inside a range starting at 5s â†’ 5s.
     expect(graph).toContain('adelay=5000:all=1');
   });
 
@@ -539,3 +541,35 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     ).toThrow(/No audio to export/i);
   });
 });
+
+describe('static crop (#568)', () => {
+  it('emits a source-space crop filter ahead of scale', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900, width: 1920, height: 1080 }],
+      [{
+        type: 'video',
+        assetId: 'v',
+        startFrame: 0,
+        durationFrames: 60,
+        crop: { left: 0.1, right: 0.1, top: 0, bottom: 0 },
+      }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('crop='))!;
+    expect(graph).toMatch(/format=rgba,crop=\d+:\d+:\d+:0,scale=/);
+    expect(graph).not.toContain('drawtext');
+  });
+
+  it('omits the crop filter when the clip is not cropped', () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{ type: 'video', assetId: 'v', startFrame: 0, durationFrames: 60 }],
+    );
+    const graph = build(project).find((arg) => arg.includes('scale='))!;
+    expect(graph).not.toContain('crop=');
+  });
+});
+
+
+
+

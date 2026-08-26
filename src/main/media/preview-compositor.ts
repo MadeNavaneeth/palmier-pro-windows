@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PreviewCompositor  orchestrates frame decoding and GPU composition
  * for the real-time preview. Lives in the main process.
  *
@@ -27,6 +27,7 @@ import { effectiveSourcePath } from '../../shared/media/proxy';
 import { ByteBudgetLru } from './render-cache';
 import { loadProxyMode } from './proxy-mode';
 import { visualClipsAtFrame } from './visible-clips';
+import { isCropped, cropRect } from '../../shared/media/source-crop';
 
 //  Types 
 
@@ -149,20 +150,42 @@ export class PreviewCompositor {
       if (!decodeRequest) continue;
 
       const decoded = await decoder.getFrame(decodeRequest);
-      const frameBuffer = decoded?.data || null;
+      if (!decoded || !this.requests.isCurrent(request)) return null;
+      let frameBuffer: Buffer = decoded.data;
+      let frameWidth = decoded.width;
+      let frameHeight = decoded.height;
 
-      if (!this.requests.isCurrent(request)) return null;
-      if (!frameBuffer) continue;
+      // Static crop (#568): proportional sub-rect of the decoded (uniformly
+      // scaled) frame is pixel-equivalent to cropping the source ahead of
+      // scale, so preview and export agree without native descriptor changes.
+      const crop = clip.crop;
+      if (isCropped(crop) && frameWidth > 0 && frameHeight > 0) {
+        const rect = cropRect(crop, frameWidth, frameHeight);
+        const cropped = Buffer.alloc(rect.width * rect.height * 4);
+        for (let row = 0; row < rect.height; row++) {
+          const srcStart = ((rect.y + row) * frameWidth + rect.x) * 4;
+          decoded.data.copy(
+            cropped,
+            row * rect.width * 4,
+            srcStart,
+            srcStart + rect.width * 4,
+          );
+        }
+        frameBuffer = cropped;
+        frameWidth = rect.width;
+        frameHeight = rect.height;
+      }
 
       const wipe = wipeParamsFor(clip, frameIndex);
       const slide = slideOffsetFor(clip, frameIndex);
 
       layerDescs.push({
-        width: clip.width,
-        height: clip.height,
-        // Slide transitions offset the layer position over the transition window.
-        x: clip.x + slide.dx,
-        y: clip.y + slide.dy,
+        width: frameWidth,
+        height: frameHeight,
+        // Keep the box centered: cropping shrinks the source, so re-center the
+        // desc on the clip's midpoint rather than its top-left.
+        x: Math.round(clip.x + (clip.width - frameWidth) / 2 + slide.dx),
+        y: Math.round(clip.y + (clip.height - frameHeight) / 2 + slide.dy),
         // Fade ramps multiply the base opacity (transition rendering).
         opacity: effectiveOpacity(clip, frameIndex),
         rotation_deg: clip.rotation,
@@ -321,3 +344,4 @@ export function registerPreviewHandlers(getProject: () => Project | null): void 
     await compositor.prefetchFrames(frames);
   });
 }
+
