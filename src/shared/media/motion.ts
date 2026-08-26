@@ -1,24 +1,52 @@
 /**
- * Position motion tracks (#535 groundwork — keyframes v1).
+ * Position motion tracks (#535 groundwork — keyframes v1.5 with easing).
  *
- * A motion track is a sorted list of {frame, value} keypoints; the value at
- * any frame interpolates linearly between neighbors and clamps outside the
- * ends. Only translation (x/y) ships in v1 because the export graph can
- * express it EXACTLY via overlay's arithmetic x/y expressions — no
- * approximations, so preview and export stay pixel-identical. Scale/rotation
- * keyframes wait on an export-side decision.
+ * A motion track is a sorted list of {frame, value, easing?} keypoints; the
+ * value at any frame interpolates between neighbors using the easing of the
+ * segment's START point (default linear) and clamps outside the ends.
+ * Translation only: the export graph expresses these curves EXACTLY via
+ * overlay arithmetic expressions (`if`/`pow`), so preview and export stay
+ * pixel-identical. Scale/rotation keyframes wait on an export-side decision.
  */
+
+export type MotionEasing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
+
+const EASINGS: ReadonlySet<MotionEasing> = new Set([
+  'linear', 'easeIn', 'easeOut', 'easeInOut',
+]);
 
 export interface MotionPoint {
   frame: number;
   value: number;
+  /** Easing of the segment starting at this point. Default linear. */
+  easing?: MotionEasing;
 }
 
 export type MotionTrack = MotionPoint[];
 
+/** Normalized easing: anything unrecognized/absent is linear. */
+export function normalizeEasing(easing: unknown): MotionEasing {
+  return typeof easing === 'string' && EASINGS.has(easing as MotionEasing)
+    ? (easing as MotionEasing)
+    : 'linear';
+}
+
+/** Eased progress for normalized time u ∈ [0,1]. */
+function easeValue(u: number, easing: MotionEasing): number {
+  switch (easing) {
+    case 'easeIn': return u * u;
+    case 'easeOut': return 1 - (1 - u) * (1 - u);
+    case 'easeInOut':
+      return u < 0.5
+        ? 2 * u * u
+        : 1 - Math.pow(-2 * u + 2, 2) / 2;
+    default: return u;
+  }
+}
+
 /** Normalize agent/user input: finite values, sorted, first-frame dedupe. */
 export function sanitizeMotion(
-  points: Array<{ frame?: number; value?: number }> | undefined | null,
+  points: Array<{ frame?: number; value?: number; easing?: unknown }> | undefined | null,
 ): MotionTrack | undefined {
   if (!Array.isArray(points)) return undefined;
   const clean = points
@@ -27,7 +55,13 @@ export function sanitizeMotion(
         Number.isFinite(p?.frame)
         && Number.isFinite(p?.value),
     )
-    .map((p) => ({ frame: Math.round(p.frame as number), value: p.value as number }))
+    .map((p) => ({
+      frame: Math.round(p.frame as number),
+      value: p.value as number,
+      ...(normalizeEasing(p.easing) !== 'linear'
+        ? { easing: normalizeEasing(p.easing) }
+        : {}),
+    }))
     .sort((a, b) => a.frame - b.frame);
   // Collapse duplicate frames (last wins).
   const deduped: MotionTrack = [];
@@ -41,7 +75,7 @@ export function sanitizeMotion(
 
 /**
  * Value at `frame`: clamps before the first / after the last keypoint,
- * linear between. Returns undefined when the track is absent/empty so
+ * eased per segment. Returns undefined when the track is absent/empty so
  * callers can fall back to the static clip field.
  */
 export function evaluateMotion(
@@ -56,34 +90,56 @@ export function evaluateMotion(
     const b = track[i]!;
     if (frame <= b.frame) {
       const a = track[i - 1]!;
-      const t = (frame - a.frame) / (b.frame - a.frame);
-      return a.value + (b.value - a.value) * t;
+      const u = (frame - a.frame) / (b.frame - a.frame);
+      const eased = easeValue(u, normalizeEasing(a.easing));
+      return a.value + (b.value - a.value) * eased;
     }
   }
   return last.value;
 }
 
 /**
- * Piecewise-linear FFmpeg overlay expression for a motion track, in output
- * seconds. `secPerFrame` converts keypoint frames to the timeline seconds
- * the overlay filter's `t` measures. Exact — no approximation.
+ * Piecewise FFmpeg overlay expression for a motion track, in output seconds.
+ * `secPerFrame` converts keypoint frames to the timeline seconds the overlay
+ * filter's `t` measures. Each segment emits its eased curve via `if`/`pow`
+ * over normalized time — exact, matching evaluateMotion.
  */
 export function motionExpression(
   track: MotionTrack | undefined,
   secPerFrame: number,
 ): string | undefined {
   if (!track || track.length === 0) return undefined;
-  const pts = track.map((p) => ({ t: p.frame * secPerFrame, v: p.value }));
-  if (pts.length === 1) return pts[0]!.v.toFixed(4);
-  // Clamp before/after ends via min/max against the first/last segments.
-  const segs = [];
-  for (let i = 1; i < pts.length; i++) {
-    const a = pts[i - 1]!;
-    const b = pts[i]!;
-    const slope = ((b.v - a.v) / (b.t - a.t)).toFixed(6);
-    segs.push(`if(lte(t,${b.t.toFixed(6)}),${a.v.toFixed(4)}+${slope}*(t-${a.t.toFixed(6)}),`);
+  if (track.length === 1) return track[0]!.value.toFixed(4);
+
+  // easedExpr(easing, aSec, bSec): value formula over absolute t for one
+  // segment, with normalized time n = (t-a)/(b-a).
+  const easedExpr = (easing: MotionEasing, aSec: number, bSec: number, v0: string, dv: string): string => {
+    const n = `((t)-(${aSec.toFixed(6)}))/((${bSec.toFixed(6)})-(${aSec.toFixed(6)}))`;
+    switch (easing) {
+      case 'easeIn':
+        return `${v0}+${dv}*pow(${n},2)`;
+      case 'easeOut':
+        return `${v0}+${dv}*(1-pow(1-${n},2))`;
+      case 'easeInOut':
+        return `${v0}+${dv}*if(lte(${n},0.5),2*pow(${n},2),1-pow(-2*${n}+2,2)/2)`;
+      default:
+        return `${v0}+${dv}*${n}`;
+    }
+  };
+
+  // Clamp before/after ends via nested ifs against segment end times.
+  const parts: string[] = [];
+  for (let i = 1; i < track.length; i++) {
+    const a = track[i - 1]!;
+    const b = track[i]!;
+    const aSec = a.frame * secPerFrame;
+    const bSec = b.frame * secPerFrame;
+    const easing = normalizeEasing(a.easing);
+    const v0 = a.value.toFixed(4);
+    const dv = (b.value - a.value).toFixed(6);
+    parts.push(`if(lte(t,${bSec.toFixed(6)}),${easedExpr(easing, aSec, bSec, v0, dv)},`);
   }
-  const inner = `${pts[pts.length - 1]!.v.toFixed(4)}${')'.repeat(segs.length)}`;
-  segs.push(inner);
-  return segs.join('');
+  const inner = `${track[track.length - 1]!.value.toFixed(4)}${')'.repeat(parts.length)}`;
+  parts.push(inner);
+  return parts.join('');
 }

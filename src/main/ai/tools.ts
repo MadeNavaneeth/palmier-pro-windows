@@ -626,6 +626,8 @@ export const tools = {
       points: z.array(z.object({
         frame: z.number().int().min(0).describe('Timeline frame for this keyframe.'),
         value: z.number().finite().describe('Position value in pixels.'),
+        easing: z.enum(['linear', 'easeIn', 'easeOut', 'easeInOut']).optional()
+          .describe('Easing of the segment starting at this keyframe. Default linear.'),
       })).describe('Keyframes for this axis. At least two to animate; an empty array clears the axis.'),
     }),
   },

@@ -1,5 +1,5 @@
-/**
- * Inspector — properties for the current clip selection.
+﻿/**
+ * Inspector â€” properties for the current clip selection.
  *
  * Exposes blend mode (upstream #203), opacity, fades, transitions and the
  * silence-removal controls (upstream PR #426). A single clip is edited directly;
@@ -91,7 +91,7 @@ export function Inspector() {
   const handleRemoveSilence = useCallback(async () => {
     if (!clip) return;
     setWorking(true);
-    setSilenceStatus('Analyzing audio…');
+    setSilenceStatus('Analyzing audioâ€¦');
     const result = await removeSilenceForClip(clip.id);
     setWorking(false);
     if (result.error) {
@@ -252,7 +252,7 @@ export function Inspector() {
 
         {isAudio && (
           <p className="text-2xs text-text-muted">
-            Audio clip — compositing properties don't apply.
+            Audio clip â€” compositing properties don't apply.
           </p>
         )}
 
@@ -260,7 +260,7 @@ export function Inspector() {
           <MotionControls clipId={clip.id} />
         )}
 
-        {/* Audio tools — available for audio and video clips (both can carry sound). */}
+        {/* Audio tools â€” available for audio and video clips (both can carry sound). */}
         {clip.type !== 'image' && clip.type !== 'title' && (
           <SilenceRemovalControls
             onRemove={handleRemoveSilence}
@@ -277,7 +277,7 @@ export function Inspector() {
  * Motion keyframes (keyframes v1): per-axis position tracks. "Set" captures
  * the clip's current position at the playhead as a keyframe (or updates the
  * existing one on that frame); chips list the points with remove buttons.
- * Evaluation/sanitization live in shared/media/motion.ts — this UI only
+ * Evaluation/sanitization live in shared/media/motion.ts â€” this UI only
  * collects intent.
  */
 function MotionControls({ clipId }: { clipId: string }) {
@@ -291,7 +291,8 @@ function MotionControls({ clipId }: { clipId: string }) {
   );
 
   if (!clip) return null;
-  const axes: Array<{ axis: 'x' | 'y'; label: string; track: typeof clip.motionX; base: number }> = [
+  type MotionPointWithEasing = { frame: number; value: number; easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' };
+  const axes: Array<{ axis: 'x' | 'y'; label: string; track: MotionPointWithEasing[] | undefined; base: number }> = [
     { axis: 'x', label: 'X', track: clip.motionX, base: clip.x },
     { axis: 'y', label: 'Y', track: clip.motionY, base: clip.y },
   ];
@@ -326,12 +327,12 @@ function MotionControls({ clipId }: { clipId: string }) {
               {(track ?? []).map((point) => (
                 <button
                   key={point.frame}
-                  title={`Frame ${point.frame}: ${point.value}px — click to remove`}
+                  title={`Frame ${point.frame}: ${point.value}px â€” click to remove`}
                   onClick={() =>
                     setAxis(axis, (track ?? []).filter((p) => p.frame !== point.frame))}
                   className="rounded bg-surface-4/60 px-1 py-0.5 font-mono text-[8px] text-text-secondary hover:bg-red-500/20 hover:text-red-300"
                 >
-                  f{point.frame}:{Math.round(point.value)}×
+                  f{point.frame}:{Math.round(point.value)}Ã—
                 </button>
               ))}
               <button
@@ -343,6 +344,26 @@ function MotionControls({ clipId }: { clipId: string }) {
               </button>
             </div>
           </div>
+          {track && track.length >= 2 && (
+            <select
+              value={track[0].easing ?? 'linear'}
+              onChange={(event) =>
+                setAxis(axis, (track ?? []).map((p, index) => ({
+                  ...p,
+                  ...(index < track.length - 1
+                    ? { easing: event.target.value as 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' }
+                    : {}),
+                })))}
+              data-easing={axis}
+              aria-label={`${label} axis easing`}
+              className="mt-1 w-full rounded border border-surface-3 bg-surface-1 px-1 py-0.5 text-[9px] text-text-secondary focus:border-accent focus:outline-none"
+            >
+              <option value="linear">Linear</option>
+              <option value="easeIn">Ease in</option>
+              <option value="easeOut">Ease out</option>
+              <option value="easeInOut">Ease in-out</option>
+            </select>
+          )}
         </div>
       ))}
     </div>
@@ -353,7 +374,7 @@ function MotionControls({ clipId }: { clipId: string }) {
  * Silence removal, with its settings exposed (upstream PR #426).
  *
  * Before this the button ran with hardcoded values, so a pass that cut too much
- * or too little could not be adjusted — the only recourse was undo. The two
+ * or too little could not be adjusted â€” the only recourse was undo. The two
  * duration controls mirror upstream's Minimum Pause and Speech Padding, in
  * milliseconds. Threshold has no upstream counterpart: upstream decides silence
  * from an on-device speech mask, while this port measures an RMS envelope, which
@@ -433,7 +454,7 @@ function SilenceRemovalControls({
         disabled={working}
         className="mt-0.5 rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary transition hover:border-surface-4 hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {working ? 'Analyzing…' : 'Remove Silence'}
+        {working ? 'Analyzingâ€¦' : 'Remove Silence'}
       </button>
       <label
         className="flex cursor-pointer items-center gap-1.5 text-2xs text-text-secondary"
@@ -630,7 +651,7 @@ function MultiClipInspector() {
 
         {visualClips.length === 0 && (
           <p className="text-2xs text-text-muted">
-            Audio only — compositing properties don't apply.
+            Audio only â€” compositing properties don't apply.
           </p>
         )}
       </div>
@@ -748,7 +769,7 @@ function ProjectSettingsSection() {
                   {preset.label}
                 </option>
               ))}
-              <option value="custom">Custom…</option>
+              <option value="custom">Customâ€¦</option>
             </select>
           </span>
         </div>
@@ -769,7 +790,7 @@ const FPS_OPTIONS = [24, 25, 30, 48, 50, 60];
 
 /**
  * Custom `width:height` entry. Shows the resolution the ratio resolves to, or
- * the refusal reason, and only enables Apply for a valid edited ratio — the same
+ * the refusal reason, and only enables Apply for a valid edited ratio â€” the same
  * gating as upstream's CustomAspectRatioSheet.
  */
 function CustomAspectRatioEditor({
@@ -890,3 +911,4 @@ function InspectorValue({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+

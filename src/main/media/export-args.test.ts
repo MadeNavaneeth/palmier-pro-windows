@@ -592,10 +592,10 @@ describe('position motion keyframes (keyframes v1)', () => {
     );
 
     const graph = build(project).find((arg) => arg.includes('overlay='))!;
-    // Nested ifs: seg1 slope +300/s from 100@0s; seg2 -200/s from 400@1s.
+    // Nested ifs with normalized-time segments: seg1 slope +300/s, seg2 -200/s.
     expect(graph).toContain('overlay=x=');
-    expect(graph).toContain('+300.000000*(t-0.000000)');
-    expect(graph).toContain('400.0000+-200.000000*(t-1.000000)');
+    expect(graph).toContain('+300.000000*((t)-(0.000000))/((1.000000)-(0.000000))');
+    expect(graph).toContain('400.0000+-200.000000*((t)-(1.000000))/((2.000000)-(1.000000))');
     expect(graph).toContain(',200.0000)');
     expect(graph).not.toContain('overlay=x=0');
   });
@@ -609,3 +609,4 @@ describe('position motion keyframes (keyframes v1)', () => {
     expect(graph).toContain('overlay=x=42:y=17');
   });
 });
+

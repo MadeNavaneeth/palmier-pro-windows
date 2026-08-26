@@ -51,3 +51,56 @@ describe('evaluateMotion', () => {
     expect(evaluateMotion(undefined, 10)).toBeUndefined();
   });
 });
+
+describe('easing curves (keyframes v1.5)', () => {
+  const track = [
+    { frame: 0, value: 0, easing: 'easeInOut' as const },
+    { frame: 100, value: 100 },
+  ];
+
+  it('easeInOut hits quarter points: slow-fast-slow', () => {
+    expect(evaluateMotion(track, 25)).toBeCloseTo(2 * 0.25 * 0.25 * 100, 6); // 12.5
+    expect(evaluateMotion(track, 50)).toBe(50);
+    expect(evaluateMotion(track, 75)).toBeCloseTo(100 - Math.pow(-1.5 + 2, 2) / 2 * 100 + 0, 4);
+  });
+
+  it('per-segment easing comes from the segment start point', () => {
+    const mixed = [
+      { frame: 0, value: 0, easing: 'easeIn' as const },
+      { frame: 10, value: 100, easing: 'linear' as const },
+      { frame: 20, value: 200 },
+    ];
+    // easeIn at midpoint of seg1: u=0.5 -> 0.25
+    expect(evaluateMotion(mixed, 5)).toBeCloseTo(25, 6);
+    // linear seg2 midpoint: exact half.
+    expect(evaluateMotion(mixed, 15)).toBe(150);
+  });
+
+  it('sanitizer preserves recognized easings and drops unknown ones', () => {
+    const track = sanitizeMotion([
+      { frame: 0, value: 0, easing: 'easeOut' },
+      { frame: 10, value: 10, easing: 'wobble' },
+    ]);
+    // Recognized easing survives; unknown 'wobble' normalizes to linear
+    // (dropped from storage, since linear is the default).
+    expect(track![0].easing).toBe('easeOut');
+    expect(track![1].easing).toBeUndefined();
+  });
+
+  it('emits pow/if expressions for eased export segments', async () => {
+    const { motionExpression } = await import('./motion');
+    const expr = motionExpression([
+      { frame: 0, value: 0, easing: 'easeIn' },
+      { frame: 30, value: 300 },
+    ], 1 / 30);
+    expect(expr).toContain('+300.000000*pow');
+    expect(expr).toContain('(t)');
+
+    const io = motionExpression([
+      { frame: 0, value: 0, easing: 'easeInOut' },
+      { frame: 30, value: 300 },
+    ], 1 / 30);
+    expect(io).toContain('if(lte');
+    expect(io).toContain('pow');
+  });
+});
