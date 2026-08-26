@@ -491,7 +491,7 @@ Read the project state first, then make edits using the tools below.
 
 ## Available Capabilities
 
-**Reading:** get_timeline (tracks/clips/settings/markers), get_clips, get_media.
+**Reading:** get_timeline (tracks/clips/settings/markers), get_clips, get_media. inspect_frame samples a frame from any library video/image at a given second and returns a PNG path you can read to actually SEE the footage — use it before describing or color-matching content, and to verify visual edits.
 
 **Placement:** add_clip places media at a frame. Modes: overwrite (default), insert (pushes later clips right), append (after last clip on track).
 
@@ -501,13 +501,13 @@ Read the project state first, then make edits using the tools below.
 
 **Markers:** manage_markers creates/updates/deletes review notes anchored to frames. Point markers have durationFrames 0; positive values make range markers.
 
-**Titles:** add_texts places styled text overlays (fontSize, color, bold, fontFamily, align, backgroundColor). set_title_text updates existing title text and style.
+**Titles:** add_texts places styled text overlays (fontSize, color, bold, fontFamily, align, backgroundColor + padding, lineSpacing, fontCase, fillMode "footage"/"inverted", blurRadius, tiltX/tiltY). set_title_text updates existing title text and style.
 
 **Captions:** import_srt / import_vtt place subtitle files as timed text overlays on a video track.
 
 **Speed:** set_clip_speed changes constant playback speed (0.25x–4x) while keeping timeline duration fixed.
 
-**Audio:** normalize_audio analyzes peak level and adjusts volume to reach a target (-3 dBFS default). set_clip_pan sets stereo balance (-1 left … +1 right). Audio fades use clip fadeIn/fadeOutFrames.
+**Audio:** normalize_audio analyzes peak level and adjusts volume to reach a target (-3 dBFS default). set_clip_pan sets stereo balance (-1 left … +1 right). Audio fades use clip fadeIn/fadeOutFrames. remove_silence detects and ripples out silent gaps — pass clipIds to scope it, omit for the whole timeline; settings mirror the user's saved controls unless overridden per call.
 
 **Tracks:** manage_tracks reorders, renames, toggles mute/hide/sync-lock, and removes empty tracks. add_track creates new tracks.
 
@@ -515,12 +515,21 @@ Read the project state first, then make edits using the tools below.
 
 **Media:** swap_clip_media replaces a clip's source file keeping all edits intact.
 
+**Styling extras:** set_clip_blend_mode (multiply/screen/overlay/…), set_clip_fade, set_clip_transition (wipe/slide), cross_dissolve between adjacent clips, copy_clip_settings to copy style from one clip to others.
+
+**Generation:** generate_media creates an image/video/audio asset from a prompt via the configured providers (fal.ai, Replicate, HiggsField) and imports it into the library — then place it with add_clip like any other media. Requires the user to have set an API key in Settings → Media generation.
+
+**Interchange:** export_fcpxml writes the timeline as Final Cut XML for Resolve/FCP/Premiere; import_fcpxml reads one back additively (new tracks per lane). Effects/grades inside FCPXML files are skipped and reported.
+
+**Settings:** set_project_settings changes fps/canvas/aspect ratio as one undoable step. undo/redo wrap everything above.
+
 ## Guidelines
 - Always call get_timeline before making edits so you understand context.
 - Explain what you're doing before and after tool calls.
 - Use precise frame numbers. The project frame rate is in the timeline data.
-- "Cut" means split_clip. "Remove silence" combines get_timeline reading with ripple operations.
+- "Cut" means split_clip. "Remove silence" is one remove_silence call.
 - When placing media, choose overwrite unless the user specifically asks to push existing content later (insert) or add after the end (append).
 - Titles need a video track. Captions from SRT/VTT also go on video tracks.
+- When the user references what's on screen ("that red car", "the logo"), inspect_frame the relevant clip first so your edits match reality.
 - Batch related operations together for efficiency.
 - If an operation fails, explain why and suggest alternatives.`;

@@ -7,8 +7,9 @@
  *
  * Supported: <format> timing, <asset> resources, spine asset-clips and
  * connected asset-clips (lane attr), titles with inline text-style refs,
- * decimal ("1.5s") and rational ("45/30s") times. Everything else â€” effects,
- * gaps, groups, references â€” lands in `unsupported` as readable notes so
+ * decimal ("1.5s") and rational ("45/30s") times. Gaps are implicit —
+ * absolute clip offsets already encode spacing. Everything else — effects,
+ * groups, references — lands in `unsupported` as readable notes so
  * nothing disappears silently.
  */
 
@@ -179,21 +180,20 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
 
   // Titles carry a body (<text>â€¦), so scan opening tags and consume through
   // each element's closing tag rather than matching self-contained tokens.
+  // Skip the outer spine's own opening tag so it is not mistaken for nested.
+  const innerXml = spineXml.slice(spineXml.indexOf('>') + 1);
   const openRe = /<(asset-clip|title|gap|spine)\b([^>]*?)(\/?)>/g;
-  for (const match of spineXml.matchAll(openRe)) {
+  for (const match of innerXml.matchAll(openRe)) {
     const kind = match[1];
     const selfClosed = match[3] === '/';
     let tag = match[0];
     if (!selfClosed) {
       const closeTag = `</${kind}>`;
-      const closeIdx = spineXml.indexOf(closeTag, openRe.lastIndex);
-      if (closeIdx !== -1) tag = spineXml.slice(match.index, closeIdx + closeTag.length);
+      const closeIdx = innerXml.indexOf(closeTag, openRe.lastIndex);
+      if (closeIdx !== -1) tag = innerXml.slice(match.index, closeIdx + closeTag.length);
     }
 
-    if (kind === 'gap') {
-      unsupported.push('Gap placeholders are skipped; spacing collapses.');
-      continue;
-    }
+    if (kind === 'gap') continue; // absolute clip offsets already encode spacing
 
     const offset = parseFcpxmlTime(attr(tag, 'offset') ?? '');
     const duration = parseFcpxmlTime(attr(tag, 'duration') ?? '');
@@ -265,3 +265,7 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     unsupported,
   };
 }
+
+
+
+
