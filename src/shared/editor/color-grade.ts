@@ -14,9 +14,10 @@ export interface ColorGrade {
   contrast: number;
   saturation: number;
   hueRotation: number;
+  invertColors?: boolean;
 }
 
-const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0 };
+const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, invertColors: false };
 
 /** Extract non-default color fields from a clip; null when no grading. */
 export function colorGradeOf(clip: Clip): ColorGrade | null {
@@ -25,12 +26,13 @@ export function colorGradeOf(clip: Clip): ColorGrade | null {
     contrast: clip.contrast ?? DEFAULTS.contrast,
     saturation: clip.saturation ?? DEFAULTS.saturation,
     hueRotation: clip.hueRotation ?? DEFAULTS.hueRotation,
+    invertColors: clip.invertColors ?? DEFAULTS.invertColors,
   };
   return isDefaultGrade(grade) ? null : grade;
 }
 
 function isDefaultGrade(g: ColorGrade): boolean {
-  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0;
+  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && !g.invertColors;
 }
 
 /**
@@ -43,6 +45,7 @@ export function toCanvasFilter(grade: ColorGrade): string {
   if (grade.contrast !== 1) parts.push(`contrast(${grade.contrast.toFixed(3)})`);
   if (grade.saturation !== 1) parts.push(`saturate(${grade.saturation.toFixed(3)})`);
   if (grade.hueRotation !== 0) parts.push(`hue-rotate(${grade.hueRotation.toFixed(1)}deg)`);
+  if (grade.invertColors) parts.push('invert(1)');
   return parts.join(' ');
 }
 
@@ -60,10 +63,9 @@ export function toFfmpegEq(grade: ColorGrade): string {
     parts.push(`hue=h=${grade.hueRotation.toFixed(1)}`);
   }
   return parts.length > 0 ? `eq=${parts.join(':')}` : '';
-}
-
-/** True when any field differs from default — used to skip no-op work. */
+}  /** True when any field differs from default — used to skip no-op work. */
 export function hasColorGrade(clip: Clip): boolean {
   return clip.brightness !== undefined || clip.contrast !== undefined
-    || clip.saturation !== undefined || clip.hueRotation !== undefined;
+    || clip.saturation !== undefined || clip.hueRotation !== undefined
+    || clip.invertColors !== undefined;
 }

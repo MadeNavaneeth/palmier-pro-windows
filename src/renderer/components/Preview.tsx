@@ -7,6 +7,7 @@ import {
   Grid2x2,
   Pause,
   Play,
+  Repeat,
   SkipBack,
   SkipForward,
   ZoomIn,
@@ -22,6 +23,7 @@ import {
   playbackRateLabel,
 } from '../../shared/editor/playback-rate';
 import { GUIDE_KINDS, GUIDE_LABELS, type GuideKind } from '../../shared/preview/guides';
+import { listGridLayoutPresets, type GridLayoutPreset } from '../../shared/editor/grid-layout';
 
 export { PLAYBACK_RATE_PRESETS } from '../../shared/editor/playback-rate';
 
@@ -31,12 +33,20 @@ export function Preview() {
   const projectUpdatedAt = useTimelineStore((state) => state.project.updatedAt);
   const fps = useTimelineStore((state) => state.getProjectFps());
   const togglePlayback = useTimelineStore((state) => state.togglePlayback);
+  const toggleLoop = useTimelineStore((state) => state.toggleLoop);
   const stepFrame = useTimelineStore((state) => state.stepFrame);
   const setPlayhead = useTimelineStore((state) => state.setPlayhead);
   const width = useTimelineStore((state) => state.project.settings.width);
   const height = useTimelineStore((state) => state.project.settings.height);
   const playbackRate = useTimelineStore((state) => state.playbackRate);
   const setPlaybackRate = useTimelineStore((state) => state.setPlaybackRate);
+  const loopEnabled = useTimelineStore((state) => state.loopEnabled);
+  const selectedClipIds = useTimelineStore((state) => state.selectedClipIds);
+  const applyLayout = useTimelineStore((state) => state.applyLayout);
+  const loopRange = useTimelineStore((state) => ({
+    inFrame: state.project.timeline.inFrame,
+    outFrame: state.project.timeline.outFrame,
+  }));
   const durationFrames = useTimelineStore((state) =>
     Math.max(
       1,
@@ -101,6 +111,17 @@ export function Preview() {
   }, [playhead, isPlaying, projectUpdatedAt]);
 
   useEffect(() => () => engine.current.dispose(), []);
+
+  // Sync loop state to engine (upstream #428)
+  useEffect(() => {
+    const { inFrame, outFrame } = loopRange;
+    const hasRange = loopEnabled && inFrame !== undefined && outFrame !== undefined && outFrame > inFrame;
+    engine.current.setLoopRange(
+      !!hasRange,
+      hasRange ? inFrame : undefined,
+      hasRange ? outFrame : undefined,
+    );
+  }, [loopEnabled, loopRange.inFrame, loopRange.outFrame]);
 
   const handleTogglePlay = useCallback(() => {
     togglePlayback();
@@ -179,6 +200,16 @@ export function Preview() {
           <TransportButton label="Go to end" onClick={() => setPlayhead(durationFrames)}>
             <SkipForward size={13} fill="currentColor" />
           </TransportButton>
+
+          <button
+            type="button"
+            onClick={toggleLoop}
+            className={loopEnabled ? "flex h-7 w-7 items-center justify-center rounded-md text-accent bg-accent/20" : "flex h-7 w-7 items-center justify-center rounded-md text-text-muted hover:bg-white/[0.08]"}
+            title={loopEnabled ? "Disable loop (L)" : "Enable loop (L)"}
+            aria-label={loopEnabled ? "Disable loop" : "Enable loop"}
+          >
+            <Repeat size={13} />
+          </button>
         </div>
 
         <div className="flex w-44 items-center justify-end gap-1 @max-xl:w-24 @max-sm:w-auto">
@@ -351,5 +382,91 @@ function TransportButton({
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * Grid Layout menu — applies multi-clip mosaic layouts (upstream PR #410).
+ */
+function GridLayoutMenu({
+  selectedClipIds,
+  applyLayout,
+}: {
+  selectedClipIds: Set<string>;
+  applyLayout: (clipIds: string[], preset: GridLayoutPreset) => number;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const presets = listGridLayoutPresets();
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [open]);
+
+  const clipIds = [...selectedClipIds];
+  const hasSelection = clipIds.length > 0;
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && open) {
+            event.stopPropagation();
+            setOpen(false);
+          }
+        }}
+        className={`flex h-7 items-center gap-1 rounded-md px-1.5 text-[10px] transition hover:bg-white/[0.08] hover:text-text-primary ${
+          hasSelection ? 'text-text-primary' : 'text-text-muted'
+        }`}
+        title="Apply grid layout to selected clips"
+        aria-label="Grid layout"
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        <Grid2x2 size={13} />
+        <span className="@max-xl:hidden">Layout</span>
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          aria-label="Grid layouts"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              setOpen(false);
+            }
+          }}
+          className="absolute bottom-full right-0 z-40 mb-1 w-44 overflow-hidden rounded-md border border-surface-3 bg-surface-2 py-1 shadow-2xl"
+        >
+          {!hasSelection && (
+            <div className="px-2 py-1.5 text-[10px] text-text-muted">
+              Select clips first
+            </div>
+          )}
+          {presets.map((preset) => (
+            <button
+              key={preset.id}
+              role="menuitem"
+              disabled={!hasSelection}
+              onClick={() => {
+                setOpen(false);
+                applyLayout(clipIds, preset.id);
+              }}
+              className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[11px] text-text-secondary transition hover:bg-white/[0.06] hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              <span>Grid {preset.label}</span>
+              <span className="text-[9px] text-text-muted">{preset.cellCount} cells</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

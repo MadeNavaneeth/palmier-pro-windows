@@ -531,6 +531,15 @@ export function TimelineClip({ clip }: TimelineClipProps) {
         </div>
       )}
 
+      {/* Color label stripe (top edge) — user-assigned clip color */}
+      {clip.color && (
+        <div
+          className="absolute top-0 left-0 right-0 z-10 h-1 pointer-events-none"
+          style={{ backgroundColor: clip.color }}
+          title={`Color: ${clip.color}`}
+        />
+      )}
+
       {/* Audio waveform — full-height bars under the label (R1) */}
       {waveformBars && (
         <div className="absolute inset-0 z-0 flex items-end gap-px overflow-hidden pointer-events-none opacity-50">

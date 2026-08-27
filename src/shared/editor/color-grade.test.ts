@@ -21,7 +21,7 @@ describe('colorGradeOf', () => {
 
   it('returns the grade when any field differs from default', () => {
     const g = colorGradeOf(clip({ brightness: -0.2 }));
-    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0 });
+    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, invertColors: false });
   });
 });
 

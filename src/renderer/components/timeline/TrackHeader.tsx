@@ -11,6 +11,7 @@ import {
   Unlink2,
   Volume2,
   VolumeX,
+  Headphones,
 } from 'lucide-react';
 import type { Track } from '../../../shared/types/project';
 import { useTimelineStore } from '../../store/timeline';
@@ -24,14 +25,17 @@ export function TrackHeader({ track }: TrackHeaderProps) {
   const tint = isAudio ? '#2e7765' : '#1d5878';
   const setTrackLocked = useTimelineStore((state) => state.setTrackLocked);
   const setTrackVisible = useTimelineStore((state) => state.setTrackVisible);
+  const toggleTrackSolo = useTimelineStore((state) => state.toggleTrackSolo);
   const setTrackSyncLocked = useTimelineStore((state) => state.setTrackSyncLocked);
   const setTrackName = useTimelineStore((state) => state.setTrackName);
   const selectAllClipsOnTrack = useTimelineStore((state) => state.selectAllClipsOnTrack);
+  const anySoloed = useTimelineStore((state) => state.getTracks().some((t) => t.soloed));
   const controller = useTimelineStore((state) => state.controller);
   const clipCount = useTimelineStore(
     (state) => state.getClips().filter((clip) => clip.trackId === track.id).length,
   );
   const syncLocked = track.syncLocked !== false;
+  const soloDim = anySoloed && !track.soloed;
   const controlClass =
     'flex size-4 shrink-0 items-center justify-center text-text-muted transition hover:bg-white/[0.08] hover:text-text-primary';
 
@@ -60,7 +64,7 @@ export function TrackHeader({ track }: TrackHeaderProps) {
 
   return (
     <div
-      className="relative flex h-12 items-center gap-0.5 border-b border-white/10 px-1.5"
+      className={`relative flex h-12 items-center gap-0.5 border-b border-white/10 px-1.5 ${soloDim ? 'opacity-30' : ''}`}
       onContextMenu={(event) => {
         event.preventDefault();
         setMenuOpen(true);
@@ -133,6 +137,15 @@ export function TrackHeader({ track }: TrackHeaderProps) {
         {isAudio
           ? track.visible ? <Volume2 size={11} /> : <VolumeX size={11} />
           : track.visible ? <Eye size={11} /> : <EyeOff size={11} />}
+      </button>
+      <button
+        type="button"
+        className={track.soloed ? controlClass + " text-yellow-400" : controlClass}
+        onClick={() => toggleTrackSolo(track.id)}
+        title={track.soloed ? "Unsolo track" : "Solo track"}
+        aria-label={track.soloed ? "Unsolo track" : "Solo track"}
+      >
+        <Headphones size={11} />
       </button>
 
       {menuOpen && (

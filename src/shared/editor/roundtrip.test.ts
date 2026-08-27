@@ -180,6 +180,28 @@ describe('project round-trip: all fields survive save/load', () => {
     expect(restored.getMedia()[0].proxyPath).toBe('C:/proxies/heavy.mp4');
   });
 
+  it('round-trips generatedBy metadata on media assets (upstream #570)', () => {
+    const ctrl = new EditorController();
+    ctrl.addMedia({
+      id: 'asset-gen', path: '/gen/image.png', filename: 'image.png',
+      type: 'image', duration: 0, fileSize: 1, addedAt: new Date().toISOString(),
+      generatedBy: { provider: 'fal', model: 'fal-ai/flux/dev', costCredits: 0.03 },
+    });
+    ctrl.addMedia({
+      id: 'asset-plain', path: '/vid/cam.mp4', filename: 'cam.mp4',
+      type: 'video', duration: 2000, fileSize: 1, addedAt: new Date().toISOString(),
+    });
+
+    const json = ctrl.serialize();
+    const restored = new EditorController(JSON.parse(json));
+
+    const genAsset = restored.getMedia().find((m) => m.id === 'asset-gen')!;
+    expect(genAsset.generatedBy).toEqual({ provider: 'fal', model: 'fal-ai/flux/dev', costCredits: 0.03 });
+
+    const plainAsset = restored.getMedia().find((m) => m.id === 'asset-plain')!;
+    expect(plainAsset.generatedBy).toBeUndefined();
+  });
+
   it('round-trips every field added by the 2026-08 styling/motion/crop/bake passes', () => {
     const ctrl = new EditorController();
     ctrl.addMedia({

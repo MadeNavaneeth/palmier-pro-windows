@@ -27,9 +27,11 @@ export function isMutedAudioClip(clip: Clip): boolean {
  * in the export.
  */
 export function selectExportClips(project: Project): Clip[] {
-  const visibleTrackIds = new Set(
-    project.timeline.tracks.filter((track) => track.visible !== false).map((track) => track.id),
-  );
+  // Solo filter: when any track is soloed, only soloed tracks are active.
+  const anySoloed = project.timeline.tracks.some((t) => t.soloed);
+  const visibleTrackIds = anySoloed
+    ? new Set(project.timeline.tracks.filter((t) => t.soloed && t.visible !== false).map((t) => t.id))
+    : new Set(project.timeline.tracks.filter((t) => t.visible !== false).map((t) => t.id));
   return project.timeline.clips.filter(
     (clip) => visibleTrackIds.has(clip.trackId) && !isMutedAudioClip(clip),
   );

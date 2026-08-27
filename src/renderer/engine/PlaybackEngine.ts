@@ -38,6 +38,11 @@ export class PlaybackEngine {
   private frameAccumulator: number = 0;
   private state: PlaybackState = 'stopped';
   private disposed = false;
+
+  // Loop state (upstream #428)
+  private loopEnabled = false;
+  private loopStart = 0;
+  private loopEnd = 0;
   private consecutiveCompositeFailures = 0;
   private hasReportedCompositeFailure = false;
   /** Per-tick observers (preview audio reconciliation, R2). */
@@ -99,7 +104,13 @@ export class PlaybackEngine {
     void this.requestComposite(frame);
   }
 
-  dispose(): void {
+  setLoopRange(enabled: boolean, start?: number, end?: number): void {
+    this.loopEnabled = enabled;
+    this.loopStart = start ?? 0;
+    this.loopEnd = end ?? 0;
+  }
+
+    dispose(): void {
     this.stop();
     this.disposed = true;
   }
@@ -148,8 +159,9 @@ export class PlaybackEngine {
 
       const duration = store.getProjectDuration();
       if (next >= duration) {
-        // Loop or stop at end
-        store.setPlayhead(0); // loop for now
+        // Loop (upstream #428): wrap to loop start if active, else loop to 0
+        const loopTarget = this.loopEnabled && this.loopEnd > this.loopStart ? this.loopStart : 0;
+        store.setPlayhead(loopTarget);
         advanced = true;
         advancedCount += 1;
         continue;

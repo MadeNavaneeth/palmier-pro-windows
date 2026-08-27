@@ -86,6 +86,11 @@ export class PreviewEngine {
   private playbackStartTime: number = 0; // performance.now() when playback began
   private playbackStartFrame: Frame = 0; // frame when playback began
 
+  // Loop state (upstream #428)
+  private loopEnabled = false;
+  private loopStart: Frame = 0;
+  private loopEnd: Frame = 0;
+
   // Project state (set externally)
   private project: Project | null = null;
   private fps: number = 30;
@@ -123,6 +128,12 @@ export class PreviewEngine {
     if (this.state === 'idle') {
       this.renderFrameDetached(this.playheadFrame);
     }
+  }
+
+  setLoopRange(enabled: boolean, start?: Frame, end?: Frame): void {
+    this.loopEnabled = enabled;
+    this.loopStart = start ?? 0;
+    this.loopEnd = end ?? 0;
   }
 
   play(rate: number = 1): void {
@@ -196,7 +207,28 @@ export class PreviewEngine {
     const elapsedFrames = Math.floor((elapsed / 1000) * this.fps * this.playbackRate);
     this.playheadFrame = this.playbackStartFrame + elapsedFrames;
 
-    // Check if we've reached the end
+    // Loop wrap (upstream #428): when loop is active and the playhead
+    // reaches the loop end, wrap back to the loop start.
+    if (this.loopEnabled && this.loopEnd > this.loopStart) {
+      if (this.playbackRate > 0 && this.playheadFrame >= this.loopEnd) {
+        this.playheadFrame = this.loopStart;
+        this.playbackStartFrame = this.loopStart;
+        this.playbackStartTime = performance.now();
+        this.renderFrameDetached(this.playheadFrame);
+        this.scheduleNextFrame();
+        return;
+      }
+      if (this.playbackRate < 0 && this.playheadFrame <= this.loopStart) {
+        this.playheadFrame = this.loopEnd - 1;
+        this.playbackStartFrame = this.loopEnd - 1;
+        this.playbackStartTime = performance.now();
+        this.renderFrameDetached(this.playheadFrame);
+        this.scheduleNextFrame();
+        return;
+      }
+    }
+
+    // Check if we've reached the end (non-loop)
     const duration = this.getProjectDuration();
     if (this.playbackRate > 0 && this.playheadFrame >= duration) {
       this.playheadFrame = duration;

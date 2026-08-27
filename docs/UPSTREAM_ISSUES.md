@@ -6,9 +6,9 @@ Every open issue captured in
 the high-priority ledger live in [`UPSTREAM_PARITY.md`](./UPSTREAM_PARITY.md);
 this file is the exhaustive per-issue record.
 
-- Upstream baseline: `3026f72ed2924c2e6f876ab34ed6854b744407f9`
-- Open issues captured: 57
-- Triage date: 2026-08-21 (re-triaged against v0.7.6; previous pass 2026-07-31 at `8d5648d8`, 51 issues)
+- Upstream baseline: `8805801fa4df8bc2dbc57cb0a854a1f5108f95c6`
+- Open issues captured: 59
+- Triage date: 2026-08-27 (re-triaged against v0.7.6; previous pass 2026-07-31 at `8d5648d8`, 51 issues)
 
 ## Dispositions
 

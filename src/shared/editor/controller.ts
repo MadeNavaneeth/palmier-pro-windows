@@ -31,6 +31,7 @@ import {
   ReplaceMediaCommand,
 } from './commands';
 import type { Command } from './commands';
+import { resolveLayoutPreset, type GridLayoutPreset } from './grid-layout';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
 import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
@@ -1180,6 +1181,37 @@ export class EditorController {  private project: Project;
       trackId,
       { syncLocked },
       syncLocked ? 'Enable sync lock' : 'Disable sync lock',
+    );
+  }
+
+  /**
+   * Toggle solo on a track (upstream PR #428). Solo is UI-only derived state
+   * that is never persisted and does not create an undo entry. When any track
+   * is soloed, only soloed tracks of the same type are considered active for
+   * preview, export, and audio playback.
+   */
+  toggleTrackSolo(trackId: string): void {
+    const track = this.project.timeline.tracks.find((t) => t.id === trackId);
+    if (!track) return;
+    track.soloed = !track.soloed;
+    this.notify();
+  }
+
+  /**
+   * Return the set of track ids that are effectively active, accounting for
+   * solo. If no tracks are soloed, all visible tracks are active. If any
+   * tracks are soloed, only soloed tracks are active.
+   */
+  activeTrackIds(): Set<string> {
+    const tracks = this.project.timeline.tracks;
+    const anySoloed = tracks.some((t) => t.soloed);
+    if (!anySoloed) {
+      return new Set(tracks.filter((t) => t.visible !== false).map((t) => t.id));
+    }
+    return new Set(
+      tracks
+        .filter((t) => t.soloed && t.visible !== false)
+        .map((t) => t.id),
     );
   }
 
@@ -2405,6 +2437,134 @@ export class EditorController {  private project: Project;
     this.notify();
   }
 
+  /**
+   * Assemble a source clip segment over the marked range onto the comp track
+   * (upstream PR #428). This is one undoable step: any existing comp clips in
+   * the range are removed first, then the new segment is placed.
+   *
+   * @returns true on success, false when the range or selection is invalid.
+   */
+  compactTake(sourceClipId: string): boolean {
+    const { inFrame, outFrame } = this.project.timeline;
+    if (inFrame === undefined || outFrame === undefined || outFrame <= inFrame) return false;
+
+    const sourceClip = this.project.timeline.clips.find((c) => c.id === sourceClipId);
+    if (!sourceClip) return false;
+
+    // The source must overlap the marked range.
+    const sourceEnd = sourceClip.startFrame + sourceClip.durationFrames;
+    const overlapStart = Math.max(inFrame, sourceClip.startFrame);
+    const overlapEnd = Math.min(outFrame, sourceEnd);
+    if (overlapEnd <= overlapStart) return false;
+
+    // Find or create the comp track (top video track).
+    let compTrackId = this.project.timeline.compTrackId;
+    let tracks = [...this.project.timeline.tracks];
+    if (!compTrackId || !tracks.some((t) => t.id === compTrackId)) {
+      const compTrack: Track = {
+        id: nanoid(),
+        name: 'Comp',
+        type: 'video',
+        locked: false,
+        visible: true,
+        order: tracks.length,
+      };
+      tracks = [...tracks, compTrack];
+      compTrackId = compTrack.id;
+    }
+
+    // Compute the source offset: how far into the source clip the overlap starts.
+    const sourceOffset = overlapStart - sourceClip.startFrame;
+    const segmentDuration = overlapEnd - overlapStart;
+
+    // Remove existing comp clips that overlap the range.
+    let clips = this.project.timeline.clips.filter((c) => {
+      if (c.trackId !== compTrackId) return true;
+      const cEnd = c.startFrame + c.durationFrames;
+      return cEnd <= overlapStart || c.startFrame >= overlapEnd;
+    });
+
+    // Place the new comp clip — spread from source to inherit visual defaults.
+    const compClip: Clip = {
+      ...sourceClip,
+      id: nanoid(),
+      trackId: compTrackId!,
+      startFrame: overlapStart,
+      durationFrames: segmentDuration,
+      inPoint: sourceClip.inPoint + sourceOffset,
+      outPoint: sourceClip.inPoint + sourceOffset + segmentDuration,
+      label: sourceClip.label ? 'Comp: ' + sourceClip.label : undefined,
+    };
+    clips = [...clips, compClip];
+
+    this.execute(new ReplaceProjectCommand({
+      ...this.project,
+      timeline: {
+        ...this.project.timeline,
+        tracks,
+        clips,
+        compTrackId,
+      },
+    }, 'Compact take'));
+    return true;
+  }
+  /**
+   * Apply a grid layout to the given visual clip ids (upstream PR #410).
+   * Each clip is scaled to fit its cell within the project canvas.
+   * Clips are placed in order: first clip -> r1c1, second -> r1c2, etc.
+   * Extra clips beyond the grid capacity are left unchanged.
+   *
+   * @returns The number of clips that received new geometry.
+   */
+  applyLayout(clipIds: string[], preset: GridLayoutPreset): number {
+    if (clipIds.length === 0) return 0;
+
+    const { width: canvasWidth, height: canvasHeight } = this.project.settings;
+    const cells = resolveLayoutPreset(preset, canvasWidth, canvasHeight);
+
+    let changed = 0;
+    const targetClipIds: string[] = [];
+    const patches: Array<{ id: string; x: number; y: number; width: number; height: number; scaleX: number; scaleY: number }> = [];
+
+    for (let i = 0; i < clipIds.length; i++) {
+      if (i >= cells.length) break;
+      const clip = this.project.timeline.clips.find((c) => c.id === clipIds[i]);
+      if (!clip) continue;
+      if (clip.type === 'audio') continue;
+      targetClipIds.push(clipIds[i]);
+      patches.push({
+        id: clipIds[i],
+        x: cells[i]!.x,
+        y: cells[i]!.y,
+        width: cells[i]!.width,
+        height: cells[i]!.height,
+        scaleX: 1,
+        scaleY: 1,
+      });
+      changed++;
+    }
+
+    if (targetClipIds.length === 0) return 0;
+
+    this.applyClipProperties(
+      targetClipIds,
+      'Apply ' + preset + ' layout',
+      (draft) => {
+        const patch = patches.find((p) => p.id === draft.id);
+        if (!patch) return false;
+        draft.x = patch.x;
+        draft.y = patch.y;
+        draft.width = patch.width;
+        draft.height = patch.height;
+        draft.scaleX = patch.scaleX;
+        draft.scaleY = patch.scaleY;
+        return true;
+      },
+    );
+
+    return changed;
+  }
+
   importMediaAssets(assets: MediaAsset[]): string[] {
     if (assets.length === 0) return [];
     this.execute(new AddMediaAndClipsCommand(assets, [], 'Import media'));
@@ -3021,7 +3181,9 @@ export class EditorController {  private project: Project;
   //  Serialization 
 
   serialize(): string {
-    return JSON.stringify(this.project, null, 2);
+    // Strip UI-only soloed flag — it must not persist.
+    return JSON.stringify(this.project, (_key, value) =>
+      _key === 'soloed' ? undefined : value, 2);
   }
 
   static deserialize(json: string): EditorController {

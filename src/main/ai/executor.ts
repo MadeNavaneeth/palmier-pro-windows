@@ -1205,6 +1205,25 @@ export class ToolExecutor {
         };
       }
 
+      case 'apply_layout': {
+        try {
+          const count = this.editor.applyLayout(args.clipIds, args.preset);
+          return {
+            success: true,
+            data: {
+              preset: args.preset,
+              clipsArranged: count,
+              requested: args.clipIds.length,
+            },
+          };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Layout application failed.',
+          };
+        }
+      }
+
       case 'generate_media': {        const configured = configuredProvidersFor(args.type);
         if (configured.length === 0) {
           return {
@@ -1248,6 +1267,11 @@ export class ToolExecutor {
             id: assetId,
             addedAt: new Date().toISOString(),
             ...probed,
+            generatedBy: {
+              provider: provider.id,
+              model: modelId,
+              costCredits: result.costCredits,
+            },
           });
           return {
             success: true,

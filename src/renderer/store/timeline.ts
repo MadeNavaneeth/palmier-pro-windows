@@ -12,6 +12,7 @@ import type { BlendMode } from '../../shared/types/blend-mode';
 import type { ClipTransition } from '../../shared/editor/transition';
 import type { MediaProbeResult } from '../../main/ipc/media';
 import { normalizePlaybackRate } from '../../shared/editor/playback-rate';
+import type { GridLayoutPreset } from '../../shared/editor/grid-layout';
 import type { SilenceConfig } from '../../shared/audio/silence-detector';
 import { nextEditPoint, previousEditPoint, timelineContentEnd } from '../../shared/editor/edit-points';
 import { createEmptyProject } from '../../shared/types/project';
@@ -111,6 +112,7 @@ export interface TimelineState {
   // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Playback Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   isPlaying: boolean;
   playbackRate: number; // 1 = normal, -1 = reverse, 2 = 2x, etc.
+  loopEnabled: boolean; // loop over inFrame..outFrame during playback (upstream #428)
 
   // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Viewport Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   viewport: TimelineViewport;
@@ -240,6 +242,7 @@ export interface TimelineState {
   setTrackLocked: (trackId: string, locked: boolean) => void;
   setTrackVisible: (trackId: string, visible: boolean) => void;
   setTrackSyncLocked: (trackId: string, syncLocked: boolean) => void;
+  toggleTrackSolo: (trackId: string) => void;
   /** Rename a track; empty restores the generated label (upstream PR #520). */
   setTrackName: (trackId: string, rawName: string) => boolean;
 
@@ -276,6 +279,10 @@ export interface TimelineState {
   setPlayhead: (frame: Frame) => void;
   togglePlayback: () => void;
   setPlaybackRate: (rate: number) => void;
+  toggleLoop: () => void;
+  compactTake: (sourceClipId: string) => boolean;
+  /** Apply a grid layout to the given visual clips (upstream PR #410). */
+  applyLayout: (clipIds: string[], preset: GridLayoutPreset) => number;
   stepFrame: (delta: number) => void;
   /** Jump the playhead to the start of the timeline. */
   goToStart: () => void;
@@ -355,6 +362,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     isPlaying: false,
     playbackRate: 1,
+    loopEnabled: false,
 
     viewport: {
       pixelsPerFrame: 4,
@@ -838,6 +846,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     setTrackVisible: (trackId, visible) => get().controller.setTrackVisible(trackId, visible),
     setTrackSyncLocked: (trackId, syncLocked) =>
       get().controller.setTrackSyncLocked(trackId, syncLocked),
+    toggleTrackSolo: (trackId) => get().controller.toggleTrackSolo(trackId),
     setTrackName: (trackId, rawName) => get().controller.setTrackName(trackId, rawName),
 
     // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Compositing / properties Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
@@ -942,6 +951,9 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     // Normalized at the boundary: a non-finite rate would poison the playback
     // loop's frame accumulator and freeze preview for the session (#212).
     setPlaybackRate: (rate) => set({ playbackRate: normalizePlaybackRate(rate) }),
+    toggleLoop: () => set((s) => ({ loopEnabled: !s.loopEnabled })),
+    compactTake: (sourceClipId) => get().controller.compactTake(sourceClipId),
+    applyLayout: (clipIds, preset) => get().controller.applyLayout(clipIds, preset),
 
     stepFrame: (delta) => {
       const current = get().getPlayhead();
