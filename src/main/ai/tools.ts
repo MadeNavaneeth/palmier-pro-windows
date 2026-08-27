@@ -632,6 +632,21 @@ export const tools = {
     }),
   },
 
+  applyLayout: {
+    name: 'apply_layout',
+    description:
+      'Arrange visual clips into a grid mosaic (upstream #410). Each clip fills an equal cell of the project canvas. '
+      + 'Clip ids are mapped to cells in order (first = top-left). Audio clips are skipped. '
+      + 'Grid presets: grid_2x2 (4 cells), grid_3x3 (9 cells), grid_4x4 (16 cells). '
+      + 'Clips beyond the grid capacity are left untouched. Undoable.',
+    parameters: z.object({
+      clipIds: z.array(z.string().min(1)).min(1)
+        .describe('Clip IDs to arrange, in row-major order (top-left to bottom-right).'),
+      preset: z.enum(['grid_2x2', 'grid_3x3', 'grid_4x4'])
+        .describe('Grid layout preset.'),
+    }),
+  },
+
   importFcpxml: {
     name: 'import_fcpxml',
     description:

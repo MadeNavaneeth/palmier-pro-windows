@@ -35,6 +35,15 @@ export interface MediaAsset {
    * Exports always read `path`.
    */
   proxyPath?: string;
+  /**
+   * Generation provenance (upstream PR #570). Present when the asset was
+   * created by an AI generation provider rather than imported from disk.
+   */
+  generatedBy?: {
+    provider: string;
+    model: string;
+    costCredits?: number;
+  };
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
@@ -169,6 +178,11 @@ export interface Clip {
   saturation?: number;
   /** Hue rotation in degrees, -180 to 180. Default 0. */
   hueRotation?: number;
+  /**
+   * Invert colors effect (upstream PR #408). Complements RGB channels while
+   * preserving alpha, producing a flash/negative look. Default false.
+   */
+  invertColors?: boolean;
 }
 
 export type TrackType = 'video' | 'audio';
@@ -179,6 +193,8 @@ export interface Track {
   type: TrackType;
   locked: boolean;
   visible: boolean; // video: visibility, audio: mute
+  /** UI-only solo state — never persisted, cleared on project load. */
+  soloed?: boolean;
   /**
    * Participates in ripple edits initiated on another track. Optional so
    * projects saved before sync lock support retain the professional default.
@@ -199,6 +215,8 @@ export interface Timeline {
    * (startFrame, id) when written.
    */
   markers?: TimelineMarker[];
+  /** Comp track id for take auditioning (upstream PR #428). */
+  compTrackId?: string;
 }
 
 // ─── Project ─────────────────────────────────────────────────────────────────

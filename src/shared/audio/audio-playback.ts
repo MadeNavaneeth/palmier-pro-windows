@@ -13,7 +13,7 @@ import { clampPan } from './pan';
 
 export interface AudioPlanInput {
   clips: readonly Clip[];
-  tracks: readonly { id: string; visible: boolean }[];
+  tracks: readonly { id: string; visible: boolean; soloed?: boolean }[];
   assets: readonly Pick<MediaAsset, 'id' | 'path'>[];
   /** Asset paths known to be missing on disk. */
   offlinePaths?: ReadonlySet<string>;
@@ -39,6 +39,7 @@ export interface AudioPlaybackEntry {
 export function computeAudioPlan(input: AudioPlanInput): AudioPlaybackEntry[] {
   if (Math.abs(input.playbackRate) !== 1) return [];
 
+  const anySoloed = input.tracks.some((t) => t.soloed);
   const trackById = new Map(input.tracks.map((t) => [t.id, t]));
   const assetPathById = new Map(input.assets.map((a) => [a.id, a.path]));
   const offline = input.offlinePaths;
@@ -48,6 +49,8 @@ export function computeAudioPlan(input: AudioPlanInput): AudioPlaybackEntry[] {
     if (clip.type !== 'audio' || clip.muted) continue;
     const track = trackById.get(clip.trackId);
     if (!track || track.visible === false) continue;
+    // Solo filter: when any track is soloed, only soloed tracks play.
+    if (anySoloed && !track.soloed) continue;
 
     const end = clip.startFrame + clip.durationFrames;
     if (input.playhead < clip.startFrame || input.playhead >= end) continue;

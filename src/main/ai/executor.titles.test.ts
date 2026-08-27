@@ -272,6 +272,52 @@ describe('generate_media tool (PR #406 registry wiring)', () => {
     });
   });
 
+  it('populates generatedBy with provider, model, and costCredits on the asset (upstream #570)', async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'palmier-gen-'));
+    const wavPath = path.join(tmpDir, 'out.wav');
+    await fs.writeFile(wavPath, makeWav());
+
+    const editor = new EditorController();
+    const executor = new ToolExecutor(editor);
+
+    setGenerationProviders([{
+      id: 'costlygen',
+      name: 'CostlyGen',
+      supportedTypes: ['image', 'video', 'audio'],
+      isConfigured: () => true,
+      configure: () => {},
+      getModels: () => ['costly-model-v2'],
+      generate: async (request) => ({
+        id: request.id,
+        status: 'completed',
+        outputPath: wavPath,
+        durationSeconds: 1,
+        costCredits: 42,
+      }),
+      cancel: async () => {},
+    }]);
+
+    const result = await executor.execute('generate_media', {
+      type: 'audio', prompt: 'test', providerId: 'costlygen', durationSeconds: 1,
+    });
+
+    expect(result.success).toBe(true);
+    const asset = editor.getMedia()[0];
+    expect(asset.generatedBy).toEqual({
+      provider: 'costlygen',
+      model: 'costly-model-v2',
+      costCredits: 42,
+    });
+
+    const json = editor.serialize();
+    const restored = new EditorController(JSON.parse(json));
+    expect(restored.getMedia()[0].generatedBy).toEqual({
+      provider: 'costlygen',
+      model: 'costly-model-v2',
+      costCredits: 42,
+    });
+  });
+
   it('surfaces a provider failure as a failed tool call', async () => {
     const editor = new EditorController();
     const executor = new ToolExecutor(editor);

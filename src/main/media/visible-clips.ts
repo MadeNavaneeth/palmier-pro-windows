@@ -17,11 +17,18 @@ export function visualClipsAtFrame(project: Project, frameIndex: Frame): Clip[] 
     project.timeline.tracks.map((track) => [track.id, track] as const),
   );
 
+  // Solo filter: when any track is soloed, only soloed tracks are active.
+  const anySoloed = project.timeline.tracks.some((t) => t.soloed);
+  const activeTrackIds = anySoloed
+    ? new Set(project.timeline.tracks.filter((t) => t.soloed && t.visible !== false).map((t) => t.id))
+    : null; // null = no solo, all visible tracks active
+
   const decorated: Array<{ clip: Clip; order: number }> = [];
   for (const clip of project.timeline.clips) {
     if (clip.type === 'audio') continue;
     const track = trackById.get(clip.trackId);
     if (!track || track.visible === false) continue;
+    if (activeTrackIds && !activeTrackIds.has(track.id)) continue;
     const clipEnd = clip.startFrame + clip.durationFrames;
     if (frameIndex < clip.startFrame || frameIndex >= clipEnd) continue;
     decorated.push({ clip, order: track.order });

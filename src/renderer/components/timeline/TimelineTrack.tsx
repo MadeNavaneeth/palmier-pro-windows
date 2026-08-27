@@ -42,6 +42,7 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
   const controller = useTimelineStore((s) => s.controller);
   const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
   const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
+  const anySoloed = useTimelineStore((s) => s.getTracks().some((t) => t.soloed));
 
   // Frame where a dragged asset would land (null when not dragging over).
   const [dropFrame, setDropFrame] = useState<number | null>(null);
@@ -198,10 +199,11 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
   const lockOverlay = track.locked ? 'opacity-50 pointer-events-none' : '';
   const dropX =
     dropFrame !== null ? (dropFrame - viewport.scrollFrame) * viewport.pixelsPerFrame : 0;
+  const soloDim = anySoloed && !track.soloed;
 
   return (
     <div
-      className={`relative h-12 border-b border-surface-3 ${bgColor} ${lockOverlay} ${dropFrame !== null ? 'ring-1 ring-inset ring-accent/40' : ''}`}
+      className={`relative h-12 border-b border-surface-3 ${bgColor} ${lockOverlay} ${soloDim ? 'opacity-30 saturate-[0.4]' : ''} ${dropFrame !== null ? 'ring-1 ring-inset ring-accent/40' : ''}`}
       onClick={handleTrackClick}
       onMouseDown={handleTrackMouseDown}
       onDoubleClick={handleTrackDoubleClick}

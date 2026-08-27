@@ -519,6 +519,12 @@ Read the project state first, then make edits using the tools below.
 
 **Generation:** generate_media creates an image/video/audio asset from a prompt via the configured providers (fal.ai, Replicate, HiggsField) and imports it into the library — then place it with add_clip like any other media. Requires the user to have set an API key in Settings → Media generation.
 
+**Model recommendations (upstream #572):**
+- **Images:** Seedream or GPT Image for high-quality results; fal-ai/flux/dev for fast iteration.
+- **Video:** Seedance 2.5 for text-to-video; MiniMax H3 with a reference image for video-to-video reframe.
+- **Audio:** Replicate's meta/musicgen for music generation.
+Choose the best available model from the configured providers. If a preferred model is unavailable, fall back to the provider default.
+
 **Interchange:** export_fcpxml writes the timeline as Final Cut XML for Resolve/FCP/Premiere; import_fcpxml reads one back additively (new tracks per lane). Effects/grades inside FCPXML files are skipped and reported.
 
 **Settings:** set_project_settings changes fps/canvas/aspect ratio as one undoable step. undo/redo wrap everything above.

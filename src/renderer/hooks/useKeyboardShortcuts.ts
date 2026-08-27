@@ -120,6 +120,12 @@ export function useKeyboardShortcuts() {
       case 'splitAtPlayhead':
         timeline.splitAtPlayhead();
         return;
+      case 'compactTake': {
+        // Compact the first selected clip onto the comp track (upstream #428).
+        const selected = Array.from(timeline.selectedClipIds);
+        if (selected.length > 0) timeline.compactTake(selected[0]);
+        return;
+      }
       case 'deleteSelected':
         // Markers delete before clips (upstream PR #542): a selected marker
         // under Delete must not also be the frame where a clip vanishes.

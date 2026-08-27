@@ -38,6 +38,7 @@ export function Inspector() {
   const setClipFade = useTimelineStore((s) => s.setClipFade);
   const setClipTransition = useTimelineStore((s) => s.setClipTransition);
   const removeSilenceForClip = useTimelineStore((s) => s.removeSilenceForClip);
+  const controller = useTimelineStore((s) => s.controller);
   const fps = useTimelineStore((s) => s.project.settings.fps);
   const project = useTimelineStore((s) => s.project);
   const projectName = useProjectStore((s) => s.name);
@@ -148,6 +149,10 @@ export function Inspector() {
           {clip.label || clip.id}
         </div>
 
+        <ColorLabelPicker clipId={clip.id} currentColor={clip.color} />
+
+        <GenerationInfo clipId={clip.id} />
+
         {!isAudio && (
           <>
             {/* Blend mode */}
@@ -246,6 +251,27 @@ export function Inspector() {
                   <option value="down">From bottom</option>
                 </select>
               </div>
+            </div>
+
+            {/* Invert Colors (upstream PR #408) */}
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={clip.invertColors ?? false}
+                  onChange={(e) => {
+                    if (clip) {
+                      controller.applyClipProperties([clip.id], 'Invert colors', (draft) => {
+                        if (e.target.checked) draft.invertColors = true;
+                        else delete draft.invertColors;
+                        return true;
+                      });
+                    }
+                  }}
+                  className="accent-[var(--color-accent)]"
+                />
+                <span className="text-2xs text-text-muted uppercase tracking-wide">Invert Colors</span>
+              </label>
             </div>
           </>
         )}
@@ -551,6 +577,7 @@ function MultiClipInspector() {
   const setSelectedClipsBlendMode = useTimelineStore((s) => s.setSelectedClipsBlendMode);
   const setSelectedClipsOpacity = useTimelineStore((s) => s.setSelectedClipsOpacity);
   const setSelectedClipsFade = useTimelineStore((s) => s.setSelectedClipsFade);
+  const controller = useTimelineStore((s) => s.controller);
   const fps = useTimelineStore((s) => s.project.settings.fps);
 
   const clips = getSelectedClips();
@@ -649,6 +676,40 @@ function MultiClipInspector() {
             </div>
           </div>
         </div>
+
+        {visualClips.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <label className="text-2xs text-text-muted uppercase tracking-wide">Label Color</label>
+            <div className="flex flex-wrap gap-1">
+              {CLIP_LABEL_COLORS.map(({ color, label }) => (
+                <button
+                  key={label}
+                  title={label}
+                  onClick={() => {
+                    controller.applyClipProperties(
+                      visualClips.map((c) => c.id),
+                      'Set clip color',
+                      (draft) => {
+                        if (color) draft.color = color;
+                        else delete draft.color;
+                        return true;
+                      },
+                    );
+                  }}
+                  className="h-5 w-5 rounded-full border-2 border-transparent transition hover:border-white/40"
+                  style={{
+                    backgroundColor: color || '#1e1e2e',
+                    ...(color ? {} : {
+                      backgroundImage: 'linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%), linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%)',
+                      backgroundSize: '6px 6px',
+                      backgroundPosition: '0 0, 3px 3px',
+                    }),
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
 
         {visualClips.length === 0 && (
           <p className="text-2xs text-text-muted">
@@ -902,6 +963,95 @@ function InspectorSection({
   );
 }
 
+
+/**
+ * Color label picker — assigns a visual tag color to clips for timeline organization.
+ * Uses the existing clip.color field (hex string).
+ */
+const CLIP_LABEL_COLORS = [
+  { color: '', label: 'None' },
+  { color: '#ef4444', label: 'Red' },
+  { color: '#f97316', label: 'Orange' },
+  { color: '#eab308', label: 'Yellow' },
+  { color: '#22c55e', label: 'Green' },
+  { color: '#06b6d4', label: 'Cyan' },
+  { color: '#3b82f6', label: 'Blue' },
+  { color: '#8b5cf6', label: 'Purple' },
+  { color: '#ec4899', label: 'Pink' },
+  { color: '#78716c', label: 'Gray' },
+];
+
+function ColorLabelPicker({ clipId, currentColor }: { clipId: string; currentColor?: string }) {
+  const controller = useTimelineStore((s) => s.controller);
+
+  const handleColorChange = (color: string) => {
+    controller.applyClipProperties([clipId], 'Set clip color', (draft) => {
+      if (color) draft.color = color;
+      else delete draft.color;
+      return true;
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-white/10 pt-1">
+      <label className="text-2xs text-text-muted uppercase tracking-wide">Label</label>
+      <div className="flex flex-wrap gap-1">
+        {CLIP_LABEL_COLORS.map(({ color, label }) => (
+          <button
+            key={label}
+            title={label}
+            onClick={() => handleColorChange(color)}
+            className={`h-5 w-5 rounded-full border-2 transition ${
+              (currentColor ?? '') === color
+                ? 'border-white scale-110'
+                : 'border-transparent hover:border-white/40'
+            }`}
+            style={{
+              backgroundColor: color || '#1e1e2e',
+              ...(color ? {} : {
+                backgroundImage: 'linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%), linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%)',
+                backgroundSize: '6px 6px',
+                backgroundPosition: '0 0, 3px 3px',
+              }),
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Generation provenance display (upstream PR #570).
+ * Shows provider, model, and cost when the clip was AI-generated.
+ */
+function GenerationInfo({ clipId }: { clipId: string }) {
+  const asset = useTimelineStore((s) => {
+    const clip = s.project.timeline.clips.find((c) => c.id === clipId);
+    if (!clip) return undefined;
+    return s.project.media.find((m) => m.id === clip.assetId);
+  });
+
+  if (!asset?.generatedBy) return null;
+
+  const { provider, model, costCredits } = asset.generatedBy;
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-white/10 pt-1">
+      <label className="text-2xs text-text-muted uppercase tracking-wide">Generated</label>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+        <span className="text-text-secondary">
+          {provider} / {model}
+        </span>
+        {typeof costCredits === "number" && (
+          <span className="text-text-muted tabular-nums">
+            {costCredits} cr
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 function InspectorValue({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center gap-3 text-[10px]">

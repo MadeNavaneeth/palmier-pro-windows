@@ -41,6 +41,8 @@ export interface GenerationResult {
   error?: string;
   /** Processing time in ms */
   elapsedMs?: number;
+  /** Backend credit charge, if reported by the provider (upstream #570). */
+  costCredits?: number;
   /** Provider-specific metadata */
   metadata?: Record<string, unknown>;
 }

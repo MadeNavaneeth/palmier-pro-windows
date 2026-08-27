@@ -50,6 +50,7 @@ export type ShortcutId =
   | 'previousEdit'
   | 'nextEdit'
   | 'splitAtPlayhead'
+  | 'compactTake'
   | 'deleteSelected'
   | 'rippleDeleteSelected'
   | 'extractMarkedRange'
@@ -102,6 +103,7 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
 
   // ── Editing ────────────────────────────────────────────────────────────────
   { id: 'splitAtPlayhead', label: 'Split clips at the playhead', category: 'Editing', bindings: [{ key: 'c' }] },
+  { id: 'compactTake', label: 'Compact selected take onto comp track', category: 'Editing', bindings: [{ key: 'y' }] },
   {
     id: 'deleteSelected',
     label: 'Delete selected clips (leave a gap)',
