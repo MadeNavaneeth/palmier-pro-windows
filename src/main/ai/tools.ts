@@ -616,13 +616,28 @@ export const tools = {
     ),
   },
 
+  setClipEdgeEffects: {
+    name: 'set_clip_edge_effects',
+    description:
+      'Adjust DaVinci-style edge rounding (corner radius) and edge softness (feathered alpha) on visual clips. '
+      + 'Both values are normalized 0-1. Passing 0 for both clears the effects. '
+      + 'Applied in the compositor after crop/colour-grade but before transform/opacity.',
+    parameters: z.object({
+      clipId: z.string().describe('The video or image clip to adjust.'),
+      edgeRounding: z.number().finite().min(0).max(1).optional()
+        .describe('Corner radius as fraction of 0-1. 0 = square corners, 1 = fully rounded.'),
+      edgeSoftness: z.number().finite().min(0).max(1).optional()
+        .describe('Edge feathering as fraction of 0-1. 0 = hard edge, 1 = maximum feather.'),
+    }),
+  },
+
   setClipMotion: {
     name: 'set_clip_motion',
     description:
-      'Animate a video/image clip\'s position with linear keyframes (#535 groundwork): at least two {frame, value} points per axis; values interpolate between frames and clamp at the ends. An empty points array clears that axis. Titles are static in v1.',
+      'Animate a video/image clip\'s position with keyframes (#535 v1.5): at least two {frame, value} points per axis; values interpolate between frames with easing and clamp at the ends. An empty points array clears that axis. Titles are static in v1. Scale axes (sx/sy) default to 1.0 (identity).',
     parameters: z.object({
       clipId: z.string().describe('The video or image clip to animate.'),
-      axis: z.enum(['x', 'y', 'r']).describe('Which axis to animate: x position, y position, or rotation (degrees).'),
+      axis: z.enum(['x', 'y', 'r', 'sx', 'sy']).describe('Which axis to animate: x position, y position, rotation (degrees), scale X, or scale Y.'),
       points: z.array(z.object({
         frame: z.number().int().min(0).describe('Timeline frame for this keyframe.'),
         value: z.number().finite().describe('Position value in pixels.'),

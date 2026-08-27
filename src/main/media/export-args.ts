@@ -25,6 +25,7 @@ import { colorGradeOf, toFfmpegEq } from '../../shared/editor/color-grade';
 import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
 import { isCropped, cropRect } from '../../shared/media/source-crop';
 import { motionExpression } from '../../shared/media/motion';
+import { hasEdgeEffects, buildEdgeGeqExpr } from '../../shared/editor/edge-effects';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -436,9 +437,18 @@ function buildFilterGraph(
       `[${inputIdx}:v]trim=start=${trimStart.toFixed(4)}:end=${trimEnd.toFixed(4)},setpts=PTS-STARTPTS[${trimmedLabel}]`,
     );
 
-    // Scale/transform
+    // Scale/transform — animated scale uses FFmpeg expressions in output seconds.
+    const scaleXExpr = motionExpression(clip.motionScaleX, rotSecPerFrame);
+    const scaleYExpr = motionExpression(clip.motionScaleY, rotSecPerFrame);
+    const hasAnimatedScale = scaleXExpr !== undefined || scaleYExpr !== undefined;
     const scaledW = Math.round(clip.width * clip.scaleX);
     const scaledH = Math.round(clip.height * clip.scaleY);
+    const scaleWExpr = scaleXExpr
+      ? `(${clip.width.toFixed(1)})*(${scaleXExpr})`
+      : `${scaledW}`;
+    const scaleHExpr = scaleYExpr
+      ? `(${clip.height.toFixed(1)})*(${scaleYExpr})`
+      : `${scaledH}`;
 
     // Static crop (#568) in source-pixel space, ahead of scale — matching the
     // preview's proportional sub-rect of the uniformly scaled decode. Skipped
@@ -475,8 +485,23 @@ function buildFilterGraph(
         if (eq) colorChain = `,${eq}`;
       }
 
+      // Edge rounding and softness (#369): geq filter on the alpha channel,
+      // applied after scale/rotate/colour-grade but before fades and overlay.
+      let edgeChain = '';
+      if (hasEdgeEffects(clip)) {
+        const edgeExpr = buildEdgeGeqExpr(
+          clip.edgeRounding ?? 0,
+          clip.edgeSoftness ?? 0,
+          scaledW,
+          scaledH,
+        );
+        if (edgeExpr && edgeExpr !== 'alpha(X,Y)') {
+          edgeChain = `,geq='r=r(X,Y):g=g(X,Y):b=b(X,Y):a=${edgeExpr}'`;
+        }
+      }
+
       filters.push(
-        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale=${scaledW}:${scaledH}:flags=bilinear${rotateChain}${colorChain}${fadeChain}[${scaledLabel}]`,
+        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale='${scaleWExpr}':'${scaleHExpr}':flags=bilinear${rotateChain}${colorChain}${edgeChain}${fadeChain}[${scaledLabel}]`,
       );
 
     // Overlay with enable condition (time window). Motion tracks (#535 v1)

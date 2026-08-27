@@ -1089,6 +1089,8 @@ export class ToolExecutor {
           this.editor.applyClipProperties([args.clipId], 'Clear motion', (draft) => {
             if (args.axis === 'x') delete draft.motionX;
             else if (args.axis === 'y') delete draft.motionY;
+            else if (args.axis === 'sx') delete draft.motionScaleX;
+            else if (args.axis === 'sy') delete draft.motionScaleY;
             else delete draft.motionRot;
             return true;
           });
@@ -1101,6 +1103,8 @@ export class ToolExecutor {
         this.editor.applyClipProperties([args.clipId], 'Set motion', (draft) => {
           if (args.axis === 'x') draft.motionX = track;
           else if (args.axis === 'y') draft.motionY = track;
+          else if (args.axis === 'sx') draft.motionScaleX = track;
+          else if (args.axis === 'sy') draft.motionScaleY = track;
           else draft.motionRot = track;
           return true;
         });
@@ -1132,6 +1136,33 @@ export class ToolExecutor {
             clipId: args.clipId,
             ...(sanitized ? { crop: sanitized } : {}),
             ...(sanitized ? {} : { cleared: true }),
+          },
+        };
+      }
+
+      case 'set_clip_edge_effects': {
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'video' && clip.type !== 'image') {
+          return { success: false, error: 'Edge effects apply to video and image clips only.' };
+        }
+        const rounding = args.edgeRounding;
+        const softness = args.edgeSoftness;
+        const hasAny = (rounding !== undefined && rounding > 0) || (softness !== undefined && softness > 0);
+        this.editor.applyClipProperties([clip.id], 'Set edge effects', (draft) => {
+          if (rounding !== undefined && rounding > 0) draft.edgeRounding = Math.min(1, Math.max(0, rounding));
+          else if (rounding === 0) delete draft.edgeRounding;
+          if (softness !== undefined && softness > 0) draft.edgeSoftness = Math.min(1, Math.max(0, softness));
+          else if (softness === 0) delete draft.edgeSoftness;
+          return true;
+        });
+        return {
+          success: true,
+          data: {
+            clipId: clip.id,
+            edgeRounding: clip.edgeRounding,
+            edgeSoftness: clip.edgeSoftness,
+            cleared: !hasAny,
           },
         };
       }

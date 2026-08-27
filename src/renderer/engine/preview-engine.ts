@@ -342,23 +342,101 @@ export class PreviewEngine {
       this.ctx.filter = toCanvasFilter(grade);
     }
 
-    // Transform: translate to position (motion tracks override static x/y,
-    // keyframes v1), rotate around anchor, scale
+    // Transform: translate to position, rotate, scale — all driven by
+    // motion keyframes when present, falling back to static clip values.
     const mx = evaluateMotion(clip.motionX, currentFrame) ?? clip.x;
     const my = evaluateMotion(clip.motionY, currentFrame) ?? clip.y;
+    const mRot = evaluateMotion(clip.motionRot, currentFrame) ?? clip.rotation;
+    const mScaleX = evaluateMotion(clip.motionScaleX, currentFrame);
+    const mScaleY = evaluateMotion(clip.motionScaleY, currentFrame);
+    const sx = mScaleX ?? clip.scaleX;
+    const sy = mScaleY ?? clip.scaleY;
     const cx = mx + clip.anchorX;
     const cy = my + clip.anchorY;
 
     this.ctx.translate(cx, cy);
-    if (clip.rotation !== 0) {
-      this.ctx.rotate((clip.rotation * Math.PI) / 180);
+    if (mRot !== 0) {
+      this.ctx.rotate((mRot * Math.PI) / 180);
     }
-    this.ctx.scale(clip.scaleX, clip.scaleY);
+    this.ctx.scale(sx, sy);
     this.ctx.translate(-clip.anchorX, -clip.anchorY);
 
-    // Draw
-    this.ctx.drawImage(bitmap, 0, 0, clip.width, clip.height);
+    // Draw with optional edge rounding / softness (#369).
+    const hasEdgeEffects = (clip.edgeRounding ?? 0) > 0 || (clip.edgeSoftness ?? 0) > 0;
+    if (hasEdgeEffects) {
+      this.drawWithEdgeEffects(bitmap, clip.width, clip.height, clip.edgeRounding ?? 0, clip.edgeSoftness ?? 0);
+    } else {
+      this.ctx.drawImage(bitmap, 0, 0, clip.width, clip.height);
+    }
     this.ctx.restore();
+  }
+
+  /**
+   * Draws a bitmap with DaVinci-style edge rounding (corner radius) and
+   * edge softness (feathered alpha).  Both are normalized 0–1.  Uses an
+   * offscreen canvas so the main compositor context stays clean.
+   */
+  private drawWithEdgeEffects(
+    bitmap: ImageBitmap | HTMLCanvasElement,
+    w: number,
+    h: number,
+    rounding: number,
+    softness: number,
+  ): void {
+    const radius = Math.min(rounding, 1) * Math.min(w, h) * 0.5;
+    const softPx = Math.min(Math.max(softness, 0), 1) * Math.min(w, h) * 0.5;
+
+    // Offscreen canvas for the alpha treatment.
+    const off = document.createElement('canvas');
+    off.width = Math.ceil(w);
+    off.height = Math.ceil(h);
+    const oc = off.getContext('2d')!;
+
+    // 1. Draw the source image.
+    oc.drawImage(bitmap, 0, 0, w, h);
+
+    // 2. Edge softness: feathered alpha ring at the boundary.
+    if (softPx > 0) {
+      oc.globalCompositeOperation = 'destination-in';
+      const grad = oc.createRadialGradient(
+        w / 2, h / 2, Math.max(w, h) * 0.5 - softPx,
+        w / 2, h / 2, Math.max(w, h) * 0.5,
+      );
+      grad.addColorStop(0, 'rgba(0,0,0,1)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      oc.fillStyle = grad;
+      oc.fillRect(0, 0, w, h);
+      oc.globalCompositeOperation = 'source-over';
+    }
+
+    // 3. Edge rounding: clip to rounded rect, keep only what's inside.
+    if (radius > 0) {
+      oc.globalCompositeOperation = 'destination-in';
+      oc.beginPath();
+      // Use roundRect if available (Chromium 99+), otherwise manual path.
+      const ctxAny = oc as any;
+      if (typeof ctxAny.roundRect === 'function') {
+        ctxAny.roundRect(0, 0, w, h, radius);
+      } else {
+        const r = Math.min(radius, Math.min(w, h) / 2);
+        oc.moveTo(r, 0);
+        oc.lineTo(w - r, 0);
+        oc.quadraticCurveTo(w, 0, w, r);
+        oc.lineTo(w, h - r);
+        oc.quadraticCurveTo(w, h, w - r, h);
+        oc.lineTo(r, h);
+        oc.quadraticCurveTo(0, h, 0, h - r);
+        oc.lineTo(0, r);
+        oc.quadraticCurveTo(0, 0, r, 0);
+        oc.closePath();
+      }
+      oc.fillStyle = 'rgba(0,0,0,1)';
+      oc.fill();
+      oc.globalCompositeOperation = 'source-over';
+    }
+
+    // 4. Composite the treated image onto the main context.
+    this.ctx.drawImage(off, 0, 0);
   }
 
   private async getFrameBitmap(clip: Clip, timestampSec: number): Promise<ImageBitmap | null> {

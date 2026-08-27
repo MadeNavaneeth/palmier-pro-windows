@@ -411,7 +411,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
       null,
     );
     const graph = args.find((arg) => arg.includes('trim='))!;
-    expect(graph).toContain('scale=1920:1080');
+    expect(graph).toContain("scale='1920':'1080'");
     expect(graph).not.toContain(GEOMETRY);
   });
 
