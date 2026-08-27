@@ -40,3 +40,4 @@ npm-debug.log*
 # Misc
 *.tsbuildinfo
 scripts/ui-probe-report.json
+.freebuff/
