@@ -273,6 +273,62 @@ export function Inspector() {
                 <span className="text-2xs text-text-muted uppercase tracking-wide">Invert Colors</span>
               </label>
             </div>
+
+            {/* Edge rounding & softness (upstream PR #369) */}
+            {(() => {
+              const roundingPct = Math.round((clip.edgeRounding ?? 0) * 100);
+              const softnessPct = Math.round((clip.edgeSoftness ?? 0) * 100);
+              return (
+                <div className="flex flex-col gap-2 pt-1">
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-2xs text-text-muted uppercase tracking-wide">Edge Rounding</label>
+                      <span className="text-2xs text-text-secondary tabular-nums">{roundingPct}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={roundingPct}
+                      onChange={(e) => {
+                        if (clip) {
+                          const v = Number(e.target.value) / 100;
+                          controller.applyClipProperties([clip.id], 'Edge rounding', (draft) => {
+                            if (v > 0) draft.edgeRounding = v;
+                            else delete draft.edgeRounding;
+                            return true;
+                          });
+                        }
+                      }}
+                      className="w-full accent-accent"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-2xs text-text-muted uppercase tracking-wide">Edge Softness</label>
+                      <span className="text-2xs text-text-secondary tabular-nums">{softnessPct}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={softnessPct}
+                      onChange={(e) => {
+                        if (clip) {
+                          const v = Number(e.target.value) / 100;
+                          controller.applyClipProperties([clip.id], 'Edge softness', (draft) => {
+                            if (v > 0) draft.edgeSoftness = v;
+                            else delete draft.edgeSoftness;
+                            return true;
+                          });
+                        }
+                      }}
+                      className="w-full accent-accent"
+                    />
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
 
@@ -317,39 +373,44 @@ function MotionControls({ clipId }: { clipId: string }) {
   );
 
   if (!clip) return null;
+  type MotionAxis = 'x' | 'y' | 'r' | 'sx' | 'sy';
   type MotionPointWithEasing = { frame: number; value: number; easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' };
-  const axes: Array<{ axis: 'x' | 'y' | 'r'; label: string; track: MotionPointWithEasing[] | undefined; base: number }> = [
+  const axes: Array<{ axis: MotionAxis; label: string; track: MotionPointWithEasing[] | undefined; base: number }> = [
     { axis: 'x', label: 'X', track: clip.motionX, base: clip.x },
     { axis: 'y', label: 'Y', track: clip.motionY, base: clip.y },
     { axis: 'r', label: 'Rotation', track: clip.motionRot, base: clip.rotation },
+    { axis: 'sx', label: 'Scale X', track: clip.motionScaleX, base: clip.scaleX },
+    { axis: 'sy', label: 'Scale Y', track: clip.motionScaleY, base: clip.scaleY },
   ];
 
-  const setAxis = (axis: 'x' | 'y' | 'r', points: Array<{ frame: number; value: number }> | undefined) => {
-    applyClipProperties([clipId], axis === 'x' ? 'Motion X' : 'Motion Y', (draft) => {
+  const setAxis = (axis: MotionAxis, points: Array<{ frame: number; value: number }> | undefined) => {
+    const motionField = axis === 'x' ? 'motionX' : axis === 'y' ? 'motionY' : axis === 'sx' ? 'motionScaleX' : axis === 'sy' ? 'motionScaleY' : 'motionRot';
+    applyClipProperties([clipId], `Motion ${axis.toUpperCase()}`, (draft) => {
       if (points) {
-        if (axis === 'x') draft.motionX = points;
-        else draft.motionY = points;
-      } else if (axis === 'x') delete draft.motionX;
-      else delete draft.motionY;
+        (draft as any)[motionField] = points;
+      } else {
+        delete (draft as any)[motionField];
+      }
       return true;
     });
   };
 
-  const addKeyframe = (axis: 'x' | 'y' | 'r') => {
+  const addKeyframe = (axis: MotionAxis) => {
     const info = axes.find((a) => a.axis === axis)!;
     const evaluated = evaluateMotion(info.track, playhead) ?? info.base;
     const others = (info.track ?? []).filter((p) => p.frame !== playhead);
-    setAxis(axis, [...others, { frame: playhead, value: Math.round(evaluated) }]);
+    const newVal = axis === 'sx' || axis === 'sy' ? parseFloat(evaluated.toFixed(3)) : Math.round(evaluated);
+    setAxis(axis, [...others, { frame: playhead, value: newVal }]);
   };
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1" data-motion-controls>
       <label className="text-2xs uppercase tracking-wide text-text-muted">Motion</label>
-      <Hint>Keyframes interpolate the clip's position linearly between frames.</Hint>
-      {axes.map(({ axis, label, track }) => (
+      <Hint>Keyframes interpolate position, rotation, and scale between frames.</Hint>
+      {axes.map(({ axis, label, track, base }) => (
         <div key={axis} className="rounded border border-surface-3 bg-surface-2 px-2 py-1">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-medium text-text-secondary">{label} position</span>
+            <span className="text-[10px] font-medium text-text-secondary">{label}</span>
             <div className="flex items-center gap-1">
               {(track ?? []).map((point) => (
                 <button

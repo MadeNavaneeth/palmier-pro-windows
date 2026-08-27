@@ -151,6 +151,17 @@ export interface Clip {
   /** Static source crop as edge fractions, applied before position/scale (#568). */
   crop?: { left: number; right: number; top: number; bottom: number };
   /**
+   * Edge rounding (corner radius) as normalized 0–1 (#369). 0 = square corners,
+   * 1 = fully rounded (ellipse). Applied in compositor after crop/effects,
+   * before transform/opacity. Visual clips only.
+   */
+  edgeRounding?: number;
+  /**
+   * Edge softness (feathered alpha) as normalized 0–1 (#369). 0 = hard edge,
+   * 1 = maximum feather. Applied together with edgeRounding. Visual clips only.
+   */
+  edgeSoftness?: number;
+  /**
    * Position motion tracks (keyframes v1): linear x/y over the timeline.
    * Video/image clips only; titles are static in v1. Absent = static x/y.
    */
@@ -158,6 +169,10 @@ export interface Clip {
   motionY?: Array<{ frame: number; value: number }>;
   /** Rotation motion track in degrees (keyframes v1). */
   motionRot?: Array<{ frame: number; value: number }>;
+  /** Scale X motion track (keyframes v1). Default 1 (identity). */
+  motionScaleX?: Array<{ frame: number; value: number }>;
+  /** Scale Y motion track (keyframes v1). Default 1 (identity). */
+  motionScaleY?: Array<{ frame: number; value: number }>;
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */
