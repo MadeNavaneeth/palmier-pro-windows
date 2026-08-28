@@ -1148,21 +1148,37 @@ export class ToolExecutor {
         }
         const rounding = args.edgeRounding;
         const softness = args.edgeSoftness;
-        const hasAny = (rounding !== undefined && rounding > 0) || (softness !== undefined && softness > 0);
-        this.editor.applyClipProperties([clip.id], 'Set edge effects', (draft) => {
-          if (rounding !== undefined && rounding > 0) draft.edgeRounding = Math.min(1, Math.max(0, rounding));
-          else if (rounding === 0) delete draft.edgeRounding;
-          if (softness !== undefined && softness > 0) draft.edgeSoftness = Math.min(1, Math.max(0, softness));
-          else if (softness === 0) delete draft.edgeSoftness;
+        const receipt = this.editor.applyClipProperties([clip.id], 'Set edge effects', (draft) => {
+          if (rounding !== undefined) {
+            if (rounding === 0) delete draft.edgeRounding;
+            else draft.edgeRounding = rounding;
+          }
+          if (softness !== undefined) {
+            if (softness === 0) delete draft.edgeSoftness;
+            else draft.edgeSoftness = softness;
+          }
           return true;
         });
+        if (receipt.changedClipIds.length === 0) {
+          return {
+            success: true,
+            data: {
+              clipId: clip.id,
+              changed: false,
+              edgeRounding: clip.edgeRounding ?? 0,
+              edgeSoftness: clip.edgeSoftness ?? 0,
+            },
+          };
+        }
+        const updated = this.editor.getClips().find((candidate) => candidate.id === clip.id);
         return {
           success: true,
           data: {
             clipId: clip.id,
-            edgeRounding: clip.edgeRounding,
-            edgeSoftness: clip.edgeSoftness,
-            cleared: !hasAny,
+            changed: true,
+            edgeRounding: updated?.edgeRounding ?? 0,
+            edgeSoftness: updated?.edgeSoftness ?? 0,
+            cleared: (updated?.edgeRounding ?? 0) === 0 && (updated?.edgeSoftness ?? 0) === 0,
           },
         };
       }
