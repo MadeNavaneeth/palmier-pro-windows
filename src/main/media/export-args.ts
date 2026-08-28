@@ -440,7 +440,6 @@ function buildFilterGraph(
     // Scale/transform — animated scale uses FFmpeg expressions in output seconds.
     const scaleXExpr = motionExpression(clip.motionScaleX, rotSecPerFrame);
     const scaleYExpr = motionExpression(clip.motionScaleY, rotSecPerFrame);
-    const hasAnimatedScale = scaleXExpr !== undefined || scaleYExpr !== undefined;
     const scaledW = Math.round(clip.width * clip.scaleX);
     const scaledH = Math.round(clip.height * clip.scaleY);
     const scaleWExpr = scaleXExpr

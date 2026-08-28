@@ -628,7 +628,10 @@ export const tools = {
         .describe('Corner radius as fraction of 0-1. 0 = square corners, 1 = fully rounded.'),
       edgeSoftness: z.number().finite().min(0).max(1).optional()
         .describe('Edge feathering as fraction of 0-1. 0 = hard edge, 1 = maximum feather.'),
-    }),
+    }).refine(
+      (op) => op.edgeRounding !== undefined || op.edgeSoftness !== undefined,
+      { message: 'Pass edgeRounding or edgeSoftness.' },
+    ),
   },
 
   setClipMotion: {
@@ -700,6 +703,8 @@ export function toolsToJsonSchema() {
 
 // Minimal Zod â†’ JSON Schema conversion for MCP compatibility
 function zodToJsonSchema(schema: z.ZodType<any>): Record<string, unknown> {
+  // Preserve object fields when runtime validation is wrapped in a refinement.
+  if (schema instanceof z.ZodEffects) return zodToJsonSchema(schema.innerType());
   // For our use case, we rely on zod's .parse() for validation
   // and produce a simplified JSON schema for tool listing.
   // A full implementation would use zod-to-json-schema package.

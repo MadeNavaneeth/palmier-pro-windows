@@ -12,9 +12,10 @@
  * delegates compositing to the Rust/wgpu pipeline via SharedArrayBuffer.
  */
 
-import type { Clip, Frame, Project, ProjectSettings } from '../../shared/types/project';
+import type { Clip, Frame, Project } from '../../shared/types/project';
 import { frameToSeconds } from '../../shared/utils/time';
 import { colorGradeOf, toCanvasFilter } from '../../shared/editor/color-grade';
+import { clampEdgeValue } from '../../shared/editor/edge-effects';
 import { drawTitle } from './title-render';
 import { evaluateMotion } from '../../shared/media/motion';
 
@@ -79,6 +80,8 @@ export class PreviewEngine {
   private state: EngineState = 'idle';
   private rafId: number = 0;
   private frameCache = new FrameCache();
+  private edgeCanvas: HTMLCanvasElement | null = null;
+  private edgeMaskCanvas: HTMLCanvasElement | null = null;
 
   // Playback state
   private playheadFrame: Frame = 0;
@@ -187,6 +190,8 @@ export class PreviewEngine {
   destroy(): void {
     this.pause();
     this.frameCache.clear();
+    this.edgeCanvas = null;
+    this.edgeMaskCanvas = null;
   }
 
   invalidateCache(): void {
@@ -362,7 +367,7 @@ export class PreviewEngine {
     this.ctx.translate(-clip.anchorX, -clip.anchorY);
 
     // Draw with optional edge rounding / softness (#369).
-    const hasEdgeEffects = (clip.edgeRounding ?? 0) > 0 || (clip.edgeSoftness ?? 0) > 0;
+    const hasEdgeEffects = clampEdgeValue(clip.edgeRounding) > 0 || clampEdgeValue(clip.edgeSoftness) > 0;
     if (hasEdgeEffects) {
       this.drawWithEdgeEffects(bitmap, clip.width, clip.height, clip.edgeRounding ?? 0, clip.edgeSoftness ?? 0);
     } else {
@@ -371,11 +376,7 @@ export class PreviewEngine {
     this.ctx.restore();
   }
 
-  /**
-   * Draws a bitmap with DaVinci-style edge rounding (corner radius) and
-   * edge softness (feathered alpha).  Both are normalized 0–1.  Uses an
-   * offscreen canvas so the main compositor context stays clean.
-   */
+  /** Apply a reusable rounded and feathered alpha mask. */
   private drawWithEdgeEffects(
     bitmap: ImageBitmap | HTMLCanvasElement,
     w: number,
@@ -383,60 +384,58 @@ export class PreviewEngine {
     rounding: number,
     softness: number,
   ): void {
-    const radius = Math.min(rounding, 1) * Math.min(w, h) * 0.5;
-    const softPx = Math.min(Math.max(softness, 0), 1) * Math.min(w, h) * 0.5;
-
-    // Offscreen canvas for the alpha treatment.
-    const off = document.createElement('canvas');
-    off.width = Math.ceil(w);
-    off.height = Math.ceil(h);
-    const oc = off.getContext('2d')!;
-
-    // 1. Draw the source image.
-    oc.drawImage(bitmap, 0, 0, w, h);
-
-    // 2. Edge softness: feathered alpha ring at the boundary.
-    if (softPx > 0) {
-      oc.globalCompositeOperation = 'destination-in';
-      const grad = oc.createRadialGradient(
-        w / 2, h / 2, Math.max(w, h) * 0.5 - softPx,
-        w / 2, h / 2, Math.max(w, h) * 0.5,
-      );
-      grad.addColorStop(0, 'rgba(0,0,0,1)');
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
-      oc.fillStyle = grad;
-      oc.fillRect(0, 0, w, h);
-      oc.globalCompositeOperation = 'source-over';
+    const width = Math.max(1, Math.ceil(w));
+    const height = Math.max(1, Math.ceil(h));
+    if (!this.edgeCanvas || this.edgeCanvas.width !== width || this.edgeCanvas.height !== height) {
+      this.edgeCanvas = document.createElement('canvas');
+      this.edgeCanvas.width = width;
+      this.edgeCanvas.height = height;
+      this.edgeMaskCanvas = document.createElement('canvas');
+      this.edgeMaskCanvas.width = width;
+      this.edgeMaskCanvas.height = height;
     }
+    const edgeCanvas = this.edgeCanvas;
+    const maskCanvas = this.edgeMaskCanvas;
+    if (!maskCanvas) return;
+    const edgeContext = edgeCanvas.getContext('2d');
+    const maskContext = maskCanvas.getContext('2d');
+    if (!edgeContext || !maskContext) return;
 
-    // 3. Edge rounding: clip to rounded rect, keep only what's inside.
-    if (radius > 0) {
-      oc.globalCompositeOperation = 'destination-in';
-      oc.beginPath();
-      // Use roundRect if available (Chromium 99+), otherwise manual path.
-      const ctxAny = oc as any;
-      if (typeof ctxAny.roundRect === 'function') {
-        ctxAny.roundRect(0, 0, w, h, radius);
-      } else {
-        const r = Math.min(radius, Math.min(w, h) / 2);
-        oc.moveTo(r, 0);
-        oc.lineTo(w - r, 0);
-        oc.quadraticCurveTo(w, 0, w, r);
-        oc.lineTo(w, h - r);
-        oc.quadraticCurveTo(w, h, w - r, h);
-        oc.lineTo(r, h);
-        oc.quadraticCurveTo(0, h, 0, h - r);
-        oc.lineTo(0, r);
-        oc.quadraticCurveTo(0, 0, r, 0);
-        oc.closePath();
-      }
-      oc.fillStyle = 'rgba(0,0,0,1)';
-      oc.fill();
-      oc.globalCompositeOperation = 'source-over';
-    }
+    const radius = clampEdgeValue(rounding) * Math.min(w, h) * 0.5;
+    const feather = clampEdgeValue(softness) * Math.min(w, h) * 0.5;
+    edgeContext.setTransform(1, 0, 0, 1, 0, 0);
+    edgeContext.globalCompositeOperation = 'source-over';
+    edgeContext.globalAlpha = 1;
+    edgeContext.filter = 'none';
+    edgeContext.clearRect(0, 0, width, height);
+    edgeContext.drawImage(bitmap, 0, 0, w, h);
 
-    // 4. Composite the treated image onto the main context.
-    this.ctx.drawImage(off, 0, 0);
+    maskContext.setTransform(1, 0, 0, 1, 0, 0);
+    maskContext.globalCompositeOperation = 'source-over';
+    maskContext.globalAlpha = 1;
+    maskContext.filter = feather > 0 ? `blur(${feather}px)` : 'none';
+    maskContext.clearRect(0, 0, width, height);
+    maskContext.beginPath();
+    const radiusForPath = Math.min(radius, Math.min(w, h) * 0.5);
+    const r = radiusForPath;
+    maskContext.moveTo(r, 0);
+    maskContext.lineTo(w - r, 0);
+    maskContext.quadraticCurveTo(w, 0, w, r);
+    maskContext.lineTo(w, h - r);
+    maskContext.quadraticCurveTo(w, h, w - r, h);
+    maskContext.lineTo(r, h);
+    maskContext.quadraticCurveTo(0, h, 0, h - r);
+    maskContext.lineTo(0, r);
+    maskContext.quadraticCurveTo(0, 0, r, 0);
+    maskContext.closePath();
+    maskContext.fillStyle = '#fff';
+    maskContext.fill();
+    maskContext.filter = 'none';
+
+    edgeContext.globalCompositeOperation = 'destination-in';
+    edgeContext.drawImage(maskCanvas, 0, 0);
+    edgeContext.globalCompositeOperation = 'source-over';
+    this.ctx.drawImage(edgeCanvas, 0, 0, w, h);
   }
 
   private async getFrameBitmap(clip: Clip, timestampSec: number): Promise<ImageBitmap | null> {
