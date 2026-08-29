@@ -26,6 +26,7 @@ import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
 import { isCropped, cropRect } from '../../shared/media/source-crop';
 import { motionExpression } from '../../shared/media/motion';
 import { hasEdgeEffects, buildEdgeGeqExpr } from '../../shared/editor/edge-effects';
+import { chromaKeyOf, buildChromaKeyFilterChain } from '../../shared/editor/chroma-key';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -418,6 +419,14 @@ function buildFilterGraph(
       ? `,rotate='(${rotDegExpr})*PI/180':c=black@0`
       : '';
 
+    // Chroma key (#97): must run before rotate/edge-rounding. FFmpeg's
+    // colorkey/despill overwrite alpha unconditionally rather than
+    // multiplying it, so applying them after rotation's transparent-corner
+    // fill or edge rounding's feathered mask would stomp those pixels back
+    // to opaque.
+    const chromaKey = chromaKeyOf(clip);
+    const chromaChain = chromaKey ? `,${buildChromaKeyFilterChain(chromaKey)}` : '';
+
     // Trim window in source seconds, through the shared mapping so export and
     // preview address the source identically (#68).
     const sourceDuration = assetDurationSeconds(asset, fps);
@@ -500,7 +509,7 @@ function buildFilterGraph(
       }
 
       filters.push(
-        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale='${scaleWExpr}':'${scaleHExpr}':flags=bilinear${rotateChain}${colorChain}${edgeChain}${fadeChain}[${scaledLabel}]`,
+        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale='${scaleWExpr}':'${scaleHExpr}':flags=bilinear${chromaChain}${rotateChain}${colorChain}${edgeChain}${fadeChain}[${scaledLabel}]`,
       );
 
     // Overlay with enable condition (time window). Motion tracks (#535 v1)

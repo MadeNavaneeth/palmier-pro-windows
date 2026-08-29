@@ -33,6 +33,7 @@ import {
 import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple';
 import { sanitizeCrop } from '../../shared/media/source-crop';
 import { sanitizeMotion } from '../../shared/media/motion';
+import { mergeChromaKey } from '../../shared/editor/chroma-key';
 import { planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
@@ -1179,6 +1180,45 @@ export class ToolExecutor {
             edgeRounding: updated?.edgeRounding ?? 0,
             edgeSoftness: updated?.edgeSoftness ?? 0,
             cleared: (updated?.edgeRounding ?? 0) === 0 && (updated?.edgeSoftness ?? 0) === 0,
+          },
+        };
+      }
+
+      case 'set_clip_chroma_key': {
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'video' && clip.type !== 'image') {
+          return { success: false, error: 'Chroma key applies to video and image clips only.' };
+        }
+        const merged = mergeChromaKey(clip.chromaKey, {
+          keyColor: args.keyColor,
+          tolerance: args.tolerance,
+          softness: args.softness,
+          spill: args.spill,
+        });
+        const receipt = this.editor.applyClipProperties([clip.id], 'Set chroma key', (draft) => {
+          if (merged) draft.chromaKey = merged;
+          else delete draft.chromaKey;
+          return true;
+        });
+        if (receipt.changedClipIds.length === 0) {
+          return {
+            success: true,
+            data: {
+              clipId: clip.id,
+              changed: false,
+              chromaKey: clip.chromaKey ?? null,
+            },
+          };
+        }
+        const updated = this.editor.getClips().find((candidate) => candidate.id === clip.id);
+        return {
+          success: true,
+          data: {
+            clipId: clip.id,
+            changed: true,
+            chromaKey: updated?.chromaKey ?? null,
+            cleared: !updated?.chromaKey,
           },
         };
       }

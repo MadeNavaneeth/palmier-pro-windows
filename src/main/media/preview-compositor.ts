@@ -29,6 +29,7 @@ import { loadProxyMode } from './proxy-mode';
 import { visualClipsAtFrame } from './visible-clips';
 import { isCropped, cropRect } from '../../shared/media/source-crop';
 import { evaluateMotion } from '../../shared/media/motion';
+import { chromaKeyOf, applyChromaKey } from '../../shared/editor/chroma-key';
 
 //  Types 
 
@@ -175,6 +176,21 @@ export class PreviewCompositor {
         frameBuffer = cropped;
         frameWidth = rect.width;
         frameHeight = rect.height;
+      }
+
+      // Chroma key (#97): same per-pixel pass export's FFmpeg colorkey+despill
+      // chain performs, run here so the live preview shows the keyed result
+      // instead of only the exported file. Before the native compositor's
+      // rotation/blend so a keyed-out pixel's alpha is not later touched by
+      // an unrelated stage.
+      const chromaKey = chromaKeyOf(clip);
+      if (chromaKey) {
+        // The GPU layer texture the native addon uploads is read-only from
+        // its perspective, so this buffer must already carry the final
+        // pixels; frameBuffer may still be the decoder's shared buffer here,
+        // so copy before mutating in place.
+        if (frameBuffer === decoded.data) frameBuffer = Buffer.from(frameBuffer);
+        applyChromaKey(frameBuffer, chromaKey);
       }
 
       const wipe = wipeParamsFor(clip, frameIndex);

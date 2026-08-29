@@ -634,6 +634,30 @@ export const tools = {
     ),
   },
 
+  setClipChromaKey: {
+    name: 'set_clip_chroma_key',
+    description:
+      'Key out a green/blue screen background on a video/image clip so tracks below show through '
+      + '(upstream issue #97). Pass keyColor + tolerance to key; tolerance 0 clears the key. '
+      + 'softness feathers the cutoff into a gradient; spill desaturates key-color contamination '
+      + 'on the subject\'s edges. Applied in the compositor after crop, before edge rounding.',
+    parameters: z.object({
+      clipId: z.string().describe('The video or image clip to key.'),
+      keyColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional()
+        .describe('Key color as #RRGGBB, e.g. "#00ff00" for standard chroma green. Defaults to green on first set.'),
+      tolerance: z.number().finite().min(0).max(1).optional()
+        .describe('Match tolerance, 0-1. 0 clears the key entirely.'),
+      softness: z.number().finite().min(0).max(1).optional()
+        .describe('Edge feather, 0-1. 0 = hard cutoff. Defaults to 0.05 on first set.'),
+      spill: z.number().finite().min(0).max(1).optional()
+        .describe('Spill suppression strength, 0-1. 0 = no despill. Defaults to 0.5 on first set.'),
+    }).refine(
+      (op) => op.keyColor !== undefined || op.tolerance !== undefined
+        || op.softness !== undefined || op.spill !== undefined,
+      { message: 'Pass at least one of keyColor, tolerance, softness, spill.' },
+    ),
+  },
+
   setClipMotion: {
     name: 'set_clip_motion',
     description:
