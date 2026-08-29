@@ -162,6 +162,17 @@ export interface Clip {
    */
   edgeSoftness?: number;
   /**
+   * Chroma key / green-blue screen removal (upstream issue #97). Absent or
+   * tolerance 0 means no key. Applied after crop, before edge rounding.
+   * Visual clips only.
+   */
+  chromaKey?: {
+    keyColor: string; // #rrggbb
+    tolerance: number; // 0-1, 0 = off
+    softness?: number; // 0-1, edge feather
+    spill?: number; // 0-1, spill suppression strength
+  };
+  /**
    * Position motion tracks (keyframes v1): linear x/y over the timeline.
    * Video/image clips only; titles are static in v1. Absent = static x/y.
    */

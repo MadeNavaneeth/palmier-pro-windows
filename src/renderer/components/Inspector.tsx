@@ -15,6 +15,9 @@ import { DEFAULT_SILENCE_CONFIG, SILENCE_LIMITS } from '../../shared/audio/silen
 import { useSilenceSettings } from '../hooks/useSilenceSettings';
 import { useMediaPanelStore } from '../store/media-panel';
 import { evaluateMotion } from '../../shared/media/motion';
+import { mergeChromaKey, DEFAULT_CHROMA_KEY_COLOR } from '../../shared/editor/chroma-key';
+import type { Clip } from '../../shared/types/project';
+import type { EditorController } from '../../shared/editor/controller';
 import {
   ASPECT_PRESETS,
   QUALITY_PRESETS,
@@ -274,6 +277,9 @@ export function Inspector() {
               </label>
             </div>
 
+            {/* Chroma key (upstream issue #97) */}
+            <ChromaKeyControls clipId={clip.id} chromaKey={clip.chromaKey} controller={controller} />
+
             {/* Edge rounding & softness (upstream PR #369) */}
             {(() => {
               const roundingPct = Math.round((clip.edgeRounding ?? 0) * 100);
@@ -351,6 +357,118 @@ export function Inspector() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Chroma key / green-blue screen removal (upstream issue #97).
+ *
+ * A checkbox arms the key at a default green with sensible tolerance/
+ * softness/spill; the three sliders and color swatch only render once
+ * armed. Clearing the checkbox drops the field entirely (tolerance 0 is
+ * the single deactivation switch shared with the executor and export/
+ * preview readers), matching the Edge Rounding block's pattern below.
+ */
+function ChromaKeyControls({
+  clipId,
+  chromaKey,
+  controller,
+}: {
+  clipId: string;
+  chromaKey: Clip['chromaKey'];
+  controller: EditorController;
+}) {
+  const active = (chromaKey?.tolerance ?? 0) > 0;
+  const tolerancePct = Math.round((chromaKey?.tolerance ?? 0) * 100);
+  const softnessPct = Math.round((chromaKey?.softness ?? 0.05) * 100);
+  const spillPct = Math.round((chromaKey?.spill ?? 0.5) * 100);
+
+  const update = (fields: { keyColor?: string; tolerance?: number; softness?: number; spill?: number }) => {
+    controller.applyClipProperties([clipId], 'Set chroma key', (draft) => {
+      const merged = mergeChromaKey(draft.chromaKey, fields);
+      if (merged) draft.chromaKey = merged;
+      else delete draft.chromaKey;
+      return true;
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-white/10 pt-1">
+      <label className="flex items-center gap-1.5 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={active}
+          onChange={(e) => {
+            if (e.target.checked) {
+              update({ keyColor: chromaKey?.keyColor ?? DEFAULT_CHROMA_KEY_COLOR, tolerance: 0.15 });
+            } else {
+              update({ tolerance: 0 });
+            }
+          }}
+          className="accent-[var(--color-accent)]"
+        />
+        <span className="text-2xs text-text-muted uppercase tracking-wide">Chroma Key</span>
+      </label>
+      {active && (
+        <div className="flex flex-col gap-2 pl-0.5">
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-2xs text-text-muted uppercase tracking-wide">Key Color</label>
+            <input
+              type="color"
+              value={chromaKey?.keyColor ?? DEFAULT_CHROMA_KEY_COLOR}
+              onChange={(e) => update({ keyColor: e.target.value })}
+              aria-label="Chroma key color"
+              className="h-6 w-10 cursor-pointer rounded border border-surface-3 bg-surface-2"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <label className="text-2xs text-text-muted uppercase tracking-wide">Tolerance</label>
+              <span className="text-2xs text-text-secondary tabular-nums">{tolerancePct}%</span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={100}
+              value={Math.max(1, tolerancePct)}
+              onChange={(e) => update({ tolerance: Number(e.target.value) / 100 })}
+              aria-label="Chroma key tolerance"
+              className="w-full accent-accent"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <label className="text-2xs text-text-muted uppercase tracking-wide">Softness</label>
+              <span className="text-2xs text-text-secondary tabular-nums">{softnessPct}%</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={softnessPct}
+              onChange={(e) => update({ softness: Number(e.target.value) / 100 })}
+              aria-label="Chroma key softness"
+              className="w-full accent-accent"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <label className="text-2xs text-text-muted uppercase tracking-wide">Spill</label>
+              <span className="text-2xs text-text-secondary tabular-nums">{spillPct}%</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={spillPct}
+              onChange={(e) => update({ spill: Number(e.target.value) / 100 })}
+              aria-label="Chroma key spill suppression"
+              className="w-full accent-accent"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
