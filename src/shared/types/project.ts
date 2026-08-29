@@ -184,6 +184,13 @@ export interface Clip {
   motionScaleX?: Array<{ frame: number; value: number }>;
   /** Scale Y motion track (keyframes v1). Default 1 (identity). */
   motionScaleY?: Array<{ frame: number; value: number }>;
+  /**
+   * Volume automation in decibels (upstream #535/#539-#541 audio slice).
+   * Absolute timeline frames, like the motion tracks above — not rebased
+   * when the clip moves. Audio clips only. An active track is authoritative
+   * over `volume` (the static linear field); absent means use `volume`.
+   */
+  volumeDb?: Array<{ frame: number; value: number; easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' }>;
   /** Outline stroke width in px at project resolution. Default 0 = off. */
   titleStrokeWidth?: number;
   /** Outline stroke color. */

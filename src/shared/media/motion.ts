@@ -99,22 +99,29 @@ export function evaluateMotion(
 }
 
 /**
- * Piecewise FFmpeg overlay expression for a motion track, in output seconds.
- * `secPerFrame` converts keypoint frames to the timeline seconds the overlay
- * filter's `t` measures. Each segment emits its eased curve via `if`/`pow`
- * over normalized time — exact, matching evaluateMotion.
+ * Piecewise FFmpeg expression for a motion track, over a caller-chosen time
+ * variable (`timeVar`, default `t`) in seconds. `secPerFrame` converts
+ * keypoint frames to those seconds. Each segment emits its eased curve via
+ * `if`/`pow` over normalized time — exact, matching evaluateMotion.
+ *
+ * `timeVar` lets a caller reuse this for a filter whose time variable is not
+ * literally named `t` after a shift (e.g. an audio chain's `t` already
+ * starts at a clip's trimmed source point, so the caller substitutes
+ * `(t)+offset` to express the same absolute-timeline frames the track is
+ * keyed to).
  */
 export function motionExpression(
   track: MotionTrack | undefined,
   secPerFrame: number,
+  timeVar = 't',
 ): string | undefined {
   if (!track || track.length === 0) return undefined;
   if (track.length === 1) return track[0]!.value.toFixed(4);
 
-  // easedExpr(easing, aSec, bSec): value formula over absolute t for one
-  // segment, with normalized time n = (t-a)/(b-a).
+  // easedExpr(easing, aSec, bSec): value formula over absolute time for one
+  // segment, with normalized time n = (time-a)/(b-a).
   const easedExpr = (easing: MotionEasing, aSec: number, bSec: number, v0: string, dv: string): string => {
-    const n = `((t)-(${aSec.toFixed(6)}))/((${bSec.toFixed(6)})-(${aSec.toFixed(6)}))`;
+    const n = `((${timeVar})-(${aSec.toFixed(6)}))/((${bSec.toFixed(6)})-(${aSec.toFixed(6)}))`;
     switch (easing) {
       case 'easeIn':
         return `${v0}+${dv}*pow(${n},2)`;
@@ -137,7 +144,7 @@ export function motionExpression(
     const easing = normalizeEasing(a.easing);
     const v0 = a.value.toFixed(4);
     const dv = (b.value - a.value).toFixed(6);
-    parts.push(`if(lte(t,${bSec.toFixed(6)}),${easedExpr(easing, aSec, bSec, v0, dv)},`);
+    parts.push(`if(lte(${timeVar},${bSec.toFixed(6)}),${easedExpr(easing, aSec, bSec, v0, dv)},`);
   }
   const inner = `${track[track.length - 1]!.value.toFixed(4)}${')'.repeat(parts.length)}`;
   parts.push(inner);

@@ -10,6 +10,7 @@
 
 import type { Clip, Frame, MediaAsset } from '../types/project';
 import { clampPan } from './pan';
+import { resolveClipVolumeLinear } from './volume-keyframes';
 
 export interface AudioPlanInput {
   clips: readonly Clip[];
@@ -27,6 +28,12 @@ export interface AudioPlaybackEntry {
   path: string;
   /** Where in the source the element's currentTime belongs, seconds. */
   sourceTimeSec: number;
+  /**
+   * Linear gain. [0,1] from the static field; a positive-dB volumeDb
+   * keyframe can resolve above 1 (#535/#539-#541) — callers must apply
+   * gain > 1 through a Web Audio gain stage, not `HTMLMediaElement.volume`,
+   * which throws outside [0,1].
+   */
   volume: number;
   /** Stereo balance, -1 left … +1 right (R5). */
   pan: number;
@@ -65,7 +72,12 @@ export function computeAudioPlan(input: AudioPlanInput): AudioPlaybackEntry[] {
     entries.push({
       path,
       sourceTimeSec,
-      volume: Math.min(1, Math.max(0, Number.isFinite(clip.volume) ? clip.volume : 1)),
+      // An active volumeDb track (#535/#539-#541) is authoritative over the
+      // static linear field. A positive-dB boost keyframe resolves above 1 —
+      // deliberately not re-clamped here; the consumer (audio-preview.ts)
+      // applies gain > 1 through a Web Audio GainNode rather than the
+      // [0,1]-only HTMLMediaElement.volume.
+      volume: resolveClipVolumeLinear(clip, input.playhead),
       pan: clampPan(clip.pan ?? 0),
     });
   }

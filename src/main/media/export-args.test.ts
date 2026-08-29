@@ -354,6 +354,53 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(graph).toContain('[a0][a1]amix=inputs=2:normalize=0[aout]');
   });
 
+  it('emits a time-varying volume expression when volumeDb is set, overriding the static field', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
+      [{
+        type: 'audio', assetId: 'a', startFrame: 0, durationFrames: 60,
+        volume: 0.5, // must be ignored in favor of the active track
+        volumeDb: [{ frame: 0, value: 0 }, { frame: 30, value: -60 }],
+      }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('atrim'))!;
+    expect(graph).toContain("volume='pow(10,(");
+    expect(graph).toContain("':eval=frame");
+    expect(graph).not.toContain('volume=0.5000');
+  });
+
+  it('shifts the volumeDb expression by the clip start so absolute keyframes align with local t', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 1800 }],
+      [{
+        type: 'audio', assetId: 'a', startFrame: 300, durationFrames: 60, // 10s in at 30fps
+        volumeDb: [{ frame: 300, value: -6 }, { frame: 330, value: -60 }],
+      }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('atrim'))!;
+    // Local t=0 in this chain is absolute frame 300; the shift folds the
+    // 10s offset back in so the stored keyframe times line up.
+    expect(graph).toContain('(t)+(10.000000)');
+  });
+
+  it('makes the volumeDb shift relative to the range start during a ranged export', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 1800 }],
+      [{
+        type: 'audio', assetId: 'a', startFrame: 300, durationFrames: 60,
+        volumeDb: [{ frame: 300, value: -6 }, { frame: 330, value: -60 }],
+      }],
+    );
+
+    const graph = buildWithRange(project, 150, 600).find((arg) => arg.includes('atrim'))!;
+    // Absolute shift would be 10s; a range starting at frame 150 (5s)
+    // rebases clip.startFrame to 150, so the un-rebase must recover 10s,
+    // not 5s.
+    expect(graph).toContain('(t)+(10.000000)');
+  });
+
   it('maps a single eligible audio clip directly without amix', () => {
     const project = projectWithMedia(
       [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
