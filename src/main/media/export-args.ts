@@ -27,6 +27,7 @@ import { isCropped, cropRect } from '../../shared/media/source-crop';
 import { motionExpression } from '../../shared/media/motion';
 import { hasEdgeEffects, buildEdgeGeqExpr } from '../../shared/editor/edge-effects';
 import { chromaKeyOf, buildChromaKeyFilterChain } from '../../shared/editor/chroma-key';
+import { volumeFilterExpression } from '../../shared/audio/volume-keyframes';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -251,7 +252,18 @@ export function buildFfmpegArgs(
 
       let chain =
         `[${inputIdx}:a]atrim=start=${trimStart.toFixed(4)}:end=${trimEnd.toFixed(4)},asetpts=PTS-STARTPTS`;
-      if (Number.isFinite(clip.volume) && clip.volume >= 0 && clip.volume !== 1) {
+      // Volume keyframes (#535/#539-#541 audio slice) are authoritative over
+      // the static field when present. Local t=0 in this chain is the
+      // instant the ORIGINAL (pre-range-rebase) timeline frame plays, since
+      // volumeDb stores absolute frames from the un-rebased project. A
+      // ranged export shifts clip.startFrame by -range.start, so that shift
+      // must be undone here or the automation would land range.start frames
+      // early/late.
+      const originalStartFrame = clip.startFrame + (options.range?.start ?? 0);
+      const volumeExpr = volumeFilterExpression(clip.volumeDb, fps, originalStartFrame);
+      if (volumeExpr !== undefined) {
+        chain += `,volume='${volumeExpr}':eval=frame`;
+      } else if (Number.isFinite(clip.volume) && clip.volume >= 0 && clip.volume !== 1) {
         chain += `,volume=${Math.min(1, clip.volume).toFixed(4)}`;
       }
       const pan = clampPan(clip.pan ?? 0);

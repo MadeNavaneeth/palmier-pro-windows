@@ -674,6 +674,25 @@ export const tools = {
     }),
   },
 
+  setClipVolumeKeyframes: {
+    name: 'set_clip_volume_keyframes',
+    description:
+      'Animate an audio clip\'s volume with decibel keyframes (upstream #535/#539-#541 audio slice): '
+      + 'at least two {frame, value} points; values interpolate between frames with easing and clamp '
+      + 'at the ends. An active track overrides the clip\'s static volume entirely. An empty points '
+      + 'array clears the track and restores static volume control.',
+    parameters: z.object({
+      clipId: z.string().describe('The audio clip to animate.'),
+      points: z.array(z.object({
+        frame: z.number().int().min(0).describe('Timeline frame for this keyframe.'),
+        value: z.number().finite().min(-60).max(15)
+          .describe('Level in dB. 0 = source level, -60 = mute floor, +15 = boost ceiling.'),
+        easing: z.enum(['linear', 'easeIn', 'easeOut', 'easeInOut']).optional()
+          .describe('Easing of the segment starting at this keyframe. Default linear.'),
+      })).describe('Keyframes for the volume track. At least two to animate; an empty array clears it.'),
+    }),
+  },
+
   applyLayout: {
     name: 'apply_layout',
     description:

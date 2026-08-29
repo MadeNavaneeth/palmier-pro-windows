@@ -16,6 +16,7 @@ import { useSilenceSettings } from '../hooks/useSilenceSettings';
 import { useMediaPanelStore } from '../store/media-panel';
 import { evaluateMotion } from '../../shared/media/motion';
 import { mergeChromaKey, DEFAULT_CHROMA_KEY_COLOR } from '../../shared/editor/chroma-key';
+import { linearToDb } from '../../shared/audio/normalize';
 import type { Clip } from '../../shared/types/project';
 import type { EditorController } from '../../shared/editor/controller';
 import {
@@ -339,9 +340,12 @@ export function Inspector() {
         )}
 
         {isAudio && (
-          <p className="text-2xs text-text-muted">
-            Audio clip â€” compositing properties don't apply.
-          </p>
+          <>
+            <p className="text-2xs text-text-muted">
+              Audio clip â€” compositing properties don't apply.
+            </p>
+            <VolumeKeyframeControls clipId={clip.id} />
+          </>
         )}
 
         {(clip.type === 'video' || clip.type === 'image') && (
@@ -468,6 +472,93 @@ function ChromaKeyControls({
             />
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Volume keyframes (upstream #535/#539-#541 audio slice): a dB automation
+ * track on audio clips, mirroring MotionControls' chip/add-keyframe pattern
+ * for one axis. "Set" captures the clip's current effective level at the
+ * playhead as a keyframe; an active track overrides the static volume
+ * entirely, so removing the last chip restores static control.
+ */
+function VolumeKeyframeControls({ clipId }: { clipId: string }) {
+  const clip = useTimelineStore((s) => s.project.timeline.clips.find((c) => c.id === clipId));
+  const playhead = useTimelineStore((s) => s.project.timeline.playheadFrame);
+  const applyClipProperties = useTimelineStore((s) => s.controller.applyClipProperties);
+
+  if (!clip) return null;
+  const track = clip.volumeDb;
+  const staticDb = linearToDb(clip.volume ?? 1);
+
+  const setTrack = (points: typeof track | undefined) => {
+    applyClipProperties([clipId], 'Volume keyframes', (draft) => {
+      if (points && points.length > 0) draft.volumeDb = points;
+      else delete draft.volumeDb;
+      return true;
+    });
+  };
+
+  const addKeyframe = () => {
+    const evaluated = evaluateMotion(track, playhead) ?? (Number.isFinite(staticDb) ? staticDb : 0);
+    const others = (track ?? []).filter((p) => p.frame !== playhead);
+    const clamped = Math.min(15, Math.max(-60, Math.round(evaluated * 10) / 10));
+    setTrack([...others, { frame: playhead, value: clamped }]);
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1">
+      <div className="flex items-center justify-between">
+        <label className="text-2xs uppercase tracking-wide text-text-muted">Volume Keyframes</label>
+        <button
+          onClick={addKeyframe}
+          data-add-keyframe="volumeDb"
+          className="rounded border border-surface-4 px-1 py-0.5 text-[9px] text-text-secondary hover:bg-white/10 hover:text-text-primary"
+        >
+          + Keyframe
+        </button>
+      </div>
+      {track && track.length > 0 ? (
+        <div className="rounded border border-surface-3 bg-surface-2 px-2 py-1">
+          <div className="flex flex-wrap items-center gap-1">
+            {track.map((point) => (
+              <button
+                key={point.frame}
+                title={`Frame ${point.frame}: ${point.value} dB â€” click to remove`}
+                onClick={() => setTrack(track.filter((p) => p.frame !== point.frame))}
+                className="rounded bg-surface-4/60 px-1 py-0.5 font-mono text-[8px] text-text-secondary hover:bg-red-500/20 hover:text-red-300"
+              >
+                f{point.frame}:{point.value}dBÃ—
+              </button>
+            ))}
+          </div>
+          {track.length >= 2 && (
+            <select
+              value={track[0].easing ?? 'linear'}
+              onChange={(event) =>
+                setTrack(track.map((p, index) => ({
+                  ...p,
+                  ...(index < track.length - 1
+                    ? { easing: event.target.value as 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' }
+                    : {}),
+                })))}
+              data-easing="volumeDb"
+              aria-label="Volume keyframe easing"
+              className="mt-1 w-full rounded border border-surface-3 bg-surface-1 px-1 py-0.5 text-[9px] text-text-secondary focus:border-accent focus:outline-none"
+            >
+              <option value="linear">Linear</option>
+              <option value="easeIn">Ease in</option>
+              <option value="easeOut">Ease out</option>
+              <option value="easeInOut">Ease in-out</option>
+            </select>
+          )}
+        </div>
+      ) : (
+        <p className="text-[10px] text-text-muted">
+          No keyframes â€” volume follows the clip's static level. Add two or more to animate.
+        </p>
       )}
     </div>
   );

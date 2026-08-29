@@ -20,9 +20,17 @@ const RESYNC_THRESHOLD_SEC = 0.25;
 
 type PoolEntry = {
   el: HTMLAudioElement;
-  /** Web Audio routing for per-element pan (R5). Created lazily. */
+  /** Web Audio routing for per-element pan (R5) and gain. Created lazily. */
   ctx: AudioContext | null;
   panner: StereoPannerNode | null;
+  /**
+   * Overall gain node (R5/#535 volume keyframes). `HTMLMediaElement.volume`
+   * only accepts [0,1] and throws outside that range, but a positive-dB
+   * boost keyframe resolves to linear gain above 1 — so boost is applied
+   * here, not on `el.volume`, and `el.volume` stays pinned at 1 once this
+   * graph exists.
+   */
+  gainNode: GainNode | null;
   sourceNode: MediaElementAudioSourceNode | null;
   /** The plan path this element is currently serving, null when idle. */
   activePath: string | null;
@@ -40,21 +48,41 @@ export class AudioPreviewManager {
     entry.panner.pan.value = pan;
   }
 
+  /** Apply linear gain via the Web Audio graph so values above 1 (dB boost) don't throw. */
+  private applyGain(entry: PoolEntry, volume: number): void {
+    if (entry.gainNode) {
+      entry.gainNode.gain.value = Number.isFinite(volume) ? Math.max(0, volume) : 1;
+      return;
+    }
+    // No Web Audio graph yet (first tick, or createMediaElementSource
+    // failed): the element's own volume is the only lever, but it rejects
+    // anything outside [0,1] — clamp defensively rather than throw.
+    entry.el.volume = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
+  }
+
   private connectPanner(entry: PoolEntry): void {
     if (entry.panner) return;
     try {
       this.sharedCtx ??= new AudioContext();
       const source = this.sharedCtx.createMediaElementSource(entry.el);
       const panner = new StereoPannerNode(this.sharedCtx, { pan: 0 });
+      const gain = new GainNode(this.sharedCtx, { gain: 1 });
       source.connect(panner);
-      panner.connect(this.sharedCtx.destination);
+      panner.connect(gain);
+      gain.connect(this.sharedCtx.destination);
       entry.ctx = this.sharedCtx;
       entry.sourceNode = source;
       entry.panner = panner;
+      entry.gainNode = gain;
+      // Gain now lives in the Web Audio graph; leave the element itself at
+      // full volume so it never double-applies.
+      entry.el.volume = 1;
     } catch {
       // createMediaElementSource can fail if the element is already routed
-      // or the context is unavailable; audio still plays un-panned.
+      // or the context is unavailable; audio still plays un-panned, and
+      // applyGain falls back to el.volume (clamped to its [0,1] domain).
       entry.panner = null;
+      entry.gainNode = null;
     }
   }
 
@@ -94,7 +122,7 @@ export class AudioPreviewManager {
         const el = document.createElement('audio');
         el.src = encodeURI(`file:///${item.path.replace(/\\/g, '/')}`).replace(/#/g, '%23');
         el.preload = 'auto';
-        entry = { el, ctx: null, panner: null, sourceNode: null, activePath: null };
+        entry = { el, ctx: null, panner: null, gainNode: null, sourceNode: null, activePath: null };
         this.pool.set(item.path, entry);
       }
       this.connectPanner(entry);
@@ -103,7 +131,7 @@ export class AudioPreviewManager {
       const expectedSourceTime = item.sourceTimeSec;
       if (entry.activePath !== item.path || entry.el.paused) {
         entry.el.currentTime = expectedSourceTime;
-        entry.el.volume = item.volume;
+        this.applyGain(entry, item.volume);
         void entry.el.play().catch(() => {
           // Autoplay refusal: the user's next explicit Play click re-enters
           // with a gesture and succeeds.
@@ -112,7 +140,7 @@ export class AudioPreviewManager {
         continue;
       }
 
-      entry.el.volume = item.volume;
+      this.applyGain(entry, item.volume);
       const drift = Math.abs(entry.el.currentTime - expectedSourceTime);
       if (drift > RESYNC_THRESHOLD_SEC) {
         entry.el.currentTime = expectedSourceTime;

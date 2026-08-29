@@ -76,4 +76,25 @@ describe('computeAudioPlan (preview audio)', () => {
     });
     expect(entries[0].volume).toBe(1);
   });
+
+  it('uses an active volumeDb track instead of the static field (#535/#539-#541)', () => {
+    const entries = computeAudioPlan({
+      ...base,
+      clips: [clip({
+        volume: 0.1, // must be ignored while the track is active
+        volumeDb: [{ frame: 300, value: 0 }, { frame: 330, value: -60 }],
+      })],
+      playhead: 300, // clip's own startFrame — first keyframe, 0 dB = unity gain
+    });
+    expect(entries[0].volume).toBeCloseTo(1, 5);
+  });
+
+  it('allows the resolved gain to exceed 1 for a positive-dB boost track', () => {
+    const entries = computeAudioPlan({
+      ...base,
+      clips: [clip({ volumeDb: [{ frame: 300, value: 6 }, { frame: 330, value: 6 }] })],
+      playhead: 315,
+    });
+    expect(entries[0].volume).toBeGreaterThan(1);
+  });
 });
