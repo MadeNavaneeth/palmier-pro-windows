@@ -52,6 +52,17 @@ interface GpuLayerDesc {
 
 //  Preview Compositor 
 
+/** Renderer-rasterized title-clip RGBA, keyed by clip id (title-preview parity). */
+export interface TitleRasterInput {
+  clipId: string;
+  width: number;
+  height: number;
+  /** Canvas position to place this raster at (top-left origin). See title-raster-cache.ts. */
+  x: number;
+  y: number;
+  rgba: Uint8Array | Buffer;
+}
+
 export class PreviewCompositor {
   private project: Project | null = null;
   private nativeAddon: any = null;
@@ -93,8 +104,20 @@ export class PreviewCompositor {
 
   /**
    * Composite a single frame and send the result to the renderer.
+   *
+   * `titles` are renderer-rasterized title-clip layers for this exact
+   * frame (title clips have no decodable media asset, so the renderer's
+   * canvas/font engine produces their pixels and hands them in here rather
+   * than this compositor decoding them). A title's rasterized content is a
+   * pure function of its Clip fields, which live inside the project object,
+   * so the existing project-token cache key already invalidates correctly
+   * on a style/text edit -- no extra key material needed.
    */
-  async compositeFrame(frameIndex: Frame, win: BrowserWindow): Promise<void> {
+  async compositeFrame(
+    frameIndex: Frame,
+    win: BrowserWindow,
+    titles: TitleRasterInput[] = [],
+  ): Promise<void> {
     const project = this.project;
     if (!project) return;
 
@@ -110,7 +133,7 @@ export class PreviewCompositor {
       return;
     }
 
-    const composited = await this.composeToBuffer(project, frameIndex, width, height, request);
+    const composited = await this.composeToBuffer(project, frameIndex, width, height, request, titles);
     if (composited === null || !this.requests.isCurrent(request)) return;
 
     this.renderCache.set(cacheKey, composited, composited.length);
@@ -128,6 +151,7 @@ export class PreviewCompositor {
     width: number,
     height: number,
     request: RequestToken<number>,
+    titles: TitleRasterInput[] = [],
   ): Promise<Buffer | null> {
     // Find visible clips at this frame (sorted by track order  z-index).
     // One O(clips+tracks) pass (#556); the media index below spares the
@@ -137,6 +161,7 @@ export class PreviewCompositor {
       return Buffer.alloc(width * height * 4);
     }
     const mediaById = new Map(project.media.map((asset) => [asset.id, asset] as const));
+    const titleByClipId = new Map(titles.map((title) => [title.clipId, title] as const));
 
     // Decode frames for each visible clip
     const decoder = getFrameDecoder();
@@ -144,6 +169,48 @@ export class PreviewCompositor {
     const buffers: Buffer[] = [];
 
     for (const clip of visibleClips) {
+      // Title clips carry no decodable media asset -- the renderer already
+      // rasterized this frame's title layers (title-raster-cache.ts) and
+      // handed the RGBA in via `titles`; a title with no matching entry
+      // (renderer hasn't caught up yet, or drawTitle produced nothing for
+      // empty text) contributes no layer rather than blocking the frame.
+      if (clip.type === 'title') {
+        const raster = titleByClipId.get(clip.id);
+        if (!raster) continue;
+        const wipe = wipeParamsFor(clip, frameIndex);
+        const slide = slideOffsetFor(clip, frameIndex);
+        layerDescs.push({
+          width: raster.width,
+          height: raster.height,
+          // raster.x/y is the box position title-raster-cache.ts already
+          // resolved (the clip's own box for a plain title, the canvas
+          // origin for an advanced/baked one) -- title clips cannot carry a
+          // position motion track (set_clip_motion refuses non-video/image
+          // clips, and transferClipSettings never copies motion fields), so
+          // unlike the video/image branch below there is no motion track to
+          // evaluate here.
+          x: Math.round(raster.x + slide.dx),
+          y: Math.round(raster.y + slide.dy),
+          opacity: effectiveOpacity(clip, frameIndex),
+          // Export's title paths (drawtext and the baked overlay) never
+          // rotate, scale, or offset-anchor a title, so this layer keeps an
+          // identity transform to match -- a rotated/scaled title in preview
+          // that exported unrotated would be a worse bug than the one this
+          // branch fixes.
+          rotation_deg: 0,
+          scale_x: 1,
+          scale_y: 1,
+          anchor_x: 0,
+          anchor_y: 0,
+          blend_mode: blendModeToIndex(clip.blendMode),
+          wipe_mode: wipe.mode,
+          wipe_progress: wipe.progress,
+          wipe_softness: wipe.softness,
+        });
+        buffers.push(Buffer.isBuffer(raster.rgba) ? raster.rgba : Buffer.from(raster.rgba));
+        continue;
+      }
+
       // Find the media asset
       const asset = mediaById.get(clip.assetId);
       if (!asset) continue;
@@ -354,12 +421,12 @@ export function getPreviewCompositor(): PreviewCompositor {
 export function registerPreviewHandlers(getProject: () => Project | null): void {
   const compositor = getPreviewCompositor();
 
-  ipcMain.handle('preview:composite-frame', async (event, frameIndex: number) => {
+  ipcMain.handle('preview:composite-frame', async (event, frameIndex: number, titles?: TitleRasterInput[]) => {
     const project = getProject();
     if (project) compositor.setProject(project);
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win) {
-      await compositor.compositeFrame(frameIndex, win);
+      await compositor.compositeFrame(frameIndex, win, Array.isArray(titles) ? titles : []);
     }
   });
 

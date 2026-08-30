@@ -131,8 +131,16 @@ const api = {
 
   // â”€â”€ Preview (Phase 3+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   preview: {
-    compositeFrame: (frameIndex: number) =>
-      ipcRenderer.invoke('preview:composite-frame', frameIndex),
+    /**
+     * `titles` carries renderer-rasterized title-clip RGBA (title clips
+     * have no decodable media asset, so only the renderer's canvas/font
+     * engine can produce their pixels; the main-process compositor treats
+     * each as an ordinary layer once it has them).
+     */
+    compositeFrame: (
+      frameIndex: number,
+      titles?: Array<{ clipId: string; width: number; height: number; x: number; y: number; rgba: Uint8ClampedArray }>,
+    ) => ipcRenderer.invoke('preview:composite-frame', frameIndex, titles),
     prefetch: (frames: number[]) =>
       ipcRenderer.invoke('preview:prefetch', frames),
   },
