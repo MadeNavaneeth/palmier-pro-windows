@@ -71,7 +71,7 @@ function projectWithTitle(clip: Clip): Project {
 }
 
 /** Fake native addon: records the parsed layer descriptors and returns a stub buffer. */
-function fakeNativeAddon(): { addon: { compositeFrameGpu: (...args: unknown[]) => Buffer }; captured: CapturedLayerDesc[][] } {
+function fakeNativeAddon() {
   const captured: CapturedLayerDesc[][] = [];
   const addon = {
     compositeFrameGpu: (layersJson: string, _buffers: Buffer, width: number, height: number): Buffer => {
