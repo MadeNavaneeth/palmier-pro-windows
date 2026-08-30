@@ -150,6 +150,23 @@ cluster shares a disposition.
 This table is deliberately concise. Add rows whenever an upstream change is
 adopted, deferred, rejected, or found to expose a Windows regression.
 
+## Upstream source freeze (2026-08-28)
+
+Upstream merged [#578 "Retire public source development"](https://github.com/palmier-io/palmier-pro/commit/eba39db77ba64a0bb4eec899c0b725681eb03155):
+releases through v0.7.6 and the source snapshot at `last-gpl-source` stay
+under GPLv3, but later releases are proprietary and their source is not
+published. The repository no longer accepts code contributions. Compared
+against the `8805801f` baseline this port already triaged, the only changes
+on upstream `main` since are README/localization/license file edits and an
+appcast entry — no Swift source changed.
+
+Practical effect: there is no further upstream commit stream to diff against.
+`npm run upstream:audit:check` will keep reporting a moved HEAD as commits
+land (README/appcast updates, new releases), but those commits carry no
+portable source changes. The remaining parity work is the closed backlog
+already recorded in the table above (rows marked Planned/Partial) — treat
+that table, not future upstream commits, as the source of remaining work.
+
 ## Change Record Template
 
 Use this block in pull requests or development notes:
