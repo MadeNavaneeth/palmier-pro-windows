@@ -233,7 +233,10 @@ export function buildFfmpegArgs(
   // preview address a clip's audio identically.
   const filters: string[] = [];
   if (videoClips.length > 0) {
-    filters.push(buildFilterGraph(project, videoClips, width, height, fps, inputIndexByPath, _exportFilterGeometry));
+    filters.push(buildFilterGraph(
+      project, videoClips, width, height, fps, inputIndexByPath, _exportFilterGeometry,
+      options.range?.start ?? 0,
+    ));
   }
 
   let audioMap: string | null = null;
@@ -407,6 +410,16 @@ function buildFilterGraph(
   fps: number,
   inputIndexByPath: Map<string, number>,
   _exportFilterGeometry: GeometryFilterFn | null,
+  /**
+   * The original (pre-range-rebase) timeline frame a ranged export's frame
+   * zero corresponds to, in FRAMES (a range's `start`, or 0 when unranged).
+   * motionX/motionY read the canvas-timeline `t` directly, which a range
+   * shifts by exactly this many frames when it rebases `clip.startFrame`,
+   * so their expressions need this added back in to stay keyed to the
+   * absolute frames stored on the clip. See the per-clip shift below for
+   * rotate/scale, which additionally cross a `setpts=PTS-STARTPTS` reset.
+   */
+  rangeStartFrame: number,
 ): string {
   const filters: string[] = [];
   let lastLabel = '0:v';
@@ -421,11 +434,21 @@ function buildFilterGraph(
     // Rotation uses the same per-frame seconds as the overlay expressions.
     const rotSecPerFrame = 1 / fps;
 
+    // Rotate/scale run on `[trimmedLabel]` below, whose `setpts=PTS-STARTPTS`
+    // resets local t to 0 at the clip's own start -- exactly the class of
+    // problem shared/audio/volume-keyframes.ts's `frameAtLocalZero` shift
+    // already solves for the audio `volume` filter. motionRot/motionScaleX/Y
+    // are keyed to ORIGINAL (pre-range-rebase) absolute timeline frames, so
+    // local t=0 corresponds to absolute frame `clip.startFrame + rangeStartFrame`
+    // (clip.startFrame is already range-rebased by the caller when ranged).
+    const rotateSecShift = (clip.startFrame + rangeStartFrame) / fps;
+    const rotateTimeVar = rotateSecShift !== 0 ? `(t)+(${rotateSecShift.toFixed(6)})` : 't';
+
     // Rotation (static + animated, keyframes v1): applied to the scaled RGBA
     // frame with a transparent fill (c=black@0), so rotated corners composite
     // over the layers below exactly like the canvas preview's ctx.rotate.
     // Closes the long-standing "rotation dropped" gap noted here since R2.
-    const rotDegExpr = motionExpression(clip.motionRot, rotSecPerFrame)
+    const rotDegExpr = motionExpression(clip.motionRot, rotSecPerFrame, rotateTimeVar)
       ?? (clip.rotation !== 0 ? clip.rotation.toFixed(6) : null);
     const rotateChain = rotDegExpr
       ? `,rotate='(${rotDegExpr})*PI/180':c=black@0`
@@ -458,9 +481,11 @@ function buildFilterGraph(
       `[${inputIdx}:v]trim=start=${trimStart.toFixed(4)}:end=${trimEnd.toFixed(4)},setpts=PTS-STARTPTS[${trimmedLabel}]`,
     );
 
-    // Scale/transform — animated scale uses FFmpeg expressions in output seconds.
-    const scaleXExpr = motionExpression(clip.motionScaleX, rotSecPerFrame);
-    const scaleYExpr = motionExpression(clip.motionScaleY, rotSecPerFrame);
+    // Scale/transform — animated scale uses FFmpeg expressions in output
+    // seconds, on the same PTS-reset local clock rotation is, so it needs
+    // the identical time-basis shift.
+    const scaleXExpr = motionExpression(clip.motionScaleX, rotSecPerFrame, rotateTimeVar);
+    const scaleYExpr = motionExpression(clip.motionScaleY, rotSecPerFrame, rotateTimeVar);
     const scaledW = Math.round(clip.width * clip.scaleX);
     const scaledH = Math.round(clip.height * clip.scaleY);
     const scaleWExpr = scaleXExpr
@@ -527,10 +552,15 @@ function buildFilterGraph(
     // Overlay with enable condition (time window). Motion tracks (#535 v1)
     // drive x/y via piecewise-linear expressions in output seconds; the
     // expression is clamped outside the first/last keyframe, matching the
-    // preview's evaluateMotion exactly.
+    // preview's evaluateMotion exactly. This chain runs on the CANVAS's own
+    // timeline (`[lastLabel]`, never PTS-reset), so clip.startFrame is
+    // already the right absolute position -- only a ranged export's rebase
+    // of the canvas's own zero needs correcting for, via rangeStartFrame.
     const secPerFrame = 1 / fps;
-    const motionXExpr = motionExpression(clip.motionX, secPerFrame);
-    const motionYExpr = motionExpression(clip.motionY, secPerFrame);
+    const positionSecShift = rangeStartFrame / fps;
+    const positionTimeVar = positionSecShift !== 0 ? `(t)+(${positionSecShift.toFixed(6)})` : 't';
+    const motionXExpr = motionExpression(clip.motionX, secPerFrame, positionTimeVar);
+    const motionYExpr = motionExpression(clip.motionY, secPerFrame, positionTimeVar);
     const posX = motionXExpr ?? `${Math.round(clip.x)}`;
     const posY = motionYExpr ?? `${Math.round(clip.y)}`;
     filters.push(
