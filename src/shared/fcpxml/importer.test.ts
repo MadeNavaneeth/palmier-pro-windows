@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Project } from '../types/project';
 import { exportFcpxml } from './exporter';
-import { parseFcpxml, parseFcpxmlTime } from './importer';
+import { fileUrlToPath, parseFcpxml, parseFcpxmlTime } from './importer';
 
 function baseProject(): Project {
   return {
@@ -107,11 +107,48 @@ describe('#154 round trip', () => {
     });
   });
 
-  it('treats gaps as implicit â€” absolute offsets already encode spacing', () => {
+  it('treats gaps as implicit — absolute offsets already encode spacing', () => {
     const withGap = xml.replace('</spine>', '<gap offset="2s" duration="1s"/></spine>');
     const parsedGap = parseFcpxml(withGap);
     expect(parsedGap.unsupported).toHaveLength(0);
     expect(parsedGap.clips.every((c) => c.startFrame >= 0)).toBe(true);
+  });
+});
+
+describe('fileUrlToPath', () => {
+  // The round-trip fixture above pins Windows paths, which is the shape this
+  // port ships. These cases pin the other shape, because a POSIX root lost its
+  // leading slash here and every asset then read as offline on import.
+  it('keeps the root slash on a POSIX absolute path', () => {
+    expect(fileUrlToPath('file:///media/footage.mp4')).toBe('/media/footage.mp4');
+    expect(fileUrlToPath('file:///tmp/palmier-fcpxml-abc/audio.wav')).toBe(
+      '/tmp/palmier-fcpxml-abc/audio.wav',
+    );
+  });
+
+  it('drops the empty-authority slash in front of a Windows drive letter', () => {
+    expect(fileUrlToPath('file:///C:/media/footage.mp4')).toBe('C:/media/footage.mp4');
+    expect(fileUrlToPath('file:///D:/a/b.wav')).toBe('D:/a/b.wav');
+  });
+
+  it('keeps the host of a network share as the root segment', () => {
+    expect(fileUrlToPath('file://nas/media/footage.mp4')).toBe('/nas/media/footage.mp4');
+  });
+
+  it('decodes percent-escapes the exporter wrote', () => {
+    expect(fileUrlToPath('file:///media/my%20clip%20%231.mp4')).toBe('/media/my clip #1.mp4');
+  });
+
+  it('passes a bare path through untouched', () => {
+    expect(fileUrlToPath('C:/media/footage.mp4')).toBe('C:/media/footage.mp4');
+    expect(fileUrlToPath('/media/footage.mp4')).toBe('/media/footage.mp4');
+  });
+
+  it('round-trips a POSIX path through the exporter', () => {
+    const p = fixtureProject();
+    p.media[0].path = '/media/footage.mp4';
+    const parsedPosix = parseFcpxml(exportFcpxml(p));
+    expect(parsedPosix.assets.map((a) => a.path)).toContain('/media/footage.mp4');
   });
 });
 

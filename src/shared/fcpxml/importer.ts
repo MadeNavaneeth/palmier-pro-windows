@@ -100,12 +100,26 @@ function numAttr(tag: string, name: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function fileUrlToPath(src: string): string {
+/**
+ * Turn a `file://` src back into a filesystem path.
+ *
+ * `file:///C:/media/a.mp4` puts a Windows drive letter where the authority
+ * would be, so the slash after the empty host is not part of the path and has
+ * to go. `file:///media/a.mp4` is a POSIX root, where that same slash is the
+ * root itself and has to stay — dropping it turns an absolute path into a
+ * relative one, which reads as "media is missing" on import.
+ */
+export function fileUrlToPath(src: string): string {
   let decoded = src;
   try {
     decoded = decodeURIComponent(src);
   } catch { /* keep raw */ }
-  return decoded.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '/');
+  if (!decoded.startsWith('file://')) return decoded;
+
+  const rest = decoded.slice('file://'.length);
+  if (/^\/[A-Za-z]:[\\/]/.test(rest)) return rest.slice(1);
+  // `file://host/share` names a network share; keep the host as the root.
+  return rest.startsWith('/') ? rest : `/${rest}`;
 }
 
 function extractTagBlock(xml: string, tagName: string): string[] {
