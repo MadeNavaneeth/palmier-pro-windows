@@ -1,20 +1,25 @@
 # Palmier Pro - Windows
 
-**Early-stage Windows rebuild of Palmier Pro: an AI-native video editor built with Electron, React, Rust/wgpu, FFmpeg, and MCP.**
+**Windows rebuild of Palmier Pro: an AI-native video editor built with Electron, React, Rust/wgpu, FFmpeg, and MCP.**
 
-> Status: early alpha. The desktop application currently supports project creation, media import, metadata and thumbnail extraction, and saving/opening `.vproj` projects. Timeline, compositor, export, agent, and MCP functionality is under active development. Some experimental editing and agent-command implementations already exist in the codebase but are not yet considered release-ready. See `docs/PROJECT_PLAN.md` for the full roadmap.
+> Status: pre-release. The editor is functional end to end — timeline, preview, export, agent, and MCP all work — but it has not shipped a tagged release, and parts of the upstream macOS feature set are still missing. `docs/UPSTREAM_PARITY.md` is the authoritative ledger of what is implemented, what is partial, and what is not; `docs/PROJECT_PLAN.md` holds the roadmap.
 
 ---
 
-## Current Alpha Functionality
+## What Works
 
-- Create, save, and open `.vproj` project files.
-- Import video, audio, and image media into a project.
-- Extract media metadata with FFmpeg/ffprobe.
-- Generate thumbnails for imported media.
-- Maintain shared TypeScript editor state for future UI, agent, and MCP commands.
+- **Projects** — create, save, and open `.vproj` files; atomic writes with a shared project writer, autosave, and crash-recovery snapshots.
+- **Media** — import video, audio, and images; probe metadata and thumbnails with FFmpeg/ffprobe; proxies, filmstrips, waveforms, and offline-media handling.
+- **Timeline** — multi-track editing with trim, split, move, ripple delete (clip, gap, or arbitrary marked range), J/L edits, markers, snapping, marquee selection, and one-step undo/redo across every operation.
+- **Preview** — real-time composited playback with blend modes, chroma key, color grade, crop, edge rounding/softness, fades, transitions, motion/rotation/scale keyframes, and styled titles.
+- **Export** — FFmpeg-driven render with quality presets and export history, sharing timing and geometry rules with preview.
+- **Agent + MCP** — a 46-tool command surface (`get_timeline`, `add_clip`, `remove_silence`, `apply_layout`, `export_fcpxml`, …) served identically to the in-app agent (Anthropic and OpenAI-compatible providers, BYOK) and to external MCP clients over stdio. Every tool routes through the same validated, undoable editor operations the UI uses.
+- **Generation** — AI media generation through a provider registry (fal, Replicate, HiggsField), with generated files probed into the library as first-class assets.
+- **Interchange** — FCPXML 1.11 import and export, plus SRT/VTT subtitle import.
 
-Screenshots and demo GIFs will be added once the Windows alpha UI is captured from this rebuild. Do not use upstream Palmier screenshots as proof of this Windows version.
+The Rust/wgpu native addon is optional: geometry falls back to FFmpeg filter math without it.
+
+Screenshots and demo GIFs will be added once the Windows UI is captured from this rebuild. Do not use upstream Palmier screenshots as proof of this Windows version.
 
 ---
 

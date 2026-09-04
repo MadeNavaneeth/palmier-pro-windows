@@ -37,6 +37,7 @@ import { mergeChromaKey } from '../../shared/editor/chroma-key';
 import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
 import { planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
+import { layoutSlotIds } from '../../shared/editor/grid-layout';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
 import { createHash } from 'crypto';
 import { inspectFramePath, rgbaToPng } from '../media/frame-png';
@@ -373,28 +374,6 @@ export class ToolExecutor {
             error: err instanceof Error ? err.message : 'Title creation failed.',
           };
         }
-      }
-
-      case 'import_srt': {
-        const track = this.editor.getTracks().find((t) => t.id === args.trackId);
-        if (!track) {
-          return { success: false, error: `No track "${args.trackId}" on this timeline.` };
-        }
-        if (track.type !== 'video') {
-          return { success: false, error: 'SRT import requires a video track.' };
-        }
-        if (track.locked) {
-          return { success: false, error: `Track "${track.name}" is locked.` };
-        }
-        const ids = this.editor.importSrt(
-          args.trackId,
-          args.srtContent,
-          args.startFrame,
-        );
-        if (ids.length === 0) {
-          return { success: false, error: 'No usable subtitles found in that SRT content.' };
-        }
-        return { success: true, data: { importedClipIds: ids, count: ids.length } };
       }
 
       case 'import_srt': {
@@ -1330,6 +1309,7 @@ export class ToolExecutor {
             success: true,
             data: {
               preset: args.preset,
+              slots: layoutSlotIds(args.preset),
               clipsArranged: count,
               requested: args.clipIds.length,
             },

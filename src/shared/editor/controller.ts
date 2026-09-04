@@ -31,7 +31,7 @@ import {
   ReplaceMediaCommand,
 } from './commands';
 import type { Command } from './commands';
-import { resolveLayoutPreset, type GridLayoutPreset } from './grid-layout';
+import { resolveLayoutPreset, type VideoLayoutPreset } from './grid-layout';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
 import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
@@ -2509,14 +2509,16 @@ export class EditorController {  private project: Project;
     return true;
   }
   /**
-   * Apply a grid layout to the given visual clip ids (upstream PR #410).
-   * Each clip is scaled to fit its cell within the project canvas.
-   * Clips are placed in order: first clip -> r1c1, second -> r1c2, etc.
-   * Extra clips beyond the grid capacity are left unchanged.
+   * Apply a layout preset to the given visual clip ids (upstream
+   * `VideoLayout` / `apply_layout`).
+   * Each clip is scaled to fit its slot within the project canvas.
+   * Clips are placed in the preset's draw order: first clip -> first slot,
+   * so a PiP's second clip lands on the inset that draws on top.
+   * Extra clips beyond the slot count are left unchanged.
    *
    * @returns The number of clips that received new geometry.
    */
-  applyLayout(clipIds: string[], preset: GridLayoutPreset): number {
+  applyLayout(clipIds: string[], preset: VideoLayoutPreset): number {
     if (clipIds.length === 0) return 0;
 
     const { width: canvasWidth, height: canvasHeight } = this.project.settings;

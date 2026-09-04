@@ -61,6 +61,19 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
 
 ### Added
 
+- Full layout catalogue for `apply_layout` (upstream PR #410, `VideoLayout`).
+  The tool accepted three grid presets; it now accepts all thirteen arrangements
+  upstream ships — `full`, `side_by_side`, `top_bottom`, the four `pip_*`
+  corners, `grid_2x2`/`3x3`/`4x4`, `main_sidebar`, `three_up`, and
+  `three_stack` — each described as named slots holding a normalized canvas rect
+  with a stacking order, so the slot vocabulary (`main`, `inset`, `left`,
+  `sidebar`, `rNcN`, …) and the PiP geometry (28% inset held 3.5% off its
+  corner) match upstream and transfer between platforms. A PiP inset now draws
+  over the main slot rather than under it. Grid presets keep the single shared
+  generator, so their pixel output is unchanged. `apply_layout` reports the
+  slots a preset defines, and an unknown preset is rejected with the valid list
+  rather than silently doing nothing.
+
 - Keyboard shortcut parity and discoverability (upstream #164): bindings are now
   declarative data in `shared/editor/shortcuts.ts` with strict modifier matching
   and a test asserting no chord is claimed twice and that `Ctrl+C/V/X/F/P/W/R/T`
@@ -137,6 +150,19 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
 - GitHub Actions CI for TypeScript and Rust checks on Windows.
 
 ### Fixed
+
+- FCPXML import marked every asset offline on Linux and macOS. `fileUrlToPath`
+  stripped the leading slash from a `file:///` src unconditionally, so
+  `file:///media/a.mp4` became the relative path `media/a.mp4`, the existence
+  check failed, and the import reported the media as missing and placed no
+  clips. Windows drive-letter URLs (`file:///C:/…`) were unaffected, which is
+  why the round-trip fixture — whose paths are hard-coded to `C:/media/…` — and
+  the Windows-only CI never caught it. The empty-authority slash is now dropped
+  only in front of a drive letter; a POSIX root is kept, and a
+  `file://host/share` host still becomes the root segment.
+- `import_srt` was listed twice in the agent tool executor, with two identical
+  handler bodies. The second was unreachable — esbuild flagged it on every
+  build as a case clause that will never be evaluated — and is removed.
 
 - Preview and export sought to the wrong time whenever a source's frame rate
   differed from the project's (upstream #68). Project-frame offsets were being

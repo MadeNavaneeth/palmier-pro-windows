@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { MAX_FRAME } from '../../shared/utils/safe-number';
 import { BLEND_MODES } from '../../shared/types/blend-mode';
 import { MAX_CANVAS_EDGE, QUALITY_PRESETS } from '../../shared/project/aspect-ratio';
+import { VIDEO_LAYOUT_PRESETS } from '../../shared/editor/grid-layout';
 
 // â”€â”€â”€ Shared numeric schemas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Every frame-typed argument is bounded: finite, integer, non-negative, and
@@ -696,15 +697,18 @@ export const tools = {
   applyLayout: {
     name: 'apply_layout',
     description:
-      'Arrange visual clips into a grid mosaic (upstream #410). Each clip fills an equal cell of the project canvas. '
-      + 'Clip ids are mapped to cells in order (first = top-left). Audio clips are skipped. '
-      + 'Grid presets: grid_2x2 (4 cells), grid_3x3 (9 cells), grid_4x4 (16 cells). '
-      + 'Clips beyond the grid capacity are left untouched. Undoable.',
+      'Arrange visual clips into one of the built-in layouts. Each clip fills one slot of the project canvas. '
+      + 'Clip ids are mapped to slots in the preset\'s draw order, so the first clip takes the base slot. Audio clips are skipped. '
+      + 'Presets and their slots: full (main); side_by_side (left, right); top_bottom (top, bottom); '
+      + 'pip_bottom_right / pip_bottom_left / pip_top_right / pip_top_left (main, then a 28% inset drawn on top); '
+      + 'grid_2x2 / grid_3x3 / grid_4x4 (row-major r1c1…rNcN, 4/9/16 equal cells); '
+      + 'main_sidebar (main at 70% wide, sidebar at 30%); three_up (left, center, right); three_stack (top, middle, bottom). '
+      + 'Clips beyond the slot count are left untouched. Undoable.',
     parameters: z.object({
       clipIds: z.array(z.string().min(1)).min(1)
-        .describe('Clip IDs to arrange, in row-major order (top-left to bottom-right).'),
-      preset: z.enum(['grid_2x2', 'grid_3x3', 'grid_4x4'])
-        .describe('Grid layout preset.'),
+        .describe('Clip IDs to arrange, matched to the preset\'s slots in order.'),
+      preset: z.enum(VIDEO_LAYOUT_PRESETS)
+        .describe('Layout preset.'),
     }),
   },
 
