@@ -61,6 +61,18 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
 
 ### Added
 
+- `trim_clips` agent/MCP tool, ported from upstream's stacked `trim-clips`
+  branch (commit `46b297e`, never merged to `main` before the source freeze;
+  tracked in the PR #438 ledger row): one call moves the start and/or end edges
+  of one or many clips to absolute project frames — end-exclusive, matching
+  `get_timeline` — as a single undo step, via a new `CommandHistory.squashLast`
+  composite-command fold. `ripple: true` rides the shared ripple-trim domain
+  path so downstream clips and sync-locked tracks keep the timeline closed.
+  Non-ripple extends overwrite overlapped neighbors through the same span
+  clearing overwrite placement uses (covered clips removed or split with
+  source mapping intact, linked partners cleared on their own tracks); every
+  clamp, no-op, overwrite, and skipped edit is reported in the receipt.
+  Validation runs before any mutation, so a refused call changes nothing.
 - Keyboard shortcut parity and discoverability (upstream #164): bindings are now
   declarative data in `shared/editor/shortcuts.ts` with strict modifier matching
   and a test asserting no chord is claimed twice and that `Ctrl+C/V/X/F/P/W/R/T`
@@ -230,6 +242,15 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
 
 ### Changed
 
+- Upstream parity records reconciled against the closed-source reality: the PR
+  #410 ledger row still claimed no grid-layout domain exists, but `apply_layout`,
+  `shared/editor/grid-layout.ts` (row-major `rNcN` cells over a shared generator),
+  and the Preview preset buttons are shipped — the row now reads Partial with the
+  real remaining gap named (PR #493's three-stack layout and nested-timeline
+  targets, blocked on the missing nested-sequence domain #155). Upstream issues
+  #573, #574 and #577 — the first filed after public development retired — now
+  have explicit `Needs investigation` triage rows instead of being absent from
+  the ledger, and the triage header counts were corrected (61 rows, not 58).
 - Floating promises are now a build error (upstream #89). ESLint runs with type
   information and enforces `no-floating-promises`, `no-misused-promises`, and
   `await-thenable`, so detached async work has to be marked `void` deliberately

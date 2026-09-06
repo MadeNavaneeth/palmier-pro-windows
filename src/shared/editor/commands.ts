@@ -44,6 +44,18 @@ export class CommandHistory {
     return result;
   }
 
+  /**
+   * Fold the newest `count` entries into a single composite history entry
+   * named `name`, so a multi-part tool call undoes in one step. No-op unless
+   * at least two entries are on the stack.
+   */
+  squashLast(count: number, name: string): boolean {
+    if (count <= 1 || this.undoStack.length < count) return false;
+    const removed = this.undoStack.splice(this.undoStack.length - count, count);
+    this.undoStack.push(new CompositeCommand(removed, name));
+    return true;
+  }
+
   undo(project: Project): Project | null {
     const command = this.undoStack.pop();
     if (!command) return null;
@@ -455,6 +467,32 @@ export class SetClipPropertiesCommand implements Command {
  * tracking individual deltas is error-prone; snapshotting the clips array is
  * simple and correct, and the arrays are small.
  */
+/**
+ * Several commands presented as one history entry, so a batch tool call is
+ * one undo step. Sub-commands keep their captured state from the live run;
+ * undo replays them in reverse, redo re-executes them in order.
+ */
+export class CompositeCommand implements Command {
+  readonly name = 'composite';
+
+  constructor(
+    private readonly commands: Command[],
+    private readonly label: string,
+  ) {}
+
+  execute(project: Project): Project {
+    return this.commands.reduce((state, command) => command.execute(state), project);
+  }
+
+  undo(project: Project): Project {
+    return [...this.commands].reverse().reduce((state, command) => command.undo(state), project);
+  }
+
+  describe(): string {
+    return this.label;
+  }
+}
+
 export class ReplaceClipsCommand implements Command {
   readonly name = 'replaceClips';
   private previousClips: Clip[] = [];

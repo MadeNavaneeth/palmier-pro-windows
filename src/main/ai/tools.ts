@@ -132,6 +132,28 @@ export const tools = {
     }),
   },
 
+  trimClips: {
+    name: 'trim_clips',
+    description:
+      'Trim or extend the edges of one or many clips — move where clips start or end — as a single undoable action. Each edit gives absolute project frames: startFrame moves the leading edge, endFrame the trailing edge (end-exclusive, matching get_timeline); pass either or both. Moving an edge inward trims material away; outward extends it, revealing more source when the media has headroom (images and titles extend freely). Linked audio/video partners trim together, so list a clip or its partner, not both.\n\nripple=false (default): only the edited clips change — extending overwrites whatever the new span overlaps on that track, trimming leaves a gap.\nripple=true: like a ripple-trim drag — downstream clips and sync-locked tracks shift to close (or open) the gap. Each requested frame is read as an amount of material to add or remove at that edge, applied before the shift.\n\nRequests are clamped by source headroom and sync-locked track room; the receipt reports every clamp, skipped edge, and overwritten clip — verify against it instead of assuming the exact frames landed.',
+    parameters: z.object({
+      edits: z.array(
+        // Strict like upstream's allowed-keys validation: a typo'd frame key
+        // must fail loudly instead of being stripped into a silent no-op.
+        z.object({
+          clipId: z.string().describe('Clip to trim (from get_timeline).'),
+          startFrame: frameSchema
+            .optional()
+            .describe('Project frame the leading edge should move to. Greater than the current start trims the head; smaller extends it.'),
+          endFrame: durationSchema
+            .optional()
+            .describe('Project frame the trailing edge should move to (end-exclusive). Smaller than the current end trims the tail; greater extends it.'),
+        }).strict(),
+      ).min(1).describe('Per-clip edge targets. A clip (or its linked partner) may appear in at most one edit.'),
+      ripple: z.boolean().optional().describe('Shift downstream clips and sync-locked tracks to keep the timeline closed, like a ripple trim. Default false.'),
+    }).strict(),
+  },
+
   moveClip: {
     name: 'move_clip',
     description: 'Move a clip to a new position on the timeline.',

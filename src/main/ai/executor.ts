@@ -12,6 +12,7 @@ import path from 'path';
 import { nanoid } from 'nanoid';
 import { tools, getToolByName } from './tools';
 import { clampFrame } from '../../shared/utils/safe-number';
+import type { TrimEdge } from '../../shared/editor/controller';
 import { detectSilenceForFile } from '../media/audio-envelope';
 import { loadSilenceSettings } from '../media/silence-settings';
 import { probeMedia } from '../media/probe';
@@ -167,6 +168,180 @@ export class ToolExecutor {
       }
       return { success: false, error: err.message };
     }
+  }
+
+  /**
+   * trim_clips — batch edge trims by absolute project frames, optionally
+   * rippling, as one undoable action (upstream `upstream/trim-clips`
+   * 46b297e). Validation runs against the current state before any mutation,
+   * so a refused call changes nothing; the edits then execute through the
+   * same trimClipEdge domain operation the UI drag uses, and the resulting
+   * history entries are squashed into a single undo step. Because each edit
+   * reads live state, an earlier extend that overwrites a later edit's clip
+   * is reported and skipped rather than corrupting the timeline.
+   */
+  private trimClips(args: {
+    edits: { clipId: string; startFrame?: number; endFrame?: number }[];
+    ripple?: boolean;
+  }): ToolResult {
+    const ripple = args.ripple === true;
+
+    interface PlannedEdge {
+      path: string;
+      clipId: string;
+      edge: TrimEdge;
+      delta: number;
+      requestedDurationDelta: number;
+      requestedFrame: number;
+      edgeName: 'start' | 'end';
+    }
+
+    // Pass 1 — validate and plan without mutating, so any refusal leaves the
+    // timeline exactly as it was.
+    const edgeEdits: PlannedEdge[] = [];
+    const claimed = new Set<string>();
+    for (const [idx, edit] of args.edits.entries()) {
+      const path = `edits[${idx}]`;
+      if (edit.startFrame === undefined && edit.endFrame === undefined) {
+        return { success: false, error: `${path}: at least one of 'startFrame' or 'endFrame' is required.` };
+      }
+      const clip = this.editor.getClips().find((c) => c.id === edit.clipId);
+      if (!clip) {
+        return { success: false, error: `${path}: clip not found: ${edit.clipId}` };
+      }
+
+      const currentEnd = clip.startFrame + clip.durationFrames;
+      const newStart = edit.startFrame ?? clip.startFrame;
+      const newEnd = edit.endFrame ?? currentEnd;
+      if (newEnd <= newStart) {
+        return {
+          success: false,
+          error: `${path}: resulting duration must be at least 1 frame (start ${newStart}, end ${newEnd}).`,
+        };
+      }
+
+      // Plan the end edge first so both edges of one clip carry correct
+      // deltas regardless of order.
+      const clipEdges: PlannedEdge[] = [];
+      if (edit.endFrame !== undefined && edit.endFrame !== currentEnd) {
+        clipEdges.push({
+          path,
+          clipId: clip.id,
+          edge: 'right',
+          delta: edit.endFrame - currentEnd,
+          requestedDurationDelta: edit.endFrame - currentEnd,
+          requestedFrame: edit.endFrame,
+          edgeName: 'end',
+        });
+      }
+      if (edit.startFrame !== undefined && edit.startFrame !== clip.startFrame) {
+        clipEdges.push({
+          path,
+          clipId: clip.id,
+          edge: 'left',
+          delta: edit.startFrame - clip.startFrame,
+          requestedDurationDelta: -(edit.startFrame - clip.startFrame),
+          requestedFrame: edit.startFrame,
+          edgeName: 'start',
+        });
+      }
+
+      // A clip, its linked partners, and (in ripple mode) everything that
+      // would shift with it may appear in at most one edit.
+      const group = new Set(this.editor.expandLinkedClipIds([clip.id]));
+      for (const id of group) {
+        if (claimed.has(id)) {
+          return {
+            success: false,
+            error: `${path}: clip ${edit.clipId} overlaps an earlier edit — the same clip or a linked partner that trims together.`,
+          };
+        }
+      }
+      for (const id of group) claimed.add(id);
+      edgeEdits.push(...clipEdges);
+    }
+
+    const notes: string[] = [];
+    if (edgeEdits.length === 0) {
+      notes.push('No change: every requested edge matches the clip\u2019s current frames.');
+      return { success: true, data: { touched: args.edits.map((edit) => edit.clipId), notes } };
+    }
+
+    // Pass 2 — execute. Every trim goes through the shared undoable domain
+    // operation; commands are squashed into one step afterwards.
+    let applied = 0;
+    for (const planned of edgeEdits) {
+      const live = this.editor.getClips().find((c) => c.id === planned.clipId);
+      if (!live) {
+        notes.push(`${planned.path}: clip was removed when an earlier edit extended over it — this trim was skipped.`);
+        continue;
+      }
+      const report = this.editor.trimClipEdge(planned.clipId, planned.edge, planned.delta, ripple);
+      if (!report) {
+        notes.push(
+          `${planned.path}: ${planned.edgeName} edge could not move ${planned.delta > 0 ? '+' : ''}${planned.delta} frames (no headroom, or a linked clip sits on a locked track) — skipped.`,
+        );
+        continue;
+      }
+      applied++;
+      if (report.durationDelta !== planned.requestedDurationDelta) {
+        notes.push(
+          `${planned.path}: ${planned.edgeName} edge clamped to ${Math.abs(report.durationDelta)} of the requested ${Math.abs(planned.requestedDurationDelta)} frames.`,
+        );
+      }
+
+      // ripple=false contract (upstream): extending overwrites whatever the
+      // new span overlaps on that track — through the same span-clearing the
+      // overwrite-placement mode uses, so partially overlapped neighbors are
+      // split and the covered middle dropped with source mapping intact.
+      if (!ripple && planned.edge === 'right') {
+        const lead = this.editor.getClips().find((c) => c.id === planned.clipId);
+        if (lead) {
+          const overwrite = this.editor.overwriteClearSpan(
+            { start: lead.startFrame + 1, end: lead.startFrame + lead.durationFrames },
+            this.editor.expandLinkedClipIds([planned.clipId]),
+          );
+          if (overwrite === null) {
+            notes.push(
+              `${planned.path}: the extended span overlaps a locked track — covered clips were left in place.`,
+            );
+          } else {
+            if (overwrite.removedClipIds.length > 0) {
+              applied++;
+              notes.push(
+                `${planned.path}: extending the end edge overwrote ${overwrite.removedClipIds.join(', ')} (fully covered).`,
+              );
+            }
+            if (overwrite.trimmedClipIds.length > 0) {
+              applied++;
+              notes.push(
+                `${planned.path}: extending the end edge trimmed covered parts of ${overwrite.trimmedClipIds.join(', ')}.`,
+              );
+            }
+          }
+        }
+      }
+    }
+    if (applied > 1) {
+      this.editor.squashLastCommands(applied, 'Trim clips (Agent)');
+    }
+
+    // Receipt: report where every edge actually landed so the caller verifies
+    // against the result instead of assuming the requested frames held.
+    if (!ripple) {
+      for (const planned of edgeEdits) {
+        const clip = this.editor.getClips().find((c) => c.id === planned.clipId);
+        if (!clip) continue;
+        const landed = planned.edge === 'left' ? clip.startFrame : clip.startFrame + clip.durationFrames;
+        if (landed !== planned.requestedFrame) {
+          notes.push(
+            `${planned.path}: ${planned.edgeName} edge landed at frame ${landed}, not the requested ${planned.requestedFrame} (source bounds or an overwrite from an earlier edit).`,
+          );
+        }
+      }
+    }
+
+    return { success: true, data: { touched: args.edits.map((edit) => edit.clipId), notes } };
   }
 
   private async dispatch(name: string, args: any): Promise<ToolResult> {
@@ -749,6 +924,9 @@ export class ToolExecutor {
           ? { success: true, data: report }
           : { success: false, error: 'Ripple trim could not be applied.' };
       }
+
+      case 'trim_clips':
+        return this.trimClips(args);
 
       case 'move_clip':
         this.editor.moveClip(args.clipId, clampFrame(args.startFrame), args.trackId);

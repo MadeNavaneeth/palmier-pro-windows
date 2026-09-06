@@ -394,6 +394,15 @@ export class EditorController {  private project: Project;
     this.notify();
   }
 
+  /**
+   * Fold the newest `count` history entries into one undoable step named
+   * `label` — the batch single-undo contract shared by trim_clips. No-op
+   * unless at least two entries were actually added.
+   */
+  squashLastCommands(count: number, label: string): void {
+    this.history.squashLast(count, label);
+  }
+
   undo(): boolean {
     const result = this.history.undo(this.project);
     if (result) {
@@ -498,6 +507,68 @@ export class EditorController {  private project: Project;
     );
     this.execute(new AddClipCommand(clip));
     return clip.id;
+  }
+
+  /**
+   * Clear one project-frame span the way overwrite placement does — split
+   * survivors and drop the covered middles with correct source mapping —
+   * on every track where a non-protected clip intersects the span, so a
+   * covered clip's linked partners on other tracks are overwritten with it
+   * and A/V stays paired. trim_clips uses this to realize the upstream
+   * ripple=false contract that extending an edge overwrites whatever the
+   * new span overlaps. Refuses (returns null) when a covered clip sits on
+   * a locked track; a no-op clears nothing and adds no history entry.
+   */
+  overwriteClearSpan(
+    span: { start: Frame; end: Frame },
+    protectedIds: Iterable<string>,
+  ): { removedClipIds: string[]; trimmedClipIds: string[] } | null {
+    const before = this.project.timeline.clips;
+    const keep = new Set(protectedIds);
+    const others = before.filter((clip) => !keep.has(clip.id));
+    const affectedTracks = new Set(
+      others
+        .filter(
+          (clip) =>
+            clip.startFrame < span.end && clip.startFrame + clip.durationFrames > span.start,
+        )
+        .map((clip) => clip.trackId),
+    );
+    if (affectedTracks.size === 0) return { removedClipIds: [], trimmedClipIds: [] };
+    const affected = others.filter((clip) => affectedTracks.has(clip.trackId));
+    if (!this.canEditClipIds(affected.map((clip) => clip.id))) return null;
+
+    const spansByTrack = new Map([...affectedTracks].map((trackId) => [trackId, [span]]));
+    const cleared = this.clearTrackSpans(others, spansByTrack);
+    const fragmentsById = new Map<string, Clip[]>();
+    for (const fragment of cleared) {
+      const list = fragmentsById.get(fragment.id);
+      if (list) list.push(fragment);
+      else fragmentsById.set(fragment.id, [fragment]);
+    }
+
+    const removedClipIds: string[] = [];
+    const trimmedClipIds: string[] = [];
+    const final = before.flatMap((clip) => {
+      if (keep.has(clip.id)) return [clip];
+      const fragments = fragmentsById.get(clip.id);
+      if (!fragments) {
+        removedClipIds.push(clip.id);
+        return [];
+      }
+      const changed =
+        fragments.length !== 1
+        || fragments[0].startFrame !== clip.startFrame
+        || fragments[0].durationFrames !== clip.durationFrames;
+      if (changed) trimmedClipIds.push(clip.id);
+      return fragments;
+    });
+
+    if (removedClipIds.length === 0 && trimmedClipIds.length === 0) {
+      return { removedClipIds, trimmedClipIds };
+    }
+    this.execute(new ReplaceClipsCommand(final, 'Overwrite trim extension'));
+    return { removedClipIds, trimmedClipIds };
   }
 
   /**

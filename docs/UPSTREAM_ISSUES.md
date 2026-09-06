@@ -7,8 +7,8 @@ the high-priority ledger live in [`UPSTREAM_PARITY.md`](./UPSTREAM_PARITY.md);
 this file is the exhaustive per-issue record.
 
 - Upstream baseline: `8805801fa4df8bc2dbc57cb0a854a1f5108f95c6`
-- Open issues captured: 59
-- Triage date: 2026-08-27 (re-triaged against v0.7.6; previous pass 2026-07-31 at `8d5648d8`, 51 issues)
+- Open issues captured: 60
+- Triage date: 2026-09-06 (added #573, #574, #577 â€” the first issues filed against the closed-source upstream, so they can no longer be clarified there; previous pass 2026-08-27 against v0.7.6, before that 2026-07-31 at `8d5648d8`, 51 issues)
 
 ## Dispositions
 
@@ -27,11 +27,12 @@ this file is the exhaustive per-issue record.
 | Partial | 1 |
 | Planned | 19 |
 | N/A platform | 14 |
-| Needs investigation | 0 |
-| **Total** | **58** |
+| Needs investigation | 3 |
+| **Total** | **61** |
 
-Every open issue in the captured snapshot now has a concrete disposition; none
-remain under investigation.
+Three issues filed after upstream retired public development (#573, #574, #577)
+are title-only reports that can no longer be clarified upstream; they carry
+`Needs investigation` until someone reproduces them in this port.
 
 `N/A platform` is not a shortcut. Each such row names the Apple framework,
 packaging mechanism, or hosted service that the issue depends on.
@@ -121,6 +122,9 @@ Ordered by issue number.
 | [#527](https://github.com/palmier-io/palmier-pro/issues/527) | Not working for macOS Sequoia | N/A platform | A macOS 15 compatibility report against an app whose minimum is macOS 26. The Windows support floor is set by Electron, not by an Apple OS version. |
 | [#532](https://github.com/palmier-io/palmier-pro/issues/532) | Migrate MCP server to the 2026-07-28 stateless protocol | Planned | Relevant: `main/ai/mcp-server.ts` implements stdio MCP and would need the stateless HTTP transport to serve remote/CLI clients without a persistent session. Tracked with the headless-mode gap under #302. |
 | [#536](https://github.com/palmier-io/palmier-pro/issues/536) | v0.7.4 regression of #465: scrub decode blocks on the tokio blocking pool | N/A platform | Scrub audio does not exist on Windows (#418 disposition); playhead scrubbing is visual only, so neither the original defect nor this regression can occur. The transferable rule â€” decode work must stay off the interaction path â€” is already enforced by process separation and `latest-request.ts`. |
+| [#573](https://github.com/palmier-io/palmier-pro/issues/573) | "video blusa" ("video blurry") — title-only report with screen-recording links | Needs investigation | Filed 2026-08-24, the day upstream retired public development (PR #578); it has no body text, no follow-up, and the attached recordings show the macOS app, so the defect cannot be characterized upstream. Plausible Windows analogue: preview blur from the proxy/decode path. Reproduce here before committing to a disposition. |
+| [#574](https://github.com/palmier-io/palmier-pro/issues/574) | "ui size" — title-only report, no body or follow-up | Needs investigation | Same closed-source situation as #573. Presumably a window/UI-scaling complaint; this port already ships draggable splitters with persisted sizes (#286) and a rendered no-overflow matrix at 1600x1000 and 1024x680, but the actual complaint is unknowable from the title alone. |
+| [#577](https://github.com/palmier-io/palmier-pro/issues/577) | "Videos" — title-only report, no body or follow-up | Needs investigation | Same closed-source situation as #573 and #574. Could be a playback, import, or generation question; the report is unusable without upstream to answer it. |
 | [#556](https://github.com/palmier-io/palmier-pro/issues/556) | Playback can take 50+ seconds to start on sparse timelines with many tracks | Implemented | Profiled and fixed. The Windows analogue of upstream's per-frame build cost was real: the compositor's visible-layer scan did a track-list `find` per clip in its filter and **two** per sort comparison, so every composite and prefetch request paid O(clips Ã— tracks) even when the tracks were empty at that frame. `main/media/visible-clips.ts` now builds one track index per call and resolves ordering keys before sorting â€” O(clips + tracks), same semantics (audio exclusion, hidden tracks, half-open range, track-order layering). Measured over 120 resolutions on a 40-track / 3000-clip timeline: worst-case placement 120.9 ms â†’ 8.65 ms (**14Ã—**, and no longer growing with track count); typical placement 2Ã—. The per-pass media lookup got the same treatment (one index instead of a scan per clip). The absolute stall upstream reports never reproduced here â€” bounded decode pool and newest-wins coalescing cap the rest â€” so this closes as hardening with a scaling regression guard (`visible-clips.test.ts`). |
 
 ## Implementation notes

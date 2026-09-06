@@ -495,7 +495,7 @@ Read the project state first, then make edits using the tools below.
 
 **Placement:** add_clip places media at a frame. Modes: overwrite (default), insert (pushes later clips right), append (after last clip on track).
 
-**Trimming:** trim_clip adjusts In/Out points. split_clip cuts a clip in two at a frame.
+**Trimming:** trim_clip adjusts In/Out points. trim_clips moves clip edges to absolute project frames for one or many clips in one undoable action (pass ripple=true to shift downstream material). split_clip cuts a clip in two at a frame.
 
 **Ripple editing:** ripple_delete_clips removes clips and closes gaps across sync-locked tracks. ripple_delete_gap closes a specific empty span. ripple_delete_ranges extracts arbitrary ranges. ripple_trim_clip resizes a clip and shifts downstream material.
 
