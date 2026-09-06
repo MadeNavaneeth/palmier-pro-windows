@@ -1,8 +1,8 @@
 /**
- * Tests for grid layout presets and cell generation (upstream PR #410).
+ * Tests for grid layout presets and cell generation (upstream PR #410, #493).
  * Verifies that the shared generator produces correct equal-sized cells
- * for 2×2, 3×3, and 4×4 grids, and that the controller's applyLayout
- * sets clip geometry correctly.
+ * for 2×2, 3×3, and 4×4 grids and the three_stack rows (PR #493), and
+ * that the controller's applyLayout sets clip geometry correctly.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -80,13 +80,26 @@ describe('resolveLayoutPreset', () => {
   it('resolves grid_4x4 to 16 cells', () => {
     expect(resolveLayoutPreset('grid_4x4', 1920, 1080)).toHaveLength(16);
   });
+
+  it('resolves three_stack to 3 full-width rows (upstream PR #493)', () => {
+    const cells = resolveLayoutPreset('three_stack', 1920, 1080);
+    expect(cells.map((c) => c.slotId)).toEqual(['r1c1', 'r2c1', 'r3c1']);
+    // Every row spans the full canvas width, one third of the height.
+    for (const cell of cells) {
+      expect(cell.width).toBe(1920);
+      expect(cell.height).toBe(360);
+    }
+    expect(cells[0]).toMatchObject({ x: 0, y: 0 });
+    expect(cells[1]).toMatchObject({ x: 0, y: 360 });
+    expect(cells[2]).toMatchObject({ x: 0, y: 720 });
+  });
 });
 
 describe('listGridLayoutPresets', () => {
-  it('returns 3 presets', () => {
+  it('returns 4 presets including three_stack last', () => {
     const presets = listGridLayoutPresets();
-    expect(presets).toHaveLength(3);
-    expect(presets.map((p) => p.id)).toEqual(['grid_2x2', 'grid_3x3', 'grid_4x4']);
+    expect(presets).toHaveLength(4);
+    expect(presets.map((p) => p.id)).toEqual(['grid_2x2', 'grid_3x3', 'grid_4x4', 'three_stack']);
   });
 
   it('reports correct cell counts', () => {
@@ -94,6 +107,13 @@ describe('listGridLayoutPresets', () => {
     expect(presets[0]!.cellCount).toBe(4);
     expect(presets[1]!.cellCount).toBe(9);
     expect(presets[2]!.cellCount).toBe(16);
+    expect(presets[3]!.cellCount).toBe(3);
+  });
+
+  it('labels three_stack for humans instead of 3×1', () => {
+    const presets = listGridLayoutPresets();
+    expect(presets[3]!.label).toBe('Three-Stack');
+    expect(presets[0]!.label).toBe('2×2');
   });
 });
 
@@ -174,5 +194,19 @@ describe('EditorController.applyLayout', () => {
     const allClips = ctrl.getClips();
     const c1 = allClips.find((c) => c.id === clips[0])!;
     expect(c1).toMatchObject({ x: 0, y: 0, width: 480, height: 270 });
+  });
+
+  it('three_stack frames 3 clips into full-width rows (upstream PR #493)', () => {
+    const { ctrl, clips } = setup();
+    const changed = ctrl.applyLayout(clips.slice(0, 3), 'three_stack');
+    expect(changed).toBe(3);
+
+    const allClips = ctrl.getClips();
+    const top = allClips.find((c) => c.id === clips[0])!;
+    const middle = allClips.find((c) => c.id === clips[1])!;
+    const bottom = allClips.find((c) => c.id === clips[2])!;
+    expect(top).toMatchObject({ x: 0, y: 0, width: 1920, height: 360 });
+    expect(middle).toMatchObject({ x: 0, y: 360, width: 1920, height: 360 });
+    expect(bottom).toMatchObject({ x: 0, y: 720, width: 1920, height: 360 });
   });
 });

@@ -11,7 +11,7 @@
  * canvas, positioned at (x, y) with (cellWidth, cellHeight).
  */
 
-export type GridLayoutPreset = 'grid_2x2' | 'grid_3x3' | 'grid_4x4';
+export type GridLayoutPreset = 'grid_2x2' | 'grid_3x3' | 'grid_4x4' | 'three_stack';
 
 export interface GridLayoutCell {
   /** 1-based row index. */
@@ -30,11 +30,14 @@ export interface GridLayoutCell {
   height: number;
 }
 
-/** Grid dimensions for each preset. */
-const GRID_DIMENSIONS: Record<GridLayoutPreset, { rows: number; cols: number }> = {
+/** Grid dimensions for each preset. `label` overrides the default "R×C". */
+const GRID_DIMENSIONS: Record<GridLayoutPreset, { rows: number; cols: number; label?: string }> = {
   grid_2x2: { rows: 2, cols: 2 },
   grid_3x3: { rows: 3, cols: 3 },
   grid_4x4: { rows: 4, cols: 4 },
+  // Upstream PR #493's three-stack: three full-width horizontal rows.
+  // Rows of a 3x1 grid are exactly its top/middle/bottom slots.
+  three_stack: { rows: 3, cols: 1, label: 'Three-Stack' },
 };
 
 /**
@@ -96,7 +99,7 @@ export function listGridLayoutPresets(): Array<{
     const dims = GRID_DIMENSIONS[id];
     return {
       id,
-      label: `${dims.rows}×${dims.cols}`,
+      label: dims.label ?? `${dims.rows}×${dims.cols}`,
       rows: dims.rows,
       cols: dims.cols,
       cellCount: dims.rows * dims.cols,

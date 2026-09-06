@@ -61,6 +61,11 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
 
 ### Added
 
+- `three_stack` layout preset for `apply_layout` (upstream PR #493's portable
+  half): three full-width horizontal rows expressed through the same shared
+  grid generator as the #410 presets (a 3×1 grid with a human label in the
+  Preview menu). The PR's nested-timeline targets remain blocked on the
+  missing nested-sequence domain (#155).
 - `trim_clips` agent/MCP tool, ported from upstream's stacked `trim-clips`
   branch (commit `46b297e`, never merged to `main` before the source freeze;
   tracked in the PR #438 ledger row): one call moves the start and/or end edges
