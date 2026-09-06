@@ -462,6 +462,29 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(graph).not.toContain(GEOMETRY);
   });
 
+  it('upscales sources with bicubic, not bilinear (upstream #573 blur)', () => {
+    // Export composites from the ORIGINALS, but a scaled clip (image source,
+    // moved/reframed footage) still magnifies through this filter. Bilinear
+    // leaves the same staircase texture the preview decoder had.
+    const project = projectWithMedia(
+      [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
+      [{ type: 'video', assetId: 'v', startFrame: 0 }],
+    );
+
+    const args = buildFfmpegArgs(
+      project,
+      { outputPath: 'out.mp4', format: 'mp4', quality: 'normal' },
+      1920,
+      1080,
+      30,
+      100,
+      null,
+    );
+    const graph = args.find((arg) => arg.includes('scale='))!;
+    expect(graph).toContain('flags=bicubic');
+    expect(args.join(' ')).not.toContain('bilinear');
+  });
+
   it('terminates with codec settings, duration limit, and output path', () => {
     const project = projectWithMedia(
       [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],

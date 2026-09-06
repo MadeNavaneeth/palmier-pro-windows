@@ -161,8 +161,10 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
   sources) — the cap is now 1920 with CRF 26→20; the proxy file cache key
   did not include the transcode policy, so old narrow proxies never
   regenerated — the key now carries a policy version; and the frame decoder
-  scaled with bilinear — now bicubic. Export always read originals and is
-  unchanged.
+  scaled with bilinear — now bicubic. Follow-up: the export filter graph
+  used the same bilinear scaler for any clip rendered at a size other than
+  its source (images, reframed footage), putting the softness in the final
+  output — export now scales bicubic too.
 - Preview and export sought to the wrong time whenever a source's frame rate
   differed from the project's (upstream #68). Project-frame offsets were being
   divided by the *source* frame rate, so a 60 fps clip in a 30 fps timeline

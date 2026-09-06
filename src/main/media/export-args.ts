@@ -546,7 +546,7 @@ function buildFilterGraph(
       }
 
       filters.push(
-        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale='${scaleWExpr}':'${scaleHExpr}':flags=bilinear${chromaChain}${rotateChain}${colorChain}${edgeChain}${fadeChain}[${scaledLabel}]`,
+        `[${trimmedLabel}]fps=${fps},format=rgba${cropChain},scale='${scaleWExpr}':'${scaleHExpr}':flags=bicubic${chromaChain}${rotateChain}${colorChain}${edgeChain}${fadeChain}[${scaledLabel}]`,
       );
 
     // Overlay with enable condition (time window). Motion tracks (#535 v1)
