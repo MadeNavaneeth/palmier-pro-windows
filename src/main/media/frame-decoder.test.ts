@@ -6,7 +6,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { FrameDecoder, decodeRequestKey, type DecodeRequest } from './frame-decoder';
+import {
+  FrameDecoder,
+  decodeRequestKey,
+  decodeVideoArgs,
+  type DecodeRequest,
+} from './frame-decoder';
 
 const base: DecodeRequest = {
   assetPath: 'C:/media/clip.mp4',
@@ -14,6 +19,24 @@ const base: DecodeRequest = {
   height: 1080,
   sourceSeconds: 12,
 };
+
+describe('decode video arguments', () => {
+  it('scales with bicubic, not bilinear (upstream #573 blur)', () => {
+    // Bicubic keeps upscaled previews smooth; the bilinear staircase was a
+    // compounding source of the "video looks blurry" report.
+    const args = decodeVideoArgs('C:/m.mp4', 1.5, 1920, 1080);
+    expect(args.join(' ')).toContain('scale=1920:1080:flags=bicubic');
+    expect(args.join(' ')).not.toContain('bilinear');
+  });
+
+  it('still seeks before input and emits raw RGBA on stdout', () => {
+    const args = decodeVideoArgs('C:/m.mp4', 2.5, 640, 360);
+    expect(args.indexOf('-ss')).toBeLessThan(args.indexOf('-i'));
+    expect(args).toContain('2.5000');
+    expect(args.join(' ')).toContain('rawvideo');
+    expect(args).toContain('rgba');
+  });
+});
 
 describe('decode request identity', () => {
   it('is stable for identical requests', () => {

@@ -155,6 +155,14 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
 
 ### Fixed
 
+- Blurry preview of proxied media (upstream #573 investigation). Three
+  compounding softness sources removed: the proxy width cap was 960 px, so
+  full-frame clips on a 1920 canvas previewed a 2x upscale (4x for 4K
+  sources) — the cap is now 1920 with CRF 26→20; the proxy file cache key
+  did not include the transcode policy, so old narrow proxies never
+  regenerated — the key now carries a policy version; and the frame decoder
+  scaled with bilinear — now bicubic. Export always read originals and is
+  unchanged.
 - Preview and export sought to the wrong time whenever a source's frame rate
   differed from the project's (upstream #68). Project-frame offsets were being
   divided by the *source* frame rate, so a 60 fps clip in a 30 fps timeline

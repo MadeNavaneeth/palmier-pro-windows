@@ -23,16 +23,17 @@ this file is the exhaustive per-issue record.
 
 | Disposition | Count |
 |---|---|
-| Implemented | 24 |
+| Implemented | 25 |
 | Partial | 1 |
 | Planned | 19 |
 | N/A platform | 14 |
-| Needs investigation | 3 |
+| Needs investigation | 2 |
 | **Total** | **61** |
 
 Three issues filed after upstream retired public development (#573, #574, #577)
-are title-only reports that can no longer be clarified upstream; they carry
-`Needs investigation` until someone reproduces them in this port.
+are title-only reports that can no longer be clarified upstream. #573 was
+reproduced as the blurry-preview class and fixed (see its row); #574 and #577
+remain `Needs investigation` until someone can characterize them in this port.
 
 `N/A platform` is not a shortcut. Each such row names the Apple framework,
 packaging mechanism, or hosted service that the issue depends on.
@@ -122,7 +123,7 @@ Ordered by issue number.
 | [#527](https://github.com/palmier-io/palmier-pro/issues/527) | Not working for macOS Sequoia | N/A platform | A macOS 15 compatibility report against an app whose minimum is macOS 26. The Windows support floor is set by Electron, not by an Apple OS version. |
 | [#532](https://github.com/palmier-io/palmier-pro/issues/532) | Migrate MCP server to the 2026-07-28 stateless protocol | Planned | Relevant: `main/ai/mcp-server.ts` implements stdio MCP and would need the stateless HTTP transport to serve remote/CLI clients without a persistent session. Tracked with the headless-mode gap under #302. |
 | [#536](https://github.com/palmier-io/palmier-pro/issues/536) | v0.7.4 regression of #465: scrub decode blocks on the tokio blocking pool | N/A platform | Scrub audio does not exist on Windows (#418 disposition); playhead scrubbing is visual only, so neither the original defect nor this regression can occur. The transferable rule â€” decode work must stay off the interaction path â€” is already enforced by process separation and `latest-request.ts`. |
-| [#573](https://github.com/palmier-io/palmier-pro/issues/573) | "video blusa" ("video blurry") — title-only report with screen-recording links | Needs investigation | Filed 2026-08-24, the day upstream retired public development (PR #578); it has no body text, no follow-up, and the attached recordings show the macOS app, so the defect cannot be characterized upstream. Plausible Windows analogue: preview blur from the proxy/decode path. Reproduce here before committing to a disposition. |
+| [#573](https://github.com/palmier-io/palmier-pro/issues/573) | "video blusa" ("video blurry") — title-only report with screen-recording links | Implemented | Investigated as the blurry-preview report the title names. The Windows preview had three compounding softness sources, all fixed: (1) the proxy width cap was 960 px, so any full-frame clip on a 1920 canvas decoded a proxy upscaled 2× (4× from 4K sources) — cap raised to 1920 and CRF 26→20 so the proxy survives a 2× zoom; (2) the proxy cache key did not include the transcode policy, so every asset with an old narrow proxy kept it forever — the key now carries a policy version and stale proxies regenerate on demand; (3) the frame decoder scaled with bilinear, leaving a staircase texture on magnified previews — now bicubic. Export always read originals and is unaffected. `proxy.test.ts` pins the cap ≥ 1920; `frame-decoder.test.ts` pins the scaler. |
 | [#574](https://github.com/palmier-io/palmier-pro/issues/574) | "ui size" — title-only report, no body or follow-up | Needs investigation | Same closed-source situation as #573. Presumably a window/UI-scaling complaint; this port already ships draggable splitters with persisted sizes (#286) and a rendered no-overflow matrix at 1600x1000 and 1024x680, but the actual complaint is unknowable from the title alone. |
 | [#577](https://github.com/palmier-io/palmier-pro/issues/577) | "Videos" — title-only report, no body or follow-up | Needs investigation | Same closed-source situation as #573 and #574. Could be a playback, import, or generation question; the report is unusable without upstream to answer it. |
 | [#556](https://github.com/palmier-io/palmier-pro/issues/556) | Playback can take 50+ seconds to start on sparse timelines with many tracks | Implemented | Profiled and fixed. The Windows analogue of upstream's per-frame build cost was real: the compositor's visible-layer scan did a track-list `find` per clip in its filter and **two** per sort comparison, so every composite and prefetch request paid O(clips Ã— tracks) even when the tracks were empty at that frame. `main/media/visible-clips.ts` now builds one track index per call and resolves ordering keys before sorting â€” O(clips + tracks), same semantics (audio exclusion, hidden tracks, half-open range, track-order layering). Measured over 120 resolutions on a 40-track / 3000-clip timeline: worst-case placement 120.9 ms â†’ 8.65 ms (**14Ã—**, and no longer growing with track count); typical placement 2Ã—. The per-pass media lookup got the same treatment (one index instead of a scan per clip). The absolute stall upstream reports never reproduced here â€” bounded decode pool and newest-wins coalescing cap the rest â€” so this closes as hardening with a scaling regression guard (`visible-clips.test.ts`). |

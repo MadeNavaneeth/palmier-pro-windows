@@ -3,6 +3,7 @@ import {
   effectiveSourcePath,
   proxyArgs,
   PROXY_WIDTH_CAP,
+  PROXY_CRF,
 } from './proxy';
 
 describe('effectiveSourcePath (R2 proxies)', () => {
@@ -34,9 +35,15 @@ describe('proxyArgs', () => {
     const joined = args.join(' ');
     expect(joined).toContain(`min(${PROXY_WIDTH_CAP},iw)`);
     expect(joined).toContain('libx264');
-    expect(joined).toContain('crf 26');
+    expect(joined).toContain(`crf ${PROXY_CRF}`);
     expect(joined).toContain('aac');
     expect(joined).toContain('faststart');
     expect(args[args.length - 1]).toBe('C:/px/out.mp4');
+  });
+
+  it('caps at canvas width so a full-frame clip never upscales a proxy (#573)', () => {
+    // The classic 1080p canvas must be served 1:1 by the proxy; anything
+    // narrower reintroduces the blurry magnified preview.
+    expect(PROXY_WIDTH_CAP).toBeGreaterThanOrEqual(1920);
   });
 });

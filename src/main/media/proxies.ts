@@ -14,16 +14,27 @@ import path from 'path';
 import fsSync from 'fs';
 import crypto from 'crypto';
 import type { EditorController } from '../../shared/editor/controller';
-import { proxyArgs } from '../../shared/media/proxy';
+import { proxyArgs, PROXY_CRF, PROXY_WIDTH_CAP } from '../../shared/media/proxy';
+
+/**
+ * Bumped whenever the proxy transcode recipe changes, so the content-keyed
+ * output path changes with it and stale narrow/blurry proxies regenerate.
+ */
+const PROXY_POLICY_VERSION = `v2-cap${PROXY_WIDTH_CAP}-crf${PROXY_CRF}`;
 import { loadProxyMode, saveProxyMode } from './proxy-mode';
 
 const generating = new Set<string>();
 
 function proxyOutputPath(sourcePath: string, userDataDir: string): string {
   const stat = fsSync.statSync(sourcePath);
+  // The proxy POLICY version is part of the key: when the transcode recipe
+  // changes (upstream #573 raised width cap 960→1920 and CRF 26→20), assets
+  // with an old-generation proxy must regenerate instead of serving the
+  // blurry narrow file forever. Bump PROXY_POLICY_VERSION with any change
+  // to PROXY_WIDTH_CAP, PROXY_CRF, or the FFmpeg argument shape.
   const key = crypto
     .createHash('sha1')
-    .update(`${sourcePath}|${stat.size}|${stat.mtimeMs}`)
+    .update(`${PROXY_POLICY_VERSION}|${sourcePath}|${stat.size}|${stat.mtimeMs}`)
     .digest('hex')
     .slice(0, 16);
   return path.join(userDataDir, 'proxies', `${key}.mp4`);

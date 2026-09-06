@@ -38,6 +38,36 @@ export interface DecodeRequest {
 const DECODE_TIMEOUT_MS = 5000;
 
 /**
+ * FFmpeg arguments for one RGBA frame, testable without spawning a process.
+ *
+ * The scaler is bicubic, not the default bilinear: frames are decoded at the
+ * clip's canvas rect and then upscaled by the GPU compositor whenever the
+ * preview canvas exceeds the requested size, so a smoother filter here keeps
+ * magnified previews free of the bilinear staircase texture (upstream #573).
+ */
+export function decodeVideoArgs(
+  inputPath: string,
+  timestampSec: number,
+  width: number,
+  height: number,
+): string[] {
+  return [
+    '-nostdin',
+    '-loglevel', 'error',
+    // -ss before -i is an input seek: FFmpeg jumps to the nearest keyframe
+    // instead of decoding the file from the start.
+    '-ss', timestampSec.toFixed(4),
+    '-i', inputPath,
+    '-frames:v', '1',
+    '-an',
+    '-vf', `scale=${width}:${height}:flags=bicubic`,
+    '-f', 'rawvideo',
+    '-pix_fmt', 'rgba',
+    'pipe:1',
+  ];
+}
+
+/**
  * Cache/dedupe identity for a decode.
  *
  * The size is part of the key. Without it a frame decoded for a 1920x1080 canvas
@@ -217,22 +247,7 @@ export class FrameDecoder {
     height: number,
   ): Promise<Buffer | null> {
     return new Promise((resolve) => {
-      const args = [
-        '-nostdin',
-        '-loglevel', 'error',
-        // -ss before -i is an input seek: FFmpeg jumps to the nearest keyframe
-        // instead of decoding the file from the start.
-        '-ss', timestampSec.toFixed(4),
-        '-i', inputPath,
-        '-frames:v', '1',
-        '-an',
-        '-vf', `scale=${width}:${height}:flags=bilinear`,
-        '-f', 'rawvideo',
-        '-pix_fmt', 'rgba',
-        'pipe:1',
-      ];
-
-      const proc = spawn('ffmpeg', args, {
+      const proc = spawn('ffmpeg', decodeVideoArgs(inputPath, timestampSec, width, height), {
         stdio: ['ignore', 'pipe', 'ignore'],
         windowsHide: true,
       });

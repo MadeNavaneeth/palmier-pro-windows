@@ -29,9 +29,19 @@ export function effectiveSourcePath(
   return asset.path;
 }
 
-export const PROXY_WIDTH_CAP = 960;
+/**
+ * Proxy width cap. 1920 covers full-frame clips on the typical canvas without
+ * an upscale — the preview used to read a 960-wide proxy for a 1920 canvas
+ * and magnify it 2x, which is exactly the "video looks blurry" report
+ * (upstream #573). 4K sources still step down, so the interactive benefit
+ * survives.
+ */
+export const PROXY_WIDTH_CAP = 1920;
 
-/** FFmpeg arguments for a 540p-ish mezzanine proxy with re-encoded audio. */
+/** Quality knob for the proxy transcode: high enough to survive a 2x preview zoom. */
+export const PROXY_CRF = '20';
+
+/** FFmpeg arguments for a 1080p-ish mezzanine proxy with re-encoded audio. */
 export function proxyArgs(sourcePath: string, outputPath: string): string[] {
   return [
     '-y',
@@ -39,7 +49,7 @@ export function proxyArgs(sourcePath: string, outputPath: string): string[] {
     '-vf', `scale='min(${PROXY_WIDTH_CAP},iw)':-2`,
     '-c:v', 'libx264',
     '-preset', 'veryfast',
-    '-crf', '26',
+    '-crf', PROXY_CRF,
     '-c:a', 'aac',
     '-b:a', '128k',
     '-movflags', '+faststart',
