@@ -23,9 +23,9 @@ this file is the exhaustive per-issue record.
 
 | Disposition | Count |
 |---|---|
-| Implemented | 25 |
-| Partial | 1 |
-| Planned | 19 |
+| Implemented | 22 |
+| Partial | 6 |
+| Planned | 17 |
 | N/A platform | 14 |
 | Needs investigation | 2 |
 | **Total** | **61** |
@@ -40,7 +40,7 @@ packaging mechanism, or hosted service that the issue depends on.
 
 ## Adopted in the current pass
 
-Six issues moved to `Implemented` in this pass. Details are in
+Eight issues moved to `Implemented` in this pass. Details are in
 [implementation notes](#implementation-notes).
 
 | Upstream | Title | Windows owner |
@@ -51,6 +51,8 @@ Six issues moved to `Implemented` in this pass. Details are in
 | [#167](https://github.com/palmier-io/palmier-pro/issues/167) | Viewer guides for the preview canvas | `shared/preview/guides.ts` |
 | [#17](https://github.com/palmier-io/palmier-pro/issues/17), [#140](https://github.com/palmier-io/palmier-pro/issues/140) | Custom API base URL and OpenAI-compatible providers | `shared/ai/provider-config.ts` |
 | [#89](https://github.com/palmier-io/palmier-pro/issues/89) | Fire-and-forget promises | `eslint.config.js`, `shared/editor/state-mirror.ts` |
+| [#573](https://github.com/palmier-io/palmier-pro/issues/573) | "video blusa" ("video blurry") — proxy width cap, stale-proxy regeneration, and bilinear preview decode scaling, all fixed; follow-up fixed the same bilinear scaler in the export filter graph | `src/main/media/proxy.ts`, `src/main/media/frame-decoder.ts`, `src/main/media/export-args.ts` |
+| [#556](https://github.com/palmier-io/palmier-pro/issues/556) | Playback startup stall on sparse multi-track timelines | `src/main/media/visible-clips.ts` |
 
 Three `Partial` issues also moved substantially without changing disposition:
 
@@ -239,7 +241,7 @@ table above.
 
 ---
 
-_Last reconciled with the parity workflow: 2026-08-21._
+_Last reconciled with the parity workflow: 2026-09-07 (headers recounted and brought in line with the table; #573 and #556 added to the current-pass adoption list; #573 follow-up — export scaler — folded into its row)._
 
 
 
