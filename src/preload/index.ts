@@ -8,6 +8,7 @@
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { SilenceConfig } from '../shared/audio/silence-detector';
+import type { MarkerSettings } from '../shared/editor/marker-settings';
 
 // â”€â”€â”€ Type-safe API exposed to the renderer as `window.palmier` â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -111,6 +112,13 @@ const api = {
     redo: () => ipcRenderer.invoke('editor:redo'),
     getState: () => ipcRenderer.invoke('editor:get-state'),
     syncState: (projectJson: string) => ipcRenderer.invoke('editor:sync-from-renderer', projectJson),
+  },
+
+  // ── Timeline markers (upstream PR #560: rippleTimelineMarkers preference) ──
+  markers: {
+    getMarkerSettings: () => ipcRenderer.invoke('markers:get-marker-settings'),
+    setMarkerSettings: (update: Partial<MarkerSettings>) =>
+      ipcRenderer.invoke('markers:set-marker-settings', update),
   },
 
   // â”€â”€ AI / MCP (Phase 5+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

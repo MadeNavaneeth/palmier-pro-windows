@@ -1,6 +1,7 @@
 ﻿import React from 'react';
 import {
   CircleX,
+  Flag,
   Keyboard,
   Magnet,
   ListCollapse,
@@ -55,9 +56,17 @@ export function TimelineToolbar() {
   const redo = useTimelineStore((state) => state.redo);
   const lastOp = useTimelineStore((state) => state.controller.getLastCommandDescription());
   const toggleSnap = useTimelineStore((state) => state.toggleSnap);
+  const rippleMarkers = useTimelineStore((state) => state.rippleMarkers);
+  const setRippleMarkers = useTimelineStore((state) => state.setRippleMarkers);
+  const loadRippleMarkers = useTimelineStore((state) => state.loadRippleMarkers);
   const deselectAll = useTimelineStore((state) => state.deselectAll);
   const fitToViewport = useTimelineStore((state) => state.fitToViewport);
   const openShortcutHelp = useUiStore((state) => state.openShortcutHelp);
+
+  // Pull the saved marker-ripple preference into the store controller once.
+  React.useEffect(() => {
+    loadRippleMarkers();
+  }, [loadRippleMarkers]);
 
   const setZoom = (value: number) => {
     useTimelineStore.setState({
@@ -146,6 +155,14 @@ export function TimelineToolbar() {
         disabled={selectedClipIds.size === 0 && !selectedGap}
       >
         <ListCollapse size={14} />
+      </ToolButton>
+      <ToolButton
+        label={rippleMarkers ? 'Ripple markers with edits (on)' : 'Ripple markers with edits (off)'}
+        onClick={() => setRippleMarkers(!rippleMarkers)}
+        active={rippleMarkers}
+        pressed={rippleMarkers}
+      >
+        <Flag size={14} />
       </ToolButton>
 
       <Divider />

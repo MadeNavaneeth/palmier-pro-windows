@@ -45,6 +45,7 @@ import {
   validateMarker,
   type TimelineMarker,
 } from './markers';
+import { DEFAULT_MARKER_SETTINGS } from './marker-settings';
 import { hasEmbeddedAudio, isMediaCompatibleWithTrack, placementDuration } from './placement';
 import { fileKindOf } from '../media/file-kind';
 import { assetDurationSeconds } from '../media/source-time';
@@ -315,6 +316,12 @@ export class EditorController {  private project: Project;
   private clipByIdCache?: { project: Project; byId: Map<string, Clip> };
   /** In-app clipboard for copy/cut/paste (R1). Not OS-shared by design. */
   private clipClipboard: ClipClipboardEntry[] = [];
+  /**
+   * Whether ripple edits carry markers along (upstream #560,
+   * `rippleTimelineMarkers`, default on). A preference, not project data:
+   * it never lands on the undo stack and is not serialized with the project.
+   */
+  private rippleTimelineMarkers: boolean = DEFAULT_MARKER_SETTINGS.rippleTimelineMarkers;
 
   constructor(project?: Project) {
     this.project = project || createEmptyProject();
@@ -2156,6 +2163,20 @@ export class EditorController {  private project: Project;
   }
 
   /**
+   * Whether ripple edits carry markers along (upstream #560,
+   * `rippleTimelineMarkers`, default on). Off means program-time pins: clips
+   * move, markers stay.
+   */
+  isRippleTimelineMarkers(): boolean {
+    return this.rippleTimelineMarkers;
+  }
+
+  /** Flip the marker-ripple preference. Not a document edit: no undo entry. */
+  setRippleTimelineMarkers(enabled: boolean): void {
+    this.rippleTimelineMarkers = enabled;
+  }
+
+  /**
    * Create, update, and delete markers in one undoable step.
    *
    * Every resulting marker is validated (name/comment/color/frame bounds);
@@ -2232,6 +2253,7 @@ export class EditorController {  private project: Project;
   private rippleMarkersClosing(
     trackHoles: readonly (readonly RippleRange[])[],
   ): TimelineMarker[] | null {
+    if (!this.rippleTimelineMarkers) return null;
     if (this.getMarkers().length === 0 || trackHoles.length === 0) return null;
     return mapMarkersThroughClosingHoles(this.getMarkers(), trackHoles);
   }
@@ -2418,6 +2440,7 @@ export class EditorController {  private project: Project;
   }
 
   private rippleMarkersOpening(frame: Frame, push: Frame): TimelineMarker[] | null {
+    if (!this.rippleTimelineMarkers) return null;
     if (this.getMarkers().length === 0) return null;
     return mapMarkersOpeningAt(this.getMarkers(), frame, push);
   }

@@ -13,6 +13,7 @@ import { registerEditorSyncHandlers } from './ipc/editor-sync';
 import { getPreviewCompositor, registerPreviewHandlers } from './media/preview-compositor';
 import { registerExportHandlers } from './media/exporter';
 import { registerAudioHandlers } from './media/audio-envelope';
+import { registerMarkerSettingsHandlers } from './markers/marker-settings';
 import { registerProxyHandlers } from './media/proxies';
 import { registerAiHandlers } from './ai/ipc';
 import { registerGenerationHandlers } from './generation';
@@ -96,6 +97,7 @@ export function startApplication(): void {
   registerPreviewHandlers(() => editorController.getProject());
   registerExportHandlers(() => editorController.getProject());
   registerAudioHandlers();
+  registerMarkerSettingsHandlers(editorController);
   registerProxyHandlers(editorController);
   registerAiHandlers(() => editorController);
   registerGenerationHandlers();

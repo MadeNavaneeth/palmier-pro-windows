@@ -12,6 +12,7 @@ import type { BlendMode } from '../../shared/types/blend-mode';
 import type { ClipTransition } from '../../shared/editor/transition';
 import type { MediaProbeResult } from '../../main/ipc/media';
 import { normalizePlaybackRate } from '../../shared/editor/playback-rate';
+import { normalizeMarkerSettings } from '../../shared/editor/marker-settings';
 import type { GridLayoutPreset } from '../../shared/editor/grid-layout';
 import type { SilenceConfig } from '../../shared/audio/silence-detector';
 import { nextEditPoint, previousEditPoint, timelineContentEnd } from '../../shared/editor/edit-points';
@@ -173,6 +174,15 @@ export interface TimelineState {
   goToNextMarker: () => boolean;
   /** Jump to the nearest marker start before the playhead; selects it. */
   goToPreviousMarker: () => boolean;
+  /**
+   * Whether ripple edits carry markers along (upstream #560,
+   * `rippleTimelineMarkers`, default on). Off means program-time pins.
+   */
+  rippleMarkers: boolean;
+  /** Read the saved preference into the controller and state. */
+  loadRippleMarkers: () => void;
+  /** Flip the preference and persist it via main. */
+  setRippleMarkers: (enabled: boolean) => void;
 
   /** Add a 3s title clip at the playhead on the first video track (R3). */
   addTitleAtPlayhead: (text?: string) => string | '';
@@ -357,6 +367,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     hoveredClipId: null,
     selectedGap: null,
     selectedMarkerIds: new Set(),
+    rippleMarkers: true,
     marqueeBaseIds: null,
     offlinePaths: new Set(),
 
@@ -554,6 +565,48 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     const hit = get().controller.getMarkers().find((m) => m.startFrame === previous);
     set({ selectedMarkerIds: hit ? new Set([hit.id]) : new Set() });
     return true;
+  },
+
+  loadRippleMarkers: () => {
+    // Unit tests run without a preload bridge; the default-on value stands.
+    if (typeof window === 'undefined' || !window.palmier?.markers) return;
+    void window.palmier.markers
+      .getMarkerSettings()
+      .then((result: unknown) => {
+        const settings = (result as { settings?: { rippleTimelineMarkers?: unknown } } | null)
+          ?.settings;
+        const enabled = normalizeMarkerSettings(settings).rippleTimelineMarkers;
+        get().controller.setRippleTimelineMarkers(enabled);
+        set({ rippleMarkers: enabled });
+      })
+      .catch(() => {
+        // The default stands; a failed read must not unpin markers.
+      });
+  },
+
+  setRippleMarkers: (enabled) => {
+    get().controller.setRippleTimelineMarkers(enabled);
+    set({ rippleMarkers: enabled });
+    // Best-effort persistence: the controller already governs this session,
+    // so a failed write only means the choice will not survive a restart.
+    try {
+      if (typeof window === 'undefined' || !window.palmier?.markers) return;
+      void window.palmier.markers
+        .setMarkerSettings({ rippleTimelineMarkers: enabled })
+        .then((result: unknown) => {
+          const settings = (result as { settings?: { rippleTimelineMarkers?: unknown } } | null)
+            ?.settings;
+          if (!settings) return;
+          const reconciled = normalizeMarkerSettings(settings).rippleTimelineMarkers;
+          get().controller.setRippleTimelineMarkers(reconciled);
+          set({ rippleMarkers: reconciled });
+        })
+        .catch(() => {
+          // Keep the optimistic value for this session.
+        });
+    } catch {
+      // No bridge (unit tests): the controller value still governs.
+    }
   },
 
   addTitleAtPlayhead: (text = 'Title') => {
