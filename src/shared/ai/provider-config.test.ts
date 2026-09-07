@@ -224,6 +224,35 @@ describe('presets', () => {
     expect(presetById('lmstudio')?.requiresApiKey).toBe(false);
     expect(presetById('openai')?.requiresApiKey).toBe(true);
   });
+
+  it('offers zero-cost presets that still validate end to end', () => {
+    for (const id of ['openrouter-free', 'gemini', 'mistral']) {
+      const preset = presetById(id);
+      expect(preset?.kind).toBe('openai-compatible');
+      expect(preset?.requiresApiKey).toBe(true);
+      expect(preset?.defaultModel.length).toBeGreaterThan(0);
+      const validated = validateProviderConfig({
+        kind: preset!.kind,
+        baseUrl: preset!.baseUrl,
+        model: preset!.defaultModel,
+      });
+      expect(validated.ok, id).toBe(true);
+    }
+    // The free router picks the model per request, so there is no pinned
+    // model id to rot.
+    expect(presetById('openrouter-free')?.defaultModel).toBe('openrouter/free');
+  });
+
+  it('documents the cost contract wherever free is on offer', () => {
+    for (const preset of PROVIDER_PRESETS) {
+      if (/free/i.test(preset.label)) {
+        expect(preset.hint, preset.id).toMatch(/free/i);
+      }
+    }
+    expect(presetById('groq')?.hint).toMatch(/free/i);
+    expect(presetById('openrouter')?.hint).toMatch(/:free/);
+    expect(presetById('ollama')?.hint).toMatch(/ollama pull/);
+  });
 });
 
 describe('endpointLeavesMachine', () => {
