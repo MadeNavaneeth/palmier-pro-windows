@@ -199,6 +199,49 @@ export function mapMarkersThroughClosingHoles(
 }
 
 /**
+ * What a ripple edit did to markers, for the Agent (upstream PR #560).
+ *
+ * Upstream returns shifted markers and removed ids in its ripple mutation
+ * deltas so the model can patch review notes without re-reading the timeline.
+ * Both lists are empty when the edit left markers alone — including when the
+ * `rippleTimelineMarkers` preference is off — so an empty delta never needs a
+ * follow-up `get_timeline` to disambiguate.
+ */
+export interface MarkerRippleDelta {
+  /** New state of every marker whose span moved. */
+  shiftedMarkers: TimelineMarker[];
+  /** Ids of every marker the edit consumed. */
+  removedMarkerIds: string[];
+}
+
+/**
+ * Diff marker spans before and after a ripple edit.
+ *
+ * Only the span counts: a ripple remap never renames, recolors, or edits a
+ * comment, so a marker present on both sides with the same start and duration
+ * is untouched even if some other field somehow differs. A `null` after-side
+ * is the remappers' "nothing would move" signal and diffs to empty.
+ */
+export function diffMarkers(
+  before: readonly TimelineMarker[],
+  after: readonly TimelineMarker[] | null,
+): MarkerRippleDelta {
+  if (after === null) return { shiftedMarkers: [], removedMarkerIds: [] };
+  const beforeById = new Map(before.map((marker) => [marker.id, marker]));
+  const afterById = new Map(after.map((marker) => [marker.id, marker]));
+  const removedMarkerIds: string[] = [];
+  for (const marker of before) {
+    if (!afterById.has(marker.id)) removedMarkerIds.push(marker.id);
+  }
+  const shiftedMarkers = after.filter((marker) => {
+    const prev = beforeById.get(marker.id);
+    return prev !== undefined
+      && (prev.startFrame !== marker.startFrame || prev.durationFrames !== marker.durationFrames);
+  });
+  return { shiftedMarkers, removedMarkerIds };
+}
+
+/**
  * Map markers through an opening (push > 0) or closing (push < 0) at `frame`,
  * used by ripple trim and insert: starts at or after the frame move by push,
  * ranges spanning the frame stretch or shrink by it, and a negative push is

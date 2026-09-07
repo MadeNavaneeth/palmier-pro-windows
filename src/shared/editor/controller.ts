@@ -38,11 +38,13 @@ import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/
 import { resolveTrackName, TRACK_NAME_MAX_LENGTH } from './track-name';
 import {
   MARKER_DEFAULT_COLOR,
+  diffMarkers,
   mapMarkersOpeningAt,
   mapMarkersThroughClosingHoles,
   rescaleMarker,
   sortMarkers,
   validateMarker,
+  type MarkerRippleDelta,
   type TimelineMarker,
 } from './markers';
 import { DEFAULT_MARKER_SETTINGS } from './marker-settings';
@@ -82,6 +84,10 @@ export interface MediaPlacementResult {
 export interface RippleDeleteReport {
   removedClipIds: string[];
   shiftedClipIds: string[];
+  /** New state of every marker whose span moved (upstream #560). */
+  shiftedMarkers: TimelineMarker[];
+  /** Ids of every marker the edit consumed (upstream #560). */
+  removedMarkerIds: string[];
 }
 
 export type TrimEdge = 'left' | 'right';
@@ -90,6 +96,10 @@ export interface RippleTrimReport {
   resizedClipIds: string[];
   shiftedClipIds: string[];
   durationDelta: Frame;
+  /** New state of every marker whose span moved (upstream #560). */
+  shiftedMarkers: TimelineMarker[];
+  /** Ids of every marker the edit consumed (upstream #560). */
+  removedMarkerIds: string[];
 }
 
 /** Highest project frame rate the timeline math is validated for. */
@@ -122,6 +132,10 @@ export interface RippleRangesReport {
   removedClipIds: string[];
   fragmentClipIds: string[];
   shiftedClipIds: string[];
+  /** New state of every marker whose span moved (upstream #560). */
+  shiftedMarkers: TimelineMarker[];
+  /** Ids of every marker the edit consumed (upstream #560). */
+  removedMarkerIds: string[];
 }
 
 /**
@@ -808,11 +822,12 @@ export class EditorController {  private project: Project;
         const startFrame = shifts.get(clip.id);
         return startFrame === undefined ? clip : { ...clip, startFrame };
       });
-    this.executeRipple(clips, this.rippleMarkersClosing(trackHoles), 'Ripple delete clips');
+    const markerDelta = this.executeRipple(clips, this.rippleMarkersClosing(trackHoles), 'Ripple delete clips');
 
     return {
       removedClipIds: selected.map((clip) => clip.id),
       shiftedClipIds: [...shifts.keys()],
+      ...markerDelta,
     };
   }
 
@@ -851,12 +866,12 @@ export class EditorController {  private project: Project;
       const startFrame = shifts.get(clip.id);
       return startFrame === undefined ? clip : { ...clip, startFrame };
     });
-    this.executeRipple(
+    const markerDelta = this.executeRipple(
       clips,
       this.rippleMarkersClosing([[{ start, end }]]),
       'Ripple delete gap',
     );
-    return { removedClipIds: [], shiftedClipIds: [...shifts.keys()] };
+    return { removedClipIds: [], shiftedClipIds: [...shifts.keys()], ...markerDelta };
   }
 
   rippleDeleteRanges(trackId: string, ranges: RippleRange[]): RippleRangesReport | null {
@@ -985,6 +1000,7 @@ export class EditorController {  private project: Project;
     const markers = this.rippleMarkersClosing(
       [...clearTrackIds].map(() => merged),
     );
+    const markerDelta = diffMarkers(this.getMarkers(), markers);
     if (markers === null) {
       const project: Project = {
         ...this.project,
@@ -1014,6 +1030,7 @@ export class EditorController {  private project: Project;
       removedClipIds,
       fragmentClipIds,
       shiftedClipIds,
+      ...markerDelta,
     };
   }
 
@@ -1165,7 +1182,7 @@ export class EditorController {  private project: Project;
     const markers = ripple
       ? this.rippleMarkersOpening(leadEnd, durationDelta)
       : null;
-    this.executeRipple(
+    const markerDelta = this.executeRipple(
       clips,
       markers,
       ripple ? 'Ripple trim clips' : targetIds.size > 1 ? 'Trim linked clips' : 'Trim clip',
@@ -1174,6 +1191,7 @@ export class EditorController {  private project: Project;
       resizedClipIds: targets.map((clip) => clip.id),
       shiftedClipIds: [...shifts.keys()],
       durationDelta,
+      ...markerDelta,
     };
   }
 
@@ -2447,17 +2465,20 @@ export class EditorController {  private project: Project;
 
   /**
    * Commit a ripple transaction's clip changes together with any marker
-   * remapping, so one user action stays exactly one undo step.
+   * remapping, so one user action stays exactly one undo step. Returns what
+   * the edit did to markers so ripple receipts can report it (upstream #560).
    */
-  private executeRipple(clips: Clip[], markers: TimelineMarker[] | null, label: string): void {
+  private executeRipple(clips: Clip[], markers: TimelineMarker[] | null, label: string): MarkerRippleDelta {
+    const delta = diffMarkers(this.getMarkers(), markers);
     if (markers === null) {
       this.execute(new ReplaceClipsCommand(clips, label));
-      return;
+      return delta;
     }
     this.execute(new ReplaceProjectCommand({
       ...this.project,
       timeline: { ...this.project.timeline, clips, markers },
     }, label));
+    return delta;
   }
 
   private updateTrack(trackId: string, patch: Partial<Track>, label: string): boolean {

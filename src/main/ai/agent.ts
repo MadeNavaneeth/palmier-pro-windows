@@ -497,7 +497,7 @@ Read the project state first, then make edits using the tools below.
 
 **Trimming:** trim_clip adjusts In/Out points. trim_clips moves clip edges to absolute project frames for one or many clips in one undoable action (pass ripple=true to shift downstream material). split_clip cuts a clip in two at a frame.
 
-**Ripple editing:** ripple_delete_clips removes clips and closes gaps across sync-locked tracks. ripple_delete_gap closes a specific empty span. ripple_delete_ranges extracts arbitrary ranges. ripple_trim_clip resizes a clip and shifts downstream material.
+**Ripple editing:** ripple_delete_clips removes clips and closes gaps across sync-locked tracks. ripple_delete_gap closes a specific empty span. ripple_delete_ranges extracts arbitrary ranges. ripple_trim_clip resizes a clip and shifts downstream material. Ripple receipts report shiftedMarkers and removedMarkerIds — patch review notes from those instead of re-reading the timeline.
 
 **Markers:** manage_markers creates/updates/deletes review notes anchored to frames. Point markers have durationFrames 0; positive values make range markers.
 

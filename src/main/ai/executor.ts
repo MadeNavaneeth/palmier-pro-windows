@@ -32,6 +32,7 @@ import {
   type SilenceTrackScope,
 } from '../../shared/editor/silence-scoping';
 import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple';
+import { diffMarkers } from '../../shared/editor/markers';
 import { sanitizeCrop } from '../../shared/media/source-crop';
 import { sanitizeMotion } from '../../shared/media/motion';
 import { mergeChromaKey } from '../../shared/editor/chroma-key';
@@ -268,7 +269,10 @@ export class ToolExecutor {
     }
 
     // Pass 2 — execute. Every trim goes through the shared undoable domain
-    // operation; commands are squashed into one step afterwards.
+    // operation; commands are squashed into one step afterwards. Marker spans
+    // are snapshotted up front so the receipt reports the net marker delta of
+    // the whole batch (upstream #560) instead of per-edge fragments.
+    const markersBefore = this.editor.getMarkers();
     let applied = 0;
     for (const planned of edgeEdits) {
       const live = this.editor.getClips().find((c) => c.id === planned.clipId);
@@ -327,7 +331,10 @@ export class ToolExecutor {
     }
 
     // Receipt: report where every edge actually landed so the caller verifies
-    // against the result instead of assuming the requested frames held.
+    // against the result instead of assuming the requested frames held, plus
+    // the net marker delta so review notes can be patched without re-reading
+    // the timeline (upstream #560).
+    const markerDelta = diffMarkers(markersBefore, this.editor.getMarkers());
     if (!ripple) {
       for (const planned of edgeEdits) {
         const clip = this.editor.getClips().find((c) => c.id === planned.clipId);
@@ -341,7 +348,15 @@ export class ToolExecutor {
       }
     }
 
-    return { success: true, data: { touched: args.edits.map((edit) => edit.clipId), notes } };
+    return {
+      success: true,
+      data: {
+        touched: args.edits.map((edit) => edit.clipId),
+        notes,
+        shiftedMarkers: markerDelta.shiftedMarkers,
+        removedMarkerIds: markerDelta.removedMarkerIds,
+      },
+    };
   }
 
   private async dispatch(name: string, args: any): Promise<ToolResult> {
