@@ -1,0 +1,17 @@
+# Dependabot keeps npm, GitHub Actions, and Cargo dependencies current.
+# Free for public repositories; security updates land as pull requests that
+# the existing CI workflow typechecks, lints, and tests like any other change.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /native
+    schedule:
+      interval: weekly

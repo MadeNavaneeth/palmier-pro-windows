@@ -53,3 +53,7 @@ jobs:
       - name: Rust check
         working-directory: native
         run: cargo check
+
+      - name: Rust tests
+        working-directory: native
+        run: cargo test
