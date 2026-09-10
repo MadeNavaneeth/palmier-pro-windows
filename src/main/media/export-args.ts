@@ -29,6 +29,7 @@ import { hasEdgeEffects, buildEdgeGeqExpr } from '../../shared/editor/edge-effec
 import { chromaKeyOf, buildChromaKeyFilterChain } from '../../shared/editor/chroma-key';
 import { volumeFilterExpression } from '../../shared/audio/volume-keyframes';
 import { eqOf, eqFilterChain } from '../../shared/audio/eq';
+import { compressorOf, buildCompressorFilter } from '../../shared/audio/compressor';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -256,6 +257,21 @@ export function buildFfmpegArgs(
 
       let chain =
         `[${inputIdx}:a]atrim=start=${trimStart.toFixed(4)}:end=${trimEnd.toFixed(4)},asetpts=PTS-STARTPTS`;
+      // Effects order mirrors the preview graph exactly:
+      //   panner → EQ → compressor → makeup → gain(volume)
+      // so a compressor reacts to the same signal level live and rendered.
+      // Pan and EQ are linear routing/filters, so they sit before the
+      // dynamic stage; volume is the last stage in the preview, which is
+      // why it is emitted after these.
+      const pan = clampPan(clip.pan ?? 0);
+      if (pan !== 0) {
+        // Balance-style pan (R5): attenuate one channel toward the other.
+        chain += `,${ffmpegPanFilter(pan)}`;
+      }
+      const eq = eqOf(clip);
+      if (eq) chain += `,${eqFilterChain(eq)}`;
+      const compressor = compressorOf(clip);
+      if (compressor) chain += `,${buildCompressorFilter(compressor)}`;
       // Volume keyframes (#535/#539-#541 audio slice) are authoritative over
       // the static field when present. Local t=0 in this chain is the
       // instant the ORIGINAL (pre-range-rebase) timeline frame plays, since
@@ -269,16 +285,6 @@ export function buildFfmpegArgs(
         chain += `,volume='${volumeExpr}':eval=frame`;
       } else if (Number.isFinite(clip.volume) && clip.volume >= 0 && clip.volume !== 1) {
         chain += `,volume=${Math.min(1, clip.volume).toFixed(4)}`;
-      }
-      // Three-band EQ (upstream #158) — same bands and frequencies the
-      // preview biquads use, so a +6 dB low shelf sounds the same live and
-      // in the delivered file.
-      const eq = eqOf(clip);
-      if (eq) chain += `,${eqFilterChain(eq)}`;
-      const pan = clampPan(clip.pan ?? 0);
-      if (pan !== 0) {
-        // Balance-style pan (R5): attenuate one channel toward the other.
-        chain += `,${ffmpegPanFilter(pan)}`;
       }
       if (delayMs > 0) {
         chain += `,adelay=${delayMs}:all=1`;

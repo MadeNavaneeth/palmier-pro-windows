@@ -25,6 +25,14 @@ import {
   type ColorGrade,
   type GradePreset,
 } from '../../shared/editor/color-grade';
+import {
+  COMPRESSOR_LIMITS,
+  DEFAULT_COMPRESSOR,
+  hasCompressor,
+  mergeCompressor,
+  normalizeCompressor,
+  type CompressorConfig,
+} from '../../shared/audio/compressor';
 import { linearToDb } from '../../shared/audio/normalize';
 import type { Clip } from '../../shared/types/project';
 import type { EditorController } from '../../shared/editor/controller';
@@ -357,6 +365,7 @@ export function Inspector() {
               Audio clip — compositing properties don't apply.
             </p>
             <EqControls clipId={clip.id} clip={clip} />
+            <CompressorControls clipId={clip.id} clip={clip} />
             <VolumeKeyframeControls clipId={clip.id} />
           </>
         )}
@@ -753,6 +762,64 @@ function EqControls({ clipId, clip }: { clipId: string; clip: Clip }) {
           step={0.5}
           format={db}
           onChange={(next) => set(field, next)}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Compressor / limiter (upstream #158's remaining audio tool).
+ *
+ * The checkbox arms a defaulted compressor; ratio 1 is the off switch, so
+ * unchecking clears the field the same way the chroma-key checkbox clears
+ * its tolerance. All five values are shared with the preview
+ * `DynamicsCompressorNode` and the export `acompressor` filter, so what is
+ * auditioned is what renders.
+ */
+function CompressorControls({ clipId, clip }: { clipId: string; clip: Clip }) {
+  const controller = useTimelineStore((s) => s.controller);
+  const active = hasCompressor(clip);
+  const config = normalizeCompressor(clip.compressor);
+
+  const update = (patch: Partial<CompressorConfig>) => {
+    controller.applyClipProperties([clipId], 'Compressor', (draft) => {
+      const merged = mergeCompressor(draft.compressor, patch);
+      if (merged) draft.compressor = merged;
+      else delete draft.compressor;
+      return true;
+    });
+  };
+
+  const fields: Array<[string, keyof CompressorConfig, number, number, number, (v: number) => string]> = [
+    ['Threshold', 'thresholdDb', COMPRESSOR_LIMITS.thresholdDb.min, COMPRESSOR_LIMITS.thresholdDb.max, 1, (v) => `${v} dB`],
+    ['Ratio', 'ratio', COMPRESSOR_LIMITS.ratio.min, COMPRESSOR_LIMITS.ratio.max, 0.5, (v) => `${v}:1`],
+    ['Attack', 'attackMs', 1, 500, 1, (v) => `${v} ms`],
+    ['Release', 'releaseMs', 10, 2000, 10, (v) => `${v} ms`],
+    ['Makeup', 'makeupDb', COMPRESSOR_LIMITS.makeupDb.min, COMPRESSOR_LIMITS.makeupDb.max, 0.5, (v) => `${v > 0 ? '+' : ''}${v} dB`],
+  ];
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1" data-compressor>
+      <label className="flex cursor-pointer items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={active}
+          onChange={(event) => update(event.target.checked ? DEFAULT_COMPRESSOR : { ratio: 1 })}
+          className="accent-[var(--color-accent)]"
+        />
+        <span className="text-2xs uppercase tracking-wide text-text-muted">Compressor</span>
+      </label>
+      {active && fields.map(([label, field, min, max, step, format]) => (
+        <GradeSlider
+          key={field}
+          label={label}
+          value={config[field]}
+          min={min}
+          max={max}
+          step={step}
+          format={format}
+          onChange={(value) => update({ [field]: value })}
         />
       ))}
     </div>

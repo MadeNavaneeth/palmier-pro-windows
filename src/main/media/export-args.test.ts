@@ -381,6 +381,35 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(graph).not.toContain('treble=');
   });
 
+  it('emits an acompressor filter when the clip is compressed (#158)', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
+      [{
+        type: 'audio', assetId: 'a', startFrame: 0, durationFrames: 60,
+        compressor: { thresholdDb: -18, ratio: 4, attackMs: 20, releaseMs: 250, makeupDb: 6 },
+      }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('atrim'))!;
+    expect(graph).toContain('acompressor=');
+    expect(graph).toContain('ratio=4.00');
+    expect(graph).toContain('attack=20.00');
+    expect(graph).toContain('release=250.00');
+  });
+
+  it('emits no compressor for a ratio-1 clip', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
+      [{
+        type: 'audio', assetId: 'a', startFrame: 0, durationFrames: 60,
+        compressor: { thresholdDb: -18, ratio: 1, attackMs: 20, releaseMs: 250, makeupDb: 0 },
+      }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('atrim'))!;
+    expect(graph).not.toContain('acompressor=');
+  });
+
   it('emits a time-varying volume expression when volumeDb is set, overriding the static field', () => {
     const project = projectWithMedia(
       [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],

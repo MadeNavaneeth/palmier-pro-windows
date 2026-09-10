@@ -38,6 +38,7 @@ import { sanitizeMotion } from '../../shared/media/motion';
 import { mergeChromaKey } from '../../shared/editor/chroma-key';
 import { hasColorGrade, sanitizeColorGrade } from '../../shared/editor/color-grade';
 import { sanitizeEq } from '../../shared/audio/eq';
+import { hasCompressor, mergeCompressor, normalizeCompressor } from '../../shared/audio/compressor';
 import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
 import { planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
@@ -754,6 +755,47 @@ export class ToolExecutor {
               (updated?.eqLowDb ?? 0) === 0
               && (updated?.eqMidDb ?? 0) === 0
               && (updated?.eqHighDb ?? 0) === 0,
+          },
+        };
+      }
+
+      case 'set_clip_compressor': {
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'audio') {
+          return { success: false, error: 'Compression applies to audio clips only.' };
+        }
+        const clear = args.clear === true;
+        const receipt = this.editor.applyClipProperties(
+          [clip.id],
+          clear ? 'Remove compressor' : 'Compressor',
+          (draft) => {
+            if (clear) {
+              delete draft.compressor;
+              return true;
+            }
+            const merged = mergeCompressor(draft.compressor, {
+              thresholdDb: args.thresholdDb,
+              ratio: args.ratio,
+              attackMs: args.attackMs,
+              releaseMs: args.releaseMs,
+              makeupDb: args.makeupDb,
+            });
+            // ratio 1 (or an arming call without a ratio) resolves to 1:1
+            // and removes the stage, matching the Inspector's checkbox.
+            if (merged) draft.compressor = merged;
+            else delete draft.compressor;
+            return true;
+          },
+        );
+        const updated = this.editor.getClips().find((candidate) => candidate.id === clip.id);
+        return {
+          success: true,
+          data: {
+            clipId: clip.id,
+            changed: receipt.changedClipIds.length > 0,
+            compressor: updated && hasCompressor(updated) ? normalizeCompressor(updated.compressor) : null,
+            cleared: !updated || !hasCompressor(updated),
           },
         };
       }

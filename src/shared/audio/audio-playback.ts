@@ -12,6 +12,7 @@ import type { Clip, Frame, MediaAsset } from '../types/project';
 import { clampPan } from './pan';
 import { resolveClipVolumeLinear } from './volume-keyframes';
 import { eqOf, type ClipEq } from './eq';
+import { compressorOf, type CompressorConfig } from './compressor';
 
 export interface AudioPlanInput {
   clips: readonly Clip[];
@@ -40,6 +41,8 @@ export interface AudioPlaybackEntry {
   pan: number;
   /** Three-band EQ (upstream #158); null when every band is neutral. */
   eq: ClipEq | null;
+  /** Compressor/limiter (upstream #158); null when ratio 1 (off). */
+  compressor: CompressorConfig | null;
 }
 
 /**
@@ -83,6 +86,7 @@ export function computeAudioPlan(input: AudioPlanInput): AudioPlaybackEntry[] {
       volume: resolveClipVolumeLinear(clip, input.playhead),
       pan: clampPan(clip.pan ?? 0),
       eq: eqOf(clip),
+      compressor: compressorOf(clip),
     });
   }
   return entries;

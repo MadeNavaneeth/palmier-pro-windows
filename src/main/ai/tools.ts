@@ -332,9 +332,9 @@ export const tools = {
     name: 'copy_clip_settings',
     description:
       'Copy one clip\'s presentation settings onto other clips of the same media kind — '
-      + 'audio: volume, pan, and a non-default EQ; visual: opacity, position, rotation, scale, '
-      + 'blend mode, and a non-default color grade. Timing, trims and source stay untouched. '
-      + 'Provide exactly one of targetClipIds or targetTrack.',
+      + 'audio: volume, pan, and a non-default EQ or compressor; visual: opacity, position, '
+      + 'rotation, scale, blend mode, and a non-default color grade. Timing, trims and source '
+      + 'stay untouched. Provide exactly one of targetClipIds or targetTrack.',
     parameters: z.object({
       sourceClipId: z.string().describe('Clip whose settings are copied.'),
       targetClipIds: z.array(z.string().min(1)).optional()
@@ -763,6 +763,32 @@ export const tools = {
     }).refine(
       (op) => op.clear === true || op.lowDb !== undefined || op.midDb !== undefined || op.highDb !== undefined,
       { message: 'Pass at least one band, or clear: true.' },
+    ),
+  },
+
+  setClipCompressor: {
+    name: 'set_clip_compressor',
+    description:
+      'Compress or limit an audio clip (upstream #158). Threshold (dBFS), ratio (1-20), attack and release (ms), '
+      + 'and makeup gain (dB) drive both the live preview and the FFmpeg export. Omitted fields stay untouched; '
+      + 'ratio 1 turns the compressor off, and clear: true removes it. Arm one by passing any field.',
+    parameters: z.object({
+      clipId: z.string().describe('The audio clip to compress.'),
+      thresholdDb: z.number().finite().min(-60).max(0).optional()
+        .describe('Threshold in dBFS, -60 to 0. Signals above it are compressed.'),
+      ratio: z.number().finite().min(1).max(20).optional()
+        .describe('Compression ratio 1-20. 1 = off and removes the compressor.'),
+      attackMs: z.number().finite().min(0.01).max(2000).optional()
+        .describe('Attack in milliseconds.'),
+      releaseMs: z.number().finite().min(0.01).max(9000).optional()
+        .describe('Release in milliseconds.'),
+      makeupDb: z.number().finite().min(0).max(24).optional()
+        .describe('Makeup gain in dB, 0-24.'),
+      clear: z.boolean().optional().describe('Remove the compressor.'),
+    }).refine(
+      (op) => op.clear === true || op.thresholdDb !== undefined || op.ratio !== undefined
+        || op.attackMs !== undefined || op.releaseMs !== undefined || op.makeupDb !== undefined,
+      { message: 'Pass at least one compressor field, or clear: true.' },
     ),
   },
 

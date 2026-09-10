@@ -117,6 +117,35 @@ describe('copy_clip_settings tool (#515)', () => {
     });
   });
 
+  it('carries a compressor onto audio targets (#158)', async () => {
+    const { editor, executor } = executorWithClips();
+    editor.addMedia({
+      id: 'asset-a',
+      path: '/test/a.mp3',
+      filename: 'a.mp3',
+      type: 'audio',
+      duration: 5000,
+      fileSize: 1,
+      addedAt: new Date().toISOString(),
+    });
+    const source = editor.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 0 });
+    const target = editor.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 100 });
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.compressor = { thresholdDb: -20, ratio: 5, attackMs: 10, releaseMs: 200, makeupDb: 3 };
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [target],
+    });
+
+    expect(editor.getClips().find((c) => c.id === target)?.compressor).toMatchObject({
+      thresholdDb: -20,
+      ratio: 5,
+    });
+  });
+
   it('leaves a target EQ alone when the audio source is neutral', async () => {
     const { editor, executor } = executorWithClips();
     editor.addMedia({

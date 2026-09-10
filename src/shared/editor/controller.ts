@@ -36,6 +36,7 @@ import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
 import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
 import { eqOf } from '../audio/eq';
+import { compressorEquals, compressorOf } from '../audio/compressor';
 import { resolveTrackName, TRACK_NAME_MAX_LENGTH } from './track-name';
 import {
   MARKER_DEFAULT_COLOR,
@@ -1733,9 +1734,9 @@ export class EditorController {  private project: Project;
             ? {
                 ...target,
                 volume: source.volume,
-                // Pan travels like volume (a scalar). EQ follows the color
-                // grade rule below: wholesale-replaced when the source has
-                // one, left alone when the source is neutral.
+                // Pan travels like volume (a scalar). EQ and compressor
+                // follow the color grade rule below: wholesale-replaced when
+                // the source has one, left alone when the source is neutral.
                 pan: source.pan,
                 ...(eqOf(source)
                   ? {
@@ -1744,6 +1745,7 @@ export class EditorController {  private project: Project;
                       eqHighDb: source.eqHighDb,
                     }
                   : {}),
+                ...(compressorOf(source) ? { compressor: source.compressor } : {}),
               }
             : {
                 ...target,
@@ -1781,6 +1783,7 @@ export class EditorController {  private project: Project;
           || (a.eqLowDb ?? 0) !== (b.eqLowDb ?? 0)
           || (a.eqMidDb ?? 0) !== (b.eqMidDb ?? 0)
           || (a.eqHighDb ?? 0) !== (b.eqHighDb ?? 0)
+          || !compressorEquals(a.compressor, b.compressor)
         );
       }
       return (

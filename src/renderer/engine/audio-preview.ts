@@ -16,6 +16,7 @@
 import { useTimelineStore } from '../store/timeline';
 import { computeAudioPlan } from '../../shared/audio/audio-playback';
 import { eqBiquadParams } from '../../shared/audio/eq';
+import { compressorPreviewParams, type CompressorConfig } from '../../shared/audio/compressor';
 
 const RESYNC_THRESHOLD_SEC = 0.25;
 
@@ -34,6 +35,12 @@ type PoolEntry = {
   gainNode: GainNode | null;
   /** Three-band EQ (upstream #158), same bands the export chain emits. */
   eqNodes: [BiquadFilterNode, BiquadFilterNode, BiquadFilterNode] | null;
+  /**
+   * Compressor + makeup stage (upstream #158). The node is always in the
+   * chain and transparent at ratio 1, so there is no bypass branch.
+   */
+  compressorNode: DynamicsCompressorNode | null;
+  makeupNode: GainNode | null;
   sourceNode: MediaElementAudioSourceNode | null;
   /** The plan path this element is currently serving, null when idle. */
   activePath: string | null;
@@ -80,17 +87,23 @@ export class AudioPreviewManager {
         });
         return node;
       }) as [BiquadFilterNode, BiquadFilterNode, BiquadFilterNode];
+      const compressor = new DynamicsCompressorNode(this.sharedCtx, { ratio: 1, knee: 6 });
+      const makeup = new GainNode(this.sharedCtx, { gain: 1 });
       const gain = new GainNode(this.sharedCtx, { gain: 1 });
       source.connect(panner);
       panner.connect(eqNodes[0]);
       eqNodes[0].connect(eqNodes[1]);
       eqNodes[1].connect(eqNodes[2]);
-      eqNodes[2].connect(gain);
+      eqNodes[2].connect(compressor);
+      compressor.connect(makeup);
+      makeup.connect(gain);
       gain.connect(this.sharedCtx.destination);
       entry.ctx = this.sharedCtx;
       entry.sourceNode = source;
       entry.panner = panner;
       entry.eqNodes = eqNodes;
+      entry.compressorNode = compressor;
+      entry.makeupNode = makeup;
       entry.gainNode = gain;
       // Gain now lives in the Web Audio graph; leave the element itself at
       // full volume so it never double-applies.
@@ -101,6 +114,8 @@ export class AudioPreviewManager {
       // applyGain falls back to el.volume (clamped to its [0,1] domain).
       entry.panner = null;
       entry.eqNodes = null;
+      entry.compressorNode = null;
+      entry.makeupNode = null;
       entry.gainNode = null;
     }
   }
@@ -112,6 +127,28 @@ export class AudioPreviewManager {
     for (let i = 0; i < 3; i++) {
       entry.eqNodes[i].gain.value = params[i].gain;
     }
+  }
+
+  /**
+   * Push the clip's compressor into the live nodes. A null config resolves
+   * to ratio 1 with unity makeup, which is a transparent pass — the same
+   * "ratio 1 is off" contract the export chain uses to skip the filter.
+   */
+  private applyCompressor(entry: PoolEntry, compressor: CompressorConfig | null): void {
+    if (!entry.compressorNode || !entry.makeupNode) return;
+    const params = compressorPreviewParams(compressor ?? {
+      thresholdDb: -18,
+      ratio: 1,
+      attackMs: 20,
+      releaseMs: 250,
+      makeupDb: 0,
+    });
+    entry.compressorNode.threshold.value = params.threshold;
+    entry.compressorNode.ratio.value = params.ratio;
+    entry.compressorNode.attack.value = params.attackSec;
+    entry.compressorNode.release.value = params.releaseSec;
+    entry.compressorNode.knee.value = params.kneeDb;
+    entry.makeupNode.gain.value = params.makeupLinear;
   }
 
   /**
@@ -150,12 +187,16 @@ export class AudioPreviewManager {
         const el = document.createElement('audio');
         el.src = encodeURI(`file:///${item.path.replace(/\\/g, '/')}`).replace(/#/g, '%23');
         el.preload = 'auto';
-        entry = { el, ctx: null, panner: null, gainNode: null, eqNodes: null, sourceNode: null, activePath: null };
+        entry = {
+          el, ctx: null, panner: null, gainNode: null, eqNodes: null,
+          compressorNode: null, makeupNode: null, sourceNode: null, activePath: null,
+        };
         this.pool.set(item.path, entry);
       }
       this.connectPanner(entry);
       this.ensurePanner(entry, item.pan);
       this.applyEq(entry, item.eq);
+      this.applyCompressor(entry, item.compressor);
 
       const expectedSourceTime = item.sourceTimeSec;
       if (entry.activePath !== item.path || entry.el.paused) {

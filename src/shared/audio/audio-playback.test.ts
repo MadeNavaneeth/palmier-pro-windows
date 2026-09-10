@@ -30,8 +30,24 @@ describe('computeAudioPlan (preview audio)', () => {
     });
     // inPoint 30f (1s) + 1s into the clip = 2s of source.
     expect(entries).toEqual([
-      { path: 'C:/m/a.mp3', sourceTimeSec: 2, volume: 1, pan: 0, eq: null },
+      { path: 'C:/m/a.mp3', sourceTimeSec: 2, volume: 1, pan: 0, eq: null, compressor: null },
     ]);
+  });
+
+  it('carries a compressor when active (#158), null at ratio 1', () => {
+    const active = computeAudioPlan({
+      ...base,
+      clips: [clip({ compressor: { thresholdDb: -18, ratio: 3, attackMs: 20, releaseMs: 250, makeupDb: 0 } })],
+      playhead: 320,
+    });
+    expect(active[0].compressor).toMatchObject({ thresholdDb: -18, ratio: 3 });
+
+    const off = computeAudioPlan({
+      ...base,
+      clips: [clip({ compressor: { thresholdDb: -18, ratio: 1, attackMs: 20, releaseMs: 250, makeupDb: 0 } })],
+      playhead: 320,
+    });
+    expect(off[0].compressor).toBeNull();
   });
 
   it('carries a three-band EQ when set (#158), null when neutral', () => {

@@ -115,6 +115,18 @@ export interface Clip {
   eqLowDb?: number;
   eqMidDb?: number;
   eqHighDb?: number;
+  /**
+   * Compressor/limiter (upstream #158). Ratio 1 = off; ratio > 1 compresses
+   * above the threshold. Preview runs a DynamicsCompressorNode, export an
+   * FFmpeg `acompressor`, both driven by these five values. Audio only.
+   */
+  compressor?: {
+    thresholdDb: number;
+    ratio: number;
+    attackMs: number;
+    releaseMs: number;
+    makeupDb: number;
+  };
 
   // Metadata
   label?: string;
