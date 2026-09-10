@@ -47,6 +47,7 @@ export function MarkerIndexBrowser() {
   const [statusFilter, setStatusFilter] = useState<MarkerStatus | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  const [editComment, setEditComment] = useState('');
   const [editStatus, setEditStatus] = useState<MarkerStatus>('open');
   const updateMarker = useTimelineStore((s) => s.updateMarker);
 
@@ -60,6 +61,7 @@ export function MarkerIndexBrowser() {
   const startEdit = (marker: (typeof markers)[number]) => {
     setEditingId(marker.id);
     setEditName(marker.name);
+    setEditComment(marker.comment);
     setEditStatus(marker.status);
   };
 
@@ -67,7 +69,7 @@ export function MarkerIndexBrowser() {
     if (!editingId) return;
     const trimmed = editName.trim();
     if (trimmed.length === 0) return;
-    updateMarker(editingId, { name: trimmed, status: editStatus });
+    updateMarker(editingId, { name: trimmed, comment: editComment, status: editStatus });
     setEditingId(null);
   };
 
@@ -150,44 +152,56 @@ export function MarkerIndexBrowser() {
                 </button>
 
                 {isEditing ? (
-                  <>
-                    <input
-                      value={editName}
-                      onChange={(event) => setEditName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') commitEdit();
-                        if (event.key === 'Escape') setEditingId(null);
-                      }}
-                      placeholder="Marker name"
-                      autoFocus
-                      className="min-w-0 flex-1 rounded-sm border border-white/10 bg-surface-0 px-1.5 py-0.5 text-xs text-text-primary outline-none focus:border-accent/60"
-                      aria-label={`Name for ${marker.name}`}
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <div className="flex items-center gap-1">
+                      <input
+                        value={editName}
+                        onChange={(event) => setEditName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') commitEdit();
+                          if (event.key === 'Escape') setEditingId(null);
+                        }}
+                        placeholder="Marker name"
+                        autoFocus
+                        className="min-w-0 flex-1 rounded-sm border border-white/10 bg-surface-0 px-1.5 py-0.5 text-xs text-text-primary outline-none focus:border-accent/60"
+                        aria-label={`Name for ${marker.name}`}
+                      />
+                      <select
+                        value={editStatus}
+                        onChange={(event) => setEditStatus(event.target.value as MarkerStatus)}
+                        className="rounded-sm border border-white/10 bg-surface-0 px-1 py-0.5 text-xs text-text-primary outline-none"
+                        aria-label={`Status for ${marker.name}`}
+                      >
+                        <option value="open">Open</option>
+                        <option value="review">Review</option>
+                        <option value="resolved">Resolved</option>
+                      </select>
+                    </div>
+                    <textarea
+                      value={editComment}
+                      onChange={(event) => setEditComment(event.target.value)}
+                      placeholder="Notes"
+                      rows={2}
+                      className="w-full resize-none rounded-sm border border-white/10 bg-surface-0 px-1.5 py-1 text-xs text-text-primary outline-none focus:border-accent/60"
+                      aria-label={`Notes for ${marker.name}`}
                     />
-                    <select
-                      value={editStatus}
-                      onChange={(event) => setEditStatus(event.target.value as MarkerStatus)}
-                      className="rounded-sm border border-white/10 bg-surface-0 px-1 py-0.5 text-xs text-text-primary outline-none"
-                      aria-label={`Status for ${marker.name}`}
-                    >
-                      <option value="open">Open</option>
-                      <option value="review">Review</option>
-                      <option value="resolved">Resolved</option>
-                    </select>
-                    <button
-                      type="button"
-                      onClick={commitEdit}
-                      className="rounded bg-accent px-2 py-0.5 text-xs font-medium text-surface-0 hover:bg-accent-hover"
-                    >
-                      Save
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditingId(null)}
-                      className="rounded px-1.5 py-0.5 text-xs text-text-muted hover:bg-white/10"
-                    >
-                      Cancel
-                    </button>
-                  </>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={commitEdit}
+                        className="rounded bg-accent px-2 py-0.5 text-xs font-medium text-surface-0 hover:bg-accent-hover"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingId(null)}
+                        className="rounded px-1.5 py-0.5 text-xs text-text-muted hover:bg-white/10"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
                 ) : (
                   <>
                     <button
