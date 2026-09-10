@@ -40,6 +40,7 @@ import { hasColorGrade, sanitizeColorGrade } from '../../shared/editor/color-gra
 import { sanitizeEq } from '../../shared/audio/eq';
 import { hasCompressor, mergeCompressor, normalizeCompressor } from '../../shared/audio/compressor';
 import { diagnoseTimeline } from '../../shared/editor/diagnostics';
+import { normalizePlan, planSummary, type PlanStep } from '../../shared/editor/plan';
 import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
 import { normalizeCaptionPlanOptions, planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
@@ -160,6 +161,11 @@ export interface ToolExecutorDeps {
     options: ExportOptions,
     sink: ExportEventSink,
   ) => Promise<void>;
+  /**
+   * Session plan updates (L3). The plan is UI state, so the executor reports
+   * it outward instead of storing it anywhere near the project.
+   */
+  onPlanUpdate?: (plan: PlanStep[]) => void;
 }
 
 export class ToolExecutor {
@@ -405,6 +411,17 @@ export class ToolExecutor {
 
       case 'get_media':
         return { success: true, data: this.editor.getMedia() };
+
+      case 'update_plan': {
+        const steps = normalizePlan(args.steps);
+        // Reported to the session, never persisted: no project change, no
+        // undo entry, and an empty plan is a valid "clear".
+        this.deps.onPlanUpdate?.(steps);
+        return {
+          success: true,
+          data: { steps, summary: planSummary(steps), count: steps.length },
+        };
+      }
 
       case 'verify_timeline': {
         const project = this.editor.getProject();

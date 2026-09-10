@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { normalizePlan, type PlanStep } from '../../shared/editor/plan';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,12 @@ export interface AiState {
   messages: ChatMessage[];
   isStreaming: boolean;
   streamingContent: string;
+  /**
+   * Working plan for the current request (L3). Session UI state only: it is
+   * replaced wholesale by `update_plan`, never persisted, and never a source
+   * of truth for what the project contains.
+   */
+  plan: PlanStep[];
 
   // Actions
   sendMessage: (content: string) => void;
@@ -54,6 +61,7 @@ export interface AiState {
   finishStream: (reason?: 'cancelled') => void;
   addToolCall: (name: string, args: Record<string, unknown>) => void;
   addToolResult: (name: string, result: unknown, success: boolean) => void;
+  setPlan: (plan: PlanStep[]) => void;
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -67,6 +75,7 @@ export const useAiStore = create<AiState>((set, get) => ({
   messages: [],
   isStreaming: false,
   streamingContent: '',
+  plan: [],
 
   // Declared as returning void because callers are UI event handlers that do not
   // await it. The async work is detached explicitly rather than by handing an
@@ -121,7 +130,8 @@ export const useAiStore = create<AiState>((set, get) => ({
     // Stop first: a turn still running would stream its answer into a transcript
     // the user just emptied.
     get().cancelStream();
-    set({ messages: [], streamingContent: '' });
+    // The plan belongs to the request that is being cleared with it.
+    set({ messages: [], streamingContent: '', plan: [] });
   },
 
   setConfigured: (configured: boolean) => {
@@ -176,6 +186,8 @@ export const useAiStore = create<AiState>((set, get) => ({
     };
     set((s) => ({ messages: [...s.messages, toolMsg] }));
   },
+
+  setPlan: (plan) => set({ plan }),
 }));
 
 // ─── Subscribe to streaming events from main process ─────────────────────────
@@ -192,6 +204,14 @@ export function initAiListeners(): () => void {
   unsubs.push(
     window.palmier.on('ai:stream-end', (reason: unknown) => {
       useAiStore.getState().finishStream(reason === 'cancelled' ? 'cancelled' : undefined);
+    }),
+  );
+
+  unsubs.push(
+    window.palmier.on('ai:plan', (plan: unknown) => {
+      // Narrow again here: the renderer is not the only writer of this state
+      // and a malformed payload must not produce two active steps.
+      useAiStore.getState().setPlan(normalizePlan(plan));
     }),
   );
 

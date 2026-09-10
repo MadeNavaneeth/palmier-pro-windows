@@ -165,6 +165,10 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
       onToolResult: (name: string, result: unknown) => {
         win.webContents.send('ai:tool-result', { name, result });
       },
+      onPlan: (plan) => {
+        // Session UI state (L3): the panel renders it, nothing depends on it.
+        win.webContents.send('ai:plan', plan);
+      },
       onComplete: (_fullResponse: string) => {
         win.webContents.send('ai:stream-end');
       },

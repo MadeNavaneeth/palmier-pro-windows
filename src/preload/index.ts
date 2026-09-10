@@ -225,6 +225,7 @@ const api = {
       'ai:stream-end',
       'ai:tool-call',
       'ai:tool-result',
+      'ai:plan',
       'generation:progress',
       'generation:complete',
     ];

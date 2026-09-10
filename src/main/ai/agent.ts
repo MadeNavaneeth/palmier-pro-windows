@@ -18,6 +18,7 @@ import {
   type OpenAiMessage,
 } from './openai-compatible';
 import type { ProviderKind } from '../../shared/ai/provider-config';
+import type { PlanStep } from '../../shared/editor/plan';
 import type { EditorController } from '../../shared/editor/controller';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -75,6 +76,11 @@ export interface StreamCallbacks {
    * a stop rather than a failure.
    */
   onCancelled: (partialResponse: string) => void;
+  /**
+   * The model replaced its working plan (L3). Session UI state only — the
+   * panel shows it; nothing else depends on it.
+   */
+  onPlan?: (plan: PlanStep[]) => void;
 }
 
 // ─── Agent ───────────────────────────────────────────────────────────────────
@@ -85,9 +91,13 @@ export class PalmierAgent {
   private conversationHistory: any[] = [];
   /** Non-null exactly while a turn is running (upstream #58). */
   private turn: AbortController | null = null;
+  /** Callbacks of the running turn, so tool-driven events can reach the UI. */
+  private activeCallbacks: StreamCallbacks | null = null;
 
   constructor(editor: EditorController) {
-    this.executor = new ToolExecutor(editor);
+    this.executor = new ToolExecutor(editor, {
+      onPlanUpdate: (plan) => this.activeCallbacks?.onPlan?.(plan),
+    });
   }
 
   configure(config: AgentConfig): void {
@@ -139,6 +149,7 @@ export class PalmierAgent {
 
     const turn = new AbortController();
     this.turn = turn;
+    this.activeCallbacks = callbacks;
     try {
       if (this.config.provider === 'anthropic') {
         await this.chatAnthropic(userMessage, callbacks, turn.signal);
@@ -151,6 +162,7 @@ export class PalmierAgent {
       // Cleared even when the turn threw, or Stop would stay armed against a
       // request that is no longer running and the next send would be refused.
       this.turn = null;
+      this.activeCallbacks = null;
     }
   }
 

@@ -575,6 +575,21 @@ export const tools = {
     }),
   },
 
+  updatePlan: {
+    name: 'update_plan',
+    description:
+      'Replace the working plan for this request with a short ordered checklist (max 12 steps, at most one in_progress). '
+      + 'Call it before starting a multi-step request and again as steps complete, so the user can see the shape of the work. '
+      + 'The plan is session UI state only: it never touches the project or undo. Send an empty array to clear it.',
+    parameters: z.object({
+      steps: z.array(z.object({
+        step: z.string().min(1).describe('Short imperative step description.'),
+        status: z.enum(['pending', 'in_progress', 'completed'])
+          .describe('Step state. At most one step may be in_progress.'),
+      })).max(12).describe('The full plan, in order.'),
+    }),
+  },
+
   verifyTimeline: {
     name: 'verify_timeline',
     description:
