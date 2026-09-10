@@ -4,6 +4,7 @@ import {
   AudioLines,
   FileInput,
   Film,
+  Flag,
   Folder,
   Grid2X2,
   Image as ImageIcon,
@@ -20,6 +21,7 @@ import {
 import { useProjectStore } from '../store/project';
 import { useTimelineStore } from '../store/timeline';
 import { canExtractAudio, useMediaPanelStore } from '../store/media-panel';
+import { MarkerIndexBrowser } from './timeline/MarkerIndexBrowser';
 import { selectionModeFromModifiers } from '../../shared/media-panel/selection';
 import type { MediaAsset } from '../../shared/types/project';
 import { formatImportErrors } from '../../shared/media/import-summary';
@@ -38,10 +40,11 @@ function mediaOptionId(assetId: string): string {
   return `media-option-${assetId}`;
 }
 
-type PanelTab = 'media' | 'captions' | 'audio';
+type PanelTab = 'media' | 'markers' | 'captions' | 'audio';
 
 const panelTabs = [
   { id: 'media' as const, label: 'Media', Icon: Folder },
+  { id: 'markers' as const, label: 'Markers', Icon: Flag },
   { id: 'captions' as const, label: 'Captions', Icon: Subtitles },
   { id: 'audio' as const, label: 'Audio', Icon: AudioLines },
 ];
@@ -345,6 +348,8 @@ export function MediaBin() {
             />
           )}
         </div>
+        ) : activeTab === 'markers' ? (
+        <MarkerIndexBrowser />
       ) : activeTab === 'captions' ? (
         <CaptionsPanel />
       ) : (
