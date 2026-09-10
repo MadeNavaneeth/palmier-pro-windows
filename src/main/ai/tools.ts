@@ -331,9 +331,10 @@ export const tools = {
   copyClipSettings: {
     name: 'copy_clip_settings',
     description:
-      'Copy one clip\'s presentation settings (audio: volume; visual: opacity, position, '
-      + 'rotation, scale, blend mode) onto other clips of the same media kind. Timing, trims '
-      + 'and source stay untouched. Provide exactly one of targetClipIds or targetTrack.',
+      'Copy one clip\'s presentation settings onto other clips of the same media kind — '
+      + 'audio: volume, pan, and a non-default EQ; visual: opacity, position, rotation, scale, '
+      + 'blend mode, and a non-default color grade. Timing, trims and source stay untouched. '
+      + 'Provide exactly one of targetClipIds or targetTrack.',
     parameters: z.object({
       sourceClipId: z.string().describe('Clip whose settings are copied.'),
       targetClipIds: z.array(z.string().min(1)).optional()

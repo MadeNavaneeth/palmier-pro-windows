@@ -35,6 +35,7 @@ import { resolveLayoutPreset, type GridLayoutPreset } from './grid-layout';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
 import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
+import { eqOf } from '../audio/eq';
 import { resolveTrackName, TRACK_NAME_MAX_LENGTH } from './track-name';
 import {
   MARKER_DEFAULT_COLOR,
@@ -1729,7 +1730,21 @@ export class EditorController {  private project: Project;
       if (id !== sourceClipId) {
         next =
           target.type === 'audio'
-            ? { ...target, volume: source.volume }
+            ? {
+                ...target,
+                volume: source.volume,
+                // Pan travels like volume (a scalar). EQ follows the color
+                // grade rule below: wholesale-replaced when the source has
+                // one, left alone when the source is neutral.
+                pan: source.pan,
+                ...(eqOf(source)
+                  ? {
+                      eqLowDb: source.eqLowDb,
+                      eqMidDb: source.eqMidDb,
+                      eqHighDb: source.eqHighDb,
+                    }
+                  : {}),
+              }
             : {
                 ...target,
                 opacity: source.opacity,
@@ -1748,6 +1763,7 @@ export class EditorController {  private project: Project;
                       contrast: source.contrast,
                       saturation: source.saturation,
                       hueRotation: source.hueRotation,
+                      invertColors: source.invertColors,
                     }
                   : {}),
               };
@@ -1758,7 +1774,15 @@ export class EditorController {  private project: Project;
     // Value comparison on the transferred fields only â€” a rebuilt-but-
     // identical clip must count as unchanged (upstream compares Equatable).
     const settingsDiffer = (a: Clip, b: Clip): boolean => {
-      if (a.type === 'audio') return a.volume !== b.volume;
+      if (a.type === 'audio') {
+        return (
+          a.volume !== b.volume
+          || (a.pan ?? 0) !== (b.pan ?? 0)
+          || (a.eqLowDb ?? 0) !== (b.eqLowDb ?? 0)
+          || (a.eqMidDb ?? 0) !== (b.eqMidDb ?? 0)
+          || (a.eqHighDb ?? 0) !== (b.eqHighDb ?? 0)
+        );
+      }
       return (
         a.opacity !== b.opacity
         || a.x !== b.x
@@ -1771,6 +1795,7 @@ export class EditorController {  private project: Project;
         || (a.contrast ?? null) !== (b.contrast ?? null)
         || (a.saturation ?? null) !== (b.saturation ?? null)
         || (a.hueRotation ?? null) !== (b.hueRotation ?? null)
+        || (a.invertColors ?? null) !== (b.invertColors ?? null)
       );
     };
 

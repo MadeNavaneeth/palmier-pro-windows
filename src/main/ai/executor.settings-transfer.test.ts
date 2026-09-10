@@ -84,6 +84,82 @@ describe('copy_clip_settings tool (#515)', () => {
     }
   });
 
+  it('carries audio pan and EQ onto audio targets (#158)', async () => {
+    const { editor, executor } = executorWithClips();
+    editor.addMedia({
+      id: 'asset-a',
+      path: '/test/a.mp3',
+      filename: 'a.mp3',
+      type: 'audio',
+      duration: 5000,
+      fileSize: 1,
+      addedAt: new Date().toISOString(),
+    });
+    const source = editor.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 0 });
+    const target = editor.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 100 });
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.pan = -0.5;
+      d.eqLowDb = 6;
+      d.eqHighDb = -3;
+      return true;
+    });
+
+    const result = await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [target],
+    });
+
+    expect(result.success).toBe(true);
+    expect(editor.getClips().find((c) => c.id === target)).toMatchObject({
+      pan: -0.5,
+      eqLowDb: 6,
+      eqHighDb: -3,
+    });
+  });
+
+  it('leaves a target EQ alone when the audio source is neutral', async () => {
+    const { editor, executor } = executorWithClips();
+    editor.addMedia({
+      id: 'asset-a',
+      path: '/test/a.mp3',
+      filename: 'a.mp3',
+      type: 'audio',
+      duration: 5000,
+      fileSize: 1,
+      addedAt: new Date().toISOString(),
+    });
+    const source = editor.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 0 });
+    const target = editor.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 100 });
+    editor.applyClipProperties([target], 'Set', (d) => {
+      d.eqMidDb = 4;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [target],
+    });
+
+    // Same rule as the color grade: non-default fields transfer, a neutral
+    // source does not wipe the target's effect.
+    expect(editor.getClips().find((c) => c.id === target)?.eqMidDb).toBe(4);
+  });
+
+  it('carries invert-colors with the color grade', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.invertColors = true;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [t1],
+    });
+
+    expect(editor.getClips().find((c) => c.id === t1)?.invertColors).toBe(true);
+  });
+
   it('refuses cross-kind targets with the domain message', async () => {
     const { editor, executor } = executorWithClips();
     editor.addMedia({
