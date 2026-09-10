@@ -39,6 +39,8 @@ export interface CaptionPlanOptions {
   maxCharsPerLine?: number;
   /** Max lines per caption. Default 2. */
   maxLines?: number;
+  /** Max words per caption. Default unlimited (unset). */
+  maxWordsPerCue?: number;
   /** Inter-word silence (sec) that forces a caption break. Default 0.6. */
   pauseBreakSec?: number;
 }
@@ -77,7 +79,7 @@ export function planCaptions(
   words: readonly WordTiming[],
   options: CaptionPlanOptions = {},
 ): CaptionCue[] {
-  const { maxCharsPerLine, maxLines, pauseBreakSec } = { ...DEFAULTS, ...options };
+  const { maxCharsPerLine, maxLines, maxWordsPerCue, pauseBreakSec } = { ...DEFAULTS, ...options };
 
   const clean = words
     .map((w) => ({ ...w, word: w.word.trim() }))
@@ -111,7 +113,10 @@ export function planCaptions(
     // Pause break: silence between words marks a natural caption boundary.
     if (prev && word.startSec - prev.endSec >= pauseBreakSec) flush();
 
-    // Budget break decided by simulating the real line packing â€” a flat char
+    // Words-per-caption budget (upstream #91: "no words-per-caption control").
+    if (maxWordsPerCue !== undefined && Number.isFinite(maxWordsPerCue) && maxWordsPerCue > 0 && bucket.length >= maxWordsPerCue) flush();
+
+    // Budget break decided by simulating the real line packing — a flat char
     // count drifts from greedy wrapping once word boundaries interfere (#91).
     if (bucket.length > 0 && !fits([...bucket.map((w) => w.word), word.word])) flush();
 

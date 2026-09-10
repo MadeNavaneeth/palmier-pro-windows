@@ -92,6 +92,36 @@ describe('planCaptions (#91)', () => {
       { word: 'fine', startSec: 1, endSec: 2 },
     ])).toHaveLength(1);
   });
+
+  it('enforces a words-per-caption ceiling', () => {
+    const cues = planCaptions(words(
+      ['one', 0.0, 0.2],
+      ['two', 0.3, 0.5],
+      ['three', 0.6, 0.8],
+      ['four', 0.9, 1.1],
+      ['five', 1.2, 1.4],
+      ['six', 1.5, 1.7],
+    ), { maxWordsPerCue: 3 });
+
+    expect(cues).toHaveLength(2);
+    expect(cues[0]!.text.split(/\s+/)).toHaveLength(3);
+    expect(cues[1]!.text.split(/\s+/)).toHaveLength(3);
+    // Character budget still applies — a tiny words-per-cue cannot violate it silently.
+    expect(cues[0]!.text).toBe('one two three');
+  });
+
+  it('words-per-caption composes with pauses and sentence breaks', () => {
+    const cues = planCaptions(words(
+      ['Hello', 0.0, 0.3],
+      ['world.', 0.4, 0.7],
+      ['Next', 0.8, 1.0],
+      ['sentence', 1.1, 1.4],
+    ), { maxWordsPerCue: 10 });
+
+    // Sentence break still fires even though words budget would allow all four together.
+    expect(cues).toHaveLength(2);
+    expect(cues[0]!.text).toBe('Hello world.');
+  });
 });
 
 
