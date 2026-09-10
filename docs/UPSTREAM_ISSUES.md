@@ -24,8 +24,8 @@ this file is the exhaustive per-issue record.
 | Disposition | Count |
 |---|---|
 | Implemented | 23 |
-| Partial | 6 |
-| Planned | 16 |
+| Partial | 7 |
+| Planned | 15 |
 | N/A platform | 14 |
 | Needs investigation | 2 |
 | **Total** | **61** |
@@ -89,7 +89,7 @@ Ordered by issue number.
 | [#97](https://github.com/palmier-io/palmier-pro/issues/97) | Chroma key (green-screen removal) | Implemented | `shared/editor/chroma-key.ts` owns a per-clip key color/tolerance/softness/spill model (the same four parameters as upstream's Metal kernel, keyed by #rrggbb instead of an eyedropper hue since this port has no preview color sampler). Preview keys the decoded RGBA frame with a JS per-pixel pass (Canvas has no chromakey filter); export uses FFmpeg's native `colorkey`+`despill` chain; both read the same clip fields so they cannot disagree on what "keyed" means. `set_clip_chroma_key` agent tool and an Inspector color-swatch + three sliders round out the surface (`chroma-key.test.ts`, `executor.chroma-key.test.ts`). |
 | [#107](https://github.com/palmier-io/palmier-pro/issues/107) | Video preview stops every time Claude sends an MCP command | Implemented | Agent and MCP edits arrive as `editor:apply-from-main`, are adopted as one undoable step, and the resulting project revision requests a fresh composite at the current playhead; per-window generations stop a stale async frame from replacing newer output. The preview is not torn down or paused by a tool call. |
 | [#117](https://github.com/palmier-io/palmier-pro/issues/117) | Evaluate and Install palmier-pro | N/A platform | A macOS install/evaluation thread. Windows installation is a different mechanism entirely (NSIS and portable builds), documented in `README.md`. |
-| [#118](https://github.com/palmier-io/palmier-pro/issues/118) | AI content labels for media assets | Planned | `MediaAsset` carries technical probe metadata only, with no tag or description fields and no media index to search them. |
+| [#118](https://github.com/palmier-io/palmier-pro/issues/118) | AI content labels for media assets | Partial | Local on-device tags now exist as a zero-cost heuristic (`shared/media/tags.ts`: type, resolution bucket, orientation, duration bucket, codec, ai-generated flag, filename keywords). Tags render under each media tile and make the search box match on any tag substring without a separate filter UI. No AI description yet; probe metadata remains the source of truth. |
 | [#122](https://github.com/palmier-io/palmier-pro/issues/122) | Expose MCP server to local network | N/A platform | Not applicable as built: `PalmierMcpServer` uses `StdioServerTransport`, so there is no listening socket to expose or to secure. If an HTTP transport is ever added it must be loopback-bound by default and require a bearer token â€” the same conclusion upstream reached. |
 | [#137](https://github.com/palmier-io/palmier-pro/issues/137) | Support multiple concurrent Palmier tabs/sessions | Planned | `main/application.ts` owns a single `mainWindow`, and the main-process `EditorController` mirror plus the MCP server are process-wide singletons. Multi-session needs per-window controller identity and session routing on the MCP surface first. |
 | [#140](https://github.com/palmier-io/palmier-pro/issues/140) | Multi-provider LLM support (DeepSeek, custom OpenAI-compatible APIs) | Implemented | `main/ai/openai-compatible.ts` speaks `/chat/completions` with tool calling over `fetch`, no vendor SDK added. Presets cover OpenAI, OpenRouter, Groq, Together, Ollama, and LM Studio, plus a custom endpoint. The same `ToolExecutor` runs regardless of provider. `openai-compatible.test.ts`, `agent.openai-compatible.test.ts`. |

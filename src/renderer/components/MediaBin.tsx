@@ -22,6 +22,7 @@ import { useProjectStore } from '../store/project';
 import { useTimelineStore } from '../store/timeline';
 import { canExtractAudio, useMediaPanelStore } from '../store/media-panel';
 import { MarkerIndexBrowser } from './timeline/MarkerIndexBrowser';
+import { assetMatchesQuery, deriveTags } from '../../shared/media/tags';
 import { selectionModeFromModifiers } from '../../shared/media-panel/selection';
 import type { MediaAsset } from '../../shared/types/project';
 import { formatImportErrors } from '../../shared/media/import-summary';
@@ -100,8 +101,7 @@ export function MediaBin() {
 
   const mediaItems = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return project.media;
-    return project.media.filter((item) => item.filename.toLowerCase().includes(normalized));
+    return project.media.filter((item) => assetMatchesQuery(item, normalized));
   }, [project.media, query]);
 
   function addImportedFiles(result: {
@@ -1049,13 +1049,15 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
           </span>
         )}
       </div>
-      <p
+       <p
         data-selected={isSelected}
         className="mt-1 truncate px-0.5 text-[10px] text-text-secondary data-[selected=true]:text-text-primary"
         title={item.filename}
       >
         {item.filename}
       </p>
+      {/* Free on-device labels (#118) — small, low-contrast, additive to search. */}
+      <MediaTags asset={item} />
 
       {menuOpen && (
         <>
@@ -1107,6 +1109,16 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
         </>
       )}
     </div>
+  );
+}
+
+function MediaTags({ asset }: { asset: MediaAsset }) {
+  const tags = deriveTags(asset).slice(0, 4);
+  if (tags.length === 0) return null;
+  return (
+    <p className="truncate px-0.5 font-mono text-[8px] uppercase tracking-wide text-text-muted" title={tags.join(' · ')}>
+      {tags.join(' · ')}
+    </p>
   );
 }
 
