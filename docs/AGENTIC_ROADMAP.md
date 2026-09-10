@@ -134,6 +134,27 @@ Acceptance:
 - Receipts preserve model-order; a failure in one readonly call does not
   cancel its siblings.
 
+Shipped. The classification is a side table (`READ_ONLY_TOOLS` /
+`isReadOnlyTool` in `tools.ts`) rather than a schema field: the model must not
+see it, and absence means mutating, so a newly added tool is serialized until a
+human lists it — the safe direction. Read-only today: `get_timeline`,
+`get_clips`, `get_media`, `verify_timeline`, `inspect_frame`. The agent loop
+(`runToolBatch` in `agent.ts`) executes maximal runs of consecutive read-only
+calls concurrently, bounded by `READ_ONLY_TOOL_CONCURRENCY` (4), with a mutating
+call acting as a barrier awaited alone — so a call that follows an edit still
+observes that edit, which is the property that makes this safe rather than
+merely fast. Both provider loops share the one runner, and results are placed
+back in call order whatever order they completed in, which is what both APIs
+require. Cancellation stops starting new calls; Anthropic still answers every
+`tool_use` (the invariant that keeps a conversation usable after a stop), and
+the OpenAI path discards its local batch as before.
+
+Tests: `agent.parallel-tools.test.ts` proves overlap with a barrier that only
+releases once all three calls have *started* — a serial loop would deadlock on
+it, so the test is a structural proof rather than a timing observation — plus
+reverse-completion ordering, the mutation barrier, and that the read-only set
+names only real tools while unknown names default to mutating.
+
 ### L6 — Investigator subagents (deliberate, last)
 
 Mechanism: orchestrator-worker with schema-validated summaries. One

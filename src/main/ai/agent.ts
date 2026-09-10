@@ -8,8 +8,8 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { tools, toolsToJsonSchema } from './tools';
-import { ToolExecutor } from './executor';
+import { tools, toolsToJsonSchema, isReadOnlyTool } from './tools';
+import { ToolExecutor, type ToolResult } from './executor';
 import {
   createCompletion,
   parseToolArguments,
@@ -50,6 +50,40 @@ export interface AgentConfig {
  * and mutating the timeline with no way for the user to intervene.
  */
 export const MAX_TOOL_ROUNDS = 12;
+
+/**
+ * Cap on read-only tools in flight at once (Track 2, L5).
+ *
+ * The parallelism is bounded because each call still has to validate and read
+ * through the same controller, and because an unbounded fan-out from a model
+ * that asks for ten lookups in one response is a latency regression rather than
+ * a win.
+ */
+export const READ_ONLY_TOOL_CONCURRENCY = 4;
+
+/**
+ * Run `run` over `items` with at most `limit` in flight, preserving order.
+ *
+ * Results come back positionally, so callers never have to reason about
+ * completion order.
+ */
+async function mapWithLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  run: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await run(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 /**
  * A reply to one `tool_use` block, in the shape Anthropic expects.
@@ -246,24 +280,25 @@ export class PalmierAgent {
           })),
         });
 
-        for (const call of result.toolCalls) {
-          // Checked per call rather than per round: a response asking for six
-          // edits should stop at the one the user interrupted, not run them all.
-          if (signal.aborted) {
-            this.recordCancelledTurn(fullResponse);
-            callbacks.onCancelled(fullResponse);
-            return;
-          }
-          const args = parseToolArguments(call.argumentsJson);
-          callbacks.onToolCall(call.name, args);
-          const toolResult = await this.executor.execute(call.name, args);
-          callbacks.onToolResult(call.name, toolResult);
+        const calls = result.toolCalls.map((call) => ({
+          name: call.name,
+          args: parseToolArguments(call.argumentsJson),
+        }));
+        const outcomes = await this.runToolBatch(calls, signal, callbacks);
+        if (outcomes.some((outcome) => outcome === null)) {
+          // Stopped mid-batch: the local `messages` array is discarded, so no
+          // tool call is left unanswered in the recorded history.
+          this.recordCancelledTurn(fullResponse);
+          callbacks.onCancelled(fullResponse);
+          return;
+        }
+        outcomes.forEach((outcome, index) => {
           messages.push({
             role: 'tool',
-            tool_call_id: call.id,
-            content: JSON.stringify(toolResult),
+            tool_call_id: result.toolCalls[index].id,
+            content: JSON.stringify(outcome!.result),
           });
-        }
+        });
       }
 
       // Ran out of rounds: report it rather than silently truncating the turn.
@@ -279,6 +314,50 @@ export class PalmierAgent {
       }
       callbacks.onError(err instanceof Error ? err.message : 'Unknown error during AI chat.');
     }
+  }
+
+  /**
+   * Run the tools one response asked for (Track 2, L5).
+   *
+   * Maximal runs of consecutive read-only calls run concurrently, bounded by
+   * `READ_ONLY_TOOL_CONCURRENCY`; a mutating call is a barrier awaited on its
+   * own, so a call that follows an edit still observes that edit. Results come
+   * back in call order whatever order they completed in, because both providers
+   * require one result per call in the order the calls were declared.
+   *
+   * A cancelled turn stops starting new calls; calls that never ran come back as
+   * `null` so each caller can record them in its own shape.
+   */
+  private async runToolBatch(
+    calls: readonly { name: string; args: Record<string, unknown> }[],
+    signal: AbortSignal,
+    callbacks: StreamCallbacks,
+  ): Promise<({ name: string; result: ToolResult } | null)[]> {
+    const outcomes: ({ name: string; result: ToolResult } | null)[] =
+      new Array(calls.length).fill(null);
+
+    let index = 0;
+    while (index < calls.length) {
+      if (signal.aborted) break;
+
+      const start = index;
+      if (isReadOnlyTool(calls[index].name)) {
+        while (index < calls.length && isReadOnlyTool(calls[index].name)) index += 1;
+      } else {
+        index += 1;
+      }
+      const segment = calls.slice(start, index);
+
+      for (const call of segment) callbacks.onToolCall(call.name, call.args);
+      const results = await mapWithLimit(segment, READ_ONLY_TOOL_CONCURRENCY, (call) =>
+        this.executor.execute(call.name, call.args));
+      segment.forEach((call, offset) => {
+        outcomes[start + offset] = { name: call.name, result: results[offset] };
+        callbacks.onToolResult(call.name, results[offset]);
+      });
+    }
+
+    return outcomes;
   }
 
   /**
@@ -419,6 +498,10 @@ export class PalmierAgent {
         const toolResults: AnthropicToolResult[] = [];
         let cancelled = false;
 
+        // Collected first, executed after: the assistant turn has to be recorded
+        // verbatim and in order, and collecting lets the batch runner decide
+        // which calls can overlap.
+        const pending: { block: any; cancelled: boolean }[] = [];
         for (const block of response.content) {
           if (block.type === 'text') {
             fullResponse += block.text;
@@ -432,30 +515,53 @@ export class PalmierAgent {
           assistantContent.push(block);
           if (block.type !== 'tool_use') continue;
 
-          if (cancelled || signal.aborted) {
-            cancelled = true;
-            // Answered rather than skipped. Every tool_use needs a matching
-            // tool_result, so leaving one unanswered would make the API reject
-            // every later request in this conversation — one stop would end it.
+          // Answered rather than skipped. Every tool_use needs a matching
+          // tool_result, so leaving one unanswered would make the API reject
+          // every later request in this conversation — one stop would end it.
+          const alreadyStopped = cancelled || signal.aborted;
+          if (alreadyStopped) cancelled = true;
+          pending.push({ block, cancelled: alreadyStopped });
+        }
+
+        const runnable = pending.filter((entry) => !entry.cancelled);
+        const outcomes = await this.runToolBatch(
+          runnable.map((entry) => ({
+            name: entry.block.name,
+            args: entry.block.input as Record<string, unknown>,
+          })),
+          signal,
+          callbacks,
+        );
+        if (signal.aborted) cancelled = true;
+
+        let ran = 0;
+        for (const entry of pending) {
+          if (entry.cancelled) {
             toolResults.push({
               type: 'tool_result',
-              tool_use_id: block.id,
+              tool_use_id: entry.block.id,
               content: 'Cancelled by the user.',
               is_error: true,
             });
             continue;
           }
-
-          callbacks.onToolCall(block.name, block.input as Record<string, unknown>);
-          const result = await this.executor.execute(
-            block.name,
-            block.input as Record<string, unknown>,
-          );
-          callbacks.onToolResult(block.name, result);
+          const outcome = outcomes[ran];
+          ran += 1;
+          if (!outcome) {
+            // Stopped before this call started.
+            cancelled = true;
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: entry.block.id,
+              content: 'Cancelled by the user.',
+              is_error: true,
+            });
+            continue;
+          }
           toolResults.push({
             type: 'tool_result',
-            tool_use_id: block.id,
-            content: JSON.stringify(result),
+            tool_use_id: entry.block.id,
+            content: JSON.stringify(outcome.result),
           });
         }
 

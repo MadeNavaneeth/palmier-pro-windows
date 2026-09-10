@@ -900,6 +900,32 @@ export function getToolByName(name: string) {
   return Object.values(tools).find((t) => t.name === name);
 }
 
+/**
+ * Tools that only observe project state (Track 2, L5 — docs/AGENTIC_ROADMAP.md).
+ *
+ * The agent may run a run of consecutive read-only calls concurrently, which is
+ * only safe because these tools neither mutate the project nor push an undo
+ * entry. Kept as a side table rather than a field on each schema: the model
+ * must not see it, and the conservative default (absent ⇒ mutating ⇒ serialized)
+ * means a new tool is safe until it is deliberately listed here.
+ *
+ * `inspect_frame` reads pixels and writes a scratch file, not project state;
+ * `export_project`/`export_fcpxml` write output files and are still mutating
+ * here because they read the live timeline and are far too heavy to fan out.
+ */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'get_timeline',
+  'get_clips',
+  'get_media',
+  'verify_timeline',
+  'inspect_frame',
+]);
+
+/** True when a tool is classified read-only; unknown tools are mutating. */
+export function isReadOnlyTool(name: string): boolean {
+  return READ_ONLY_TOOLS.has(name);
+}
+
 /** Convert all tool schemas to JSON Schema (for MCP tool listing) */
 export function toolsToJsonSchema() {
   return Object.values(tools).map((tool) => ({
