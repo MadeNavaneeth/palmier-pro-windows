@@ -65,8 +65,18 @@ const api = {
      * Transcribe an audio/video file over the BYOK whisper-compatible
      * runtime and return caption cues (#39/#91); renderer materializes them.
      */
-    transcribe: (payload: { path: string; language?: string; model?: string }) =>
-      ipcRenderer.invoke('media:transcribe', payload),
+    transcribe: (payload: {
+      path: string;
+      language?: string;
+      model?: string;
+      /** Caption planning controls (#91); narrowed again in main. */
+      plan?: {
+        maxWordsPerCue?: number;
+        maxCharsPerLine?: number;
+        maxLines?: number;
+        pauseBreakSec?: number;
+      };
+    }) => ipcRenderer.invoke('media:transcribe', payload),
     /** Custom STT server preference (#287): read + persist. */
     getTranscribeConfig: () => ipcRenderer.invoke('media:get-transcribe-config'),
     setTranscribeConfig: (patch: { baseUrl?: string; apiKey?: string; model?: string }) =>

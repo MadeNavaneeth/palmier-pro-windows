@@ -260,7 +260,12 @@ export function registerMediaHandlers(): void {
   // pure transport + planner run here; the returned cue plan is materialized
   // by the renderer onto its own controller via shared/captions/apply.ts.
   ipcMain.handle('media:transcribe', async (_event, payload: unknown) => {
-    const req = (payload ?? {}) as { path?: unknown; language?: unknown; model?: unknown };
+    const req = (payload ?? {}) as {
+      path?: unknown;
+      language?: unknown;
+      model?: unknown;
+      plan?: unknown;
+    };
     if (typeof req.path !== 'string' || req.path.length === 0) {
       return { success: false, error: 'No asset selected.' };
     }
@@ -284,14 +289,21 @@ export function registerMediaHandlers(): void {
         model: model ?? (override.baseUrl ? override.model : undefined),
         language: typeof req.language === 'string' && req.language.trim() ? req.language.trim() : undefined,
       });
-      const { planCaptions } = await import('../../shared/captions/planner');
-      const cues = planCaptions(transcription.words);
+      const { normalizeCaptionPlanOptions, planCaptions } = await import('../../shared/captions/planner');
+      // User caption controls (#91) arrive here as a partial request; the
+      // normalizer narrows them, so a hand-edited or hostile value cannot
+      // reach the packing math.
+      const planOptions = normalizeCaptionPlanOptions(
+        (req.plan ?? undefined) as Parameters<typeof normalizeCaptionPlanOptions>[0],
+      );
+      const cues = planCaptions(transcription.words, planOptions);
       return {
         success: true,
         cues,
         words: transcription.words.length,
         text: transcription.text,
         model: transcription.model,
+        planOptions,
       };
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };

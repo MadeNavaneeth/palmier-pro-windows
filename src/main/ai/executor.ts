@@ -40,7 +40,7 @@ import { hasColorGrade, sanitizeColorGrade } from '../../shared/editor/color-gra
 import { sanitizeEq } from '../../shared/audio/eq';
 import { hasCompressor, mergeCompressor, normalizeCompressor } from '../../shared/audio/compressor';
 import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
-import { planCaptions } from '../../shared/captions/planner';
+import { normalizeCaptionPlanOptions, planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
 import { createHash } from 'crypto';
@@ -1639,7 +1639,13 @@ export class ToolExecutor {
           };
         }
 
-        const cues = planCaptions(transcription.words);
+        const planOptions = normalizeCaptionPlanOptions({
+          ...(args.maxWordsPerCue !== undefined ? { maxWordsPerCue: args.maxWordsPerCue } : {}),
+          ...(args.maxCharsPerLine !== undefined ? { maxCharsPerLine: args.maxCharsPerLine } : {}),
+          ...(args.maxLines !== undefined ? { maxLines: args.maxLines } : {}),
+          ...(args.pauseBreakSec !== undefined ? { pauseBreakSec: args.pauseBreakSec } : {}),
+        });
+        const cues = planCaptions(transcription.words, planOptions);
         const fps = this.editor.getProject().settings.fps;
         const trackId = this.editor.addTrack('video');
 

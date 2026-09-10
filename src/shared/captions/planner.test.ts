@@ -5,7 +5,12 @@
  * come from real word times, never character-count distribution.
  */
 import { describe, it, expect } from 'vitest';
-import { planCaptions, type WordTiming } from './planner';
+import {
+  CAPTION_PLAN_LIMITS,
+  normalizeCaptionPlanOptions,
+  planCaptions,
+  type WordTiming,
+} from './planner';
 
 function words(...entries: Array<[string, number, number]>): WordTiming[] {
   return entries.map(([word, startSec, endSec]) => ({ word, startSec, endSec }));
@@ -108,6 +113,27 @@ describe('planCaptions (#91)', () => {
     expect(cues[1]!.text.split(/\s+/)).toHaveLength(3);
     // Character budget still applies — a tiny words-per-cue cannot violate it silently.
     expect(cues[0]!.text).toBe('one two three');
+  });
+
+  it('normalizes a plan request: rounds counts, drops absurd values', () => {
+    expect(normalizeCaptionPlanOptions({
+      maxWordsPerCue: 4.4,
+      maxCharsPerLine: 200,
+      maxLines: 0,
+      pauseBreakSec: 0.75,
+    })).toEqual({ maxWordsPerCue: 4, pauseBreakSec: 0.75 });
+    expect(normalizeCaptionPlanOptions(undefined)).toEqual({});
+    expect(normalizeCaptionPlanOptions({ maxLines: Number.NaN })).toEqual({});
+  });
+
+  it('normalized options stay inside the documented limits', () => {
+    for (const field of Object.keys(CAPTION_PLAN_LIMITS) as Array<keyof typeof CAPTION_PLAN_LIMITS>) {
+      const { min, max } = CAPTION_PLAN_LIMITS[field];
+      const atMin = normalizeCaptionPlanOptions({ [field]: min });
+      const atMax = normalizeCaptionPlanOptions({ [field]: max });
+      expect(atMin[field], field).toBe(min);
+      expect(atMax[field], field).toBe(max);
+    }
   });
 
   it('words-per-caption composes with pauses and sentence breaks', () => {

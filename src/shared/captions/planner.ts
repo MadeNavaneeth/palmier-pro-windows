@@ -51,6 +51,46 @@ const DEFAULTS = {
   pauseBreakSec: 0.6,
 } as const;
 
+/**
+ * Accepted ranges for the user-facing caption controls (#91: "no
+ * words-per-caption control"). The Inspector/Agent boundary narrows against
+ * these exactly, and the defaults equal broadcast convention (42 chars/line,
+ * 2 lines) so an untouched control set produces what the planner always did.
+ */
+export const CAPTION_PLAN_LIMITS = {
+  maxCharsPerLine: { min: 10, max: 80 },
+  maxLines: { min: 1, max: 4 },
+  maxWordsPerCue: { min: 1, max: 20 },
+  pauseBreakSec: { min: 0.1, max: 3 },
+} as const;
+
+export type CaptionPlanField = keyof typeof CAPTION_PLAN_LIMITS;
+
+/**
+ * Narrow a partial plan request to finite, in-range values.
+ *
+ * Fields are dropped rather than clamped when unusable, matching the color
+ * grade and EQ patches: "present but absurd" must not silently become a
+ * boundary value. `planCaptions` then mixes whatever survives over its
+ * defaults.
+ */
+export function normalizeCaptionPlanOptions(
+  input: Partial<CaptionPlanOptions> | undefined,
+): Partial<CaptionPlanOptions> {
+  if (!input) return {};
+  const out: Partial<CaptionPlanOptions> = {};
+  for (const field of Object.keys(CAPTION_PLAN_LIMITS) as CaptionPlanField[]) {
+    const value = input[field];
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    const { min, max } = CAPTION_PLAN_LIMITS[field];
+    if (value < min || value > max) continue;
+    // Character/line/word budgets are counts; a fractional count would make
+    // the packing math read "2.5 lines", so round to the nearest integer.
+    out[field] = field === 'pauseBreakSec' ? value : Math.round(value);
+  }
+  return out;
+}
+
 /** Greedy line packing: fill lines up to maxChars, never splitting words. */
 function packLines(words: string[], maxChars: number): string[] {
   const lines: string[] = [];

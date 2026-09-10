@@ -31,6 +31,11 @@ import { ASSET_DND_MIME, getDroppedFilePath, setDraggingAsset } from '../lib/dnd
 import { GenerateDialog } from './GenerateDialog';
 import { applyFcpxmlPlan } from '../../shared/fcpxml/apply';
 import { applyCaptionCues } from '../../shared/captions/apply';
+import {
+  CAPTION_PLAN_LIMITS,
+  normalizeCaptionPlanOptions,
+  type CaptionPlanOptions,
+} from '../../shared/captions/planner';
 
 /** Minimum tile width in the media grid; must match the grid template below. */
 const MEDIA_TILE_MIN_WIDTH = 112;
@@ -698,6 +703,27 @@ function PanelNotice() {  const notice = useMediaPanelStore((state) => state.not
  * BYOK whisper-compatible runtime and materialize the planned cues as title
  * clips on one fresh track.
  */
+const CAPTION_PLAN_STORAGE_KEY = 'palmier.captions.plan';
+
+/** Persisted caption controls (#91), narrowed on read like every UI key. */
+function loadCaptionPlan(): Partial<CaptionPlanOptions> {
+  try {
+    const raw = window.localStorage?.getItem(CAPTION_PLAN_STORAGE_KEY);
+    if (!raw) return {};
+    return normalizeCaptionPlanOptions(JSON.parse(raw) as Partial<CaptionPlanOptions>);
+  } catch {
+    return {};
+  }
+}
+
+function saveCaptionPlan(plan: Partial<CaptionPlanOptions>): void {
+  try {
+    window.localStorage?.setItem(CAPTION_PLAN_STORAGE_KEY, JSON.stringify(plan));
+  } catch {
+    // A full or unavailable storage quota must not break the controls.
+  }
+}
+
 function CaptionsPanel() {
   const project = useTimelineStore((s) => s.project);
   const controller = useTimelineStore((s) => s.controller);
@@ -711,6 +737,14 @@ function CaptionsPanel() {
   const [serverKey, setServerKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; message: string } | null>(null);
+
+  // Caption planning controls (#91). Persisted like the panel layout keys,
+  // and narrowed on read so a stale/foreign value falls back to the
+  // broadcast defaults rather than feeding the packing math.
+  const [plan, setPlan] = useState(() => loadCaptionPlan());
+  useEffect(() => {
+    saveCaptionPlan(plan);
+  }, [plan]);
 
   // Load any persisted custom server (#287) once.
   useEffect(() => {
@@ -740,6 +774,7 @@ function CaptionsPanel() {
         path: activeAsset.path,
         language: language.trim() || undefined,
         model: model.trim() || undefined,
+        plan,
       }) as {
         success: boolean; error?: string;
         cues?: Array<{ startSec: number; endSec: number; text: string }>;
@@ -761,7 +796,7 @@ function CaptionsPanel() {
     } finally {
       setBusy(false);
     }
-  }, [activeAsset, controller, language, model, serverUrl, serverKey]);
+  }, [activeAsset, controller, language, model, serverUrl, serverKey, plan]);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
@@ -829,6 +864,59 @@ function CaptionsPanel() {
                 className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               />
             </Field>
+            <div className="flex items-end gap-2" data-caption-plan>
+              <div className="flex-1">
+                <Field label="Words / caption">
+                  <input
+                    type="number"
+                    min={CAPTION_PLAN_LIMITS.maxWordsPerCue.min}
+                    max={CAPTION_PLAN_LIMITS.maxWordsPerCue.max}
+                    value={plan.maxWordsPerCue ?? ''}
+                    placeholder="auto"
+                    disabled={busy}
+                    onChange={(event) => setPlan((current) => ({
+                      ...current,
+                      maxWordsPerCue: event.target.value === '' ? undefined : Number(event.target.value),
+                    }))}
+                    className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] tabular-nums text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+                  />
+                </Field>
+              </div>
+              <div className="flex-1">
+                <Field label="Chars / line">
+                  <input
+                    type="number"
+                    min={CAPTION_PLAN_LIMITS.maxCharsPerLine.min}
+                    max={CAPTION_PLAN_LIMITS.maxCharsPerLine.max}
+                    value={plan.maxCharsPerLine ?? ''}
+                    placeholder="42"
+                    disabled={busy}
+                    onChange={(event) => setPlan((current) => ({
+                      ...current,
+                      maxCharsPerLine: event.target.value === '' ? undefined : Number(event.target.value),
+                    }))}
+                    className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] tabular-nums text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+                  />
+                </Field>
+              </div>
+              <div className="flex-1">
+                <Field label="Lines">
+                  <input
+                    type="number"
+                    min={CAPTION_PLAN_LIMITS.maxLines.min}
+                    max={CAPTION_PLAN_LIMITS.maxLines.max}
+                    value={plan.maxLines ?? ''}
+                    placeholder="2"
+                    disabled={busy}
+                    onChange={(event) => setPlan((current) => ({
+                      ...current,
+                      maxLines: event.target.value === '' ? undefined : Number(event.target.value),
+                    }))}
+                    className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] tabular-nums text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+                  />
+                </Field>
+              </div>
+            </div>
             <button
               onClick={() => void run()}
               disabled={busy || !activeId}

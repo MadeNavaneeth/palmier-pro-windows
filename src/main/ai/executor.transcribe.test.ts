@@ -92,6 +92,32 @@ describe('transcribe_audio', () => {
     void transcribeAudio;
   });
 
+  it('honours caption planning controls (#91)', async () => {
+    const { editor, executor } = harness({ baseUrl: 'https://x/v1', apiKey: 'k' });
+    mocks.transcribeAudio.mockResolvedValue({
+      text: 'one two three four',
+      words: [
+        { word: 'one', startSec: 0.0, endSec: 0.2 },
+        { word: 'two', startSec: 0.3, endSec: 0.5 },
+        { word: 'three', startSec: 0.6, endSec: 0.8 },
+        { word: 'four', startSec: 0.9, endSec: 1.1 },
+      ],
+      segments: [],
+      model: 'whisper-1',
+    });
+
+    const result = await executor.execute('transcribe_audio', {
+      assetId: 'speech',
+      maxWordsPerCue: 2,
+    });
+
+    expect(result.success).toBe(true);
+    const data = result.data as { cues: number; trackId: string };
+    // Four words at two per caption = two cues on the new track.
+    expect(data.cues).toBe(2);
+    expect(editor.getClips().filter((c) => c.trackId === data.trackId)).toHaveLength(2);
+  });
+
   it('refuses cleanly when no transcription runtime is configured', async () => {
     const { editor, executor } = harness(null);
 

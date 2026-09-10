@@ -605,11 +605,19 @@ export const tools = {
   transcribeAudio: {
     name: 'transcribe_audio',
     description:
-      'Transcribe a library audio/video asset to text with word-level timestamps, then lay the result onto a video track as caption clips snapped to word boundaries (#39/#91). Requires an OpenAI-compatible provider with an API key (OpenAI, Groq — endpoints serving /audio/transcriptions). Pass language as an ISO-639-1 hint like "en" or leave it for auto-detect.',
+      'Transcribe a library audio/video asset to text with word-level timestamps, then lay the result onto a video track as caption clips snapped to word boundaries (#39/#91). Requires an OpenAI-compatible provider with an API key (OpenAI, Groq — endpoints serving /audio/transcriptions). Pass language as an ISO-639-1 hint like "en" or leave it for auto-detection. Optional planning controls: maxWordsPerCue, maxCharsPerLine, maxLines, pauseBreakSec (omitted fields use broadcast defaults).',
     parameters: z.object({
       assetId: z.string().describe('Library asset containing speech.'),
       language: z.string().max(12).optional().describe('ISO-639-1 language hint, e.g. "en".'),
       model: z.string().optional().describe('Transcription model id. Default "whisper-1" (Groq: "whisper-large-v3").'),
+      maxWordsPerCue: z.number().int().min(1).max(20).optional()
+        .describe('Maximum words per caption. Omit for no word ceiling.'),
+      maxCharsPerLine: z.number().int().min(10).max(80).optional()
+        .describe('Maximum characters per caption line. Default 42.'),
+      maxLines: z.number().int().min(1).max(4).optional()
+        .describe('Maximum lines per caption. Default 2.'),
+      pauseBreakSec: z.number().finite().min(0.1).max(3).optional()
+        .describe('Silence in seconds that forces a caption break. Default 0.6.'),
     }),
   },
 
