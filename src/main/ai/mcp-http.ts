@@ -134,6 +134,10 @@ export function createMcpHttpServer(options: McpHttpOptions): Promise<McpHttpHan
         port,
         close: () =>
           new Promise<void>((done) => {
+            // Drop keep-alive sockets first: otherwise close() waits on
+            // connections that a harness may still be holding open, and the
+            // process teardown races libuv.
+            server.closeAllConnections?.();
             server.close(() => done());
           }),
       });

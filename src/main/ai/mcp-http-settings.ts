@@ -197,6 +197,26 @@ export function getMcpHttpStatus(): McpHttpStatus {
   return status();
 }
 
+/**
+ * Start the loopback endpoint without consulting (or mutating) the
+ * "enabled" preference — the windowless `--mcp-server` entry uses this so a
+ * CI run never flips the desktop app's own setting. The saved port and
+ * token are reused, so a harness that already knows the config keeps
+ * working.
+ */
+export async function startStandaloneMcpHttp(
+  controller: EditorController,
+  deps?: ToolExecutorDeps,
+): Promise<McpHttpStatus> {
+  await start(controller, deps);
+  return status();
+}
+
+/** Close the listener (windowless mode teardown). */
+export async function stopStandaloneMcpHttp(): Promise<void> {
+  await stop();
+}
+
 /** Test seam. */
 export function resetMcpHttpCache(): void {
   cached = null;

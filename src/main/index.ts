@@ -7,10 +7,27 @@
 
 import { app, BrowserWindow, dialog } from 'electron';
 
-const allowMultipleInstances = process.env['PALMIER_ALLOW_MULTIPLE_INSTANCES'] === '1';
-const hasSingleInstanceLock = allowMultipleInstances || app.requestSingleInstanceLock();
+/**
+ * Windowless MCP server mode for CI/batch harnesses. Skips the
+ * single-instance lock so an automation run can coexist with the desktop
+ * app, and never opens a window.
+ */
+const mcpServerMode = process.argv.includes('--mcp-server');
 
-if (!hasSingleInstanceLock) {
+const allowMultipleInstances = process.env['PALMIER_ALLOW_MULTIPLE_INSTANCES'] === '1';
+const hasSingleInstanceLock = mcpServerMode || allowMultipleInstances || app.requestSingleInstanceLock();
+
+if (mcpServerMode) {
+  app.whenReady()
+    .then(async () => {
+      const { startMcpServerMode } = await import('./mcp-server-mode');
+      await startMcpServerMode();
+    })
+    .catch((error: unknown) => {
+      console.error('Palmier Pro MCP server mode failed to start:', error);
+      app.exit(1);
+    });
+} else if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
