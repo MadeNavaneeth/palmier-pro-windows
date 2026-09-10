@@ -575,6 +575,20 @@ export const tools = {
     }),
   },
 
+  verifyTimeline: {
+    name: 'verify_timeline',
+    description:
+      'Read-only structural audit of the project — no mutation, so it never needs an undo. '
+      + 'Reports zero-length clips, clips reading past their source, overlapping clips, missing or offline media, '
+      + 'orphaned link groups, fades longer than the clip, empty titles, and invalid markers, each with a severity, '
+      + 'a code, and the owning clip/marker id. Call it after any destructive batch (ripple delete, silence removal, '
+      + 'batch trim, project settings change) before telling the user the edit is done.',
+    parameters: z.object({
+      limit: z.number().int().min(1).max(200).optional()
+        .describe('Maximum issues to return, errors first. Default 50.'),
+    }),
+  },
+
   newProject: {
     name: 'new_project',
     description:

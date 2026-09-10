@@ -39,6 +39,7 @@ import { mergeChromaKey } from '../../shared/editor/chroma-key';
 import { hasColorGrade, sanitizeColorGrade } from '../../shared/editor/color-grade';
 import { sanitizeEq } from '../../shared/audio/eq';
 import { hasCompressor, mergeCompressor, normalizeCompressor } from '../../shared/audio/compressor';
+import { diagnoseTimeline } from '../../shared/editor/diagnostics';
 import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
 import { normalizeCaptionPlanOptions, planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
@@ -404,6 +405,34 @@ export class ToolExecutor {
 
       case 'get_media':
         return { success: true, data: this.editor.getMedia() };
+
+      case 'verify_timeline': {
+        const project = this.editor.getProject();
+        // The audit is pure; the executor supplies the one fact it cannot
+        // know, whether each library file is still on disk.
+        const offlinePaths = new Set(
+          project.media
+            .filter((asset) => !fsSync.existsSync(asset.path))
+            .map((asset) => asset.path),
+        );
+        const issues = diagnoseTimeline(project, {
+          offlinePaths,
+          maxIssues: typeof args.limit === 'number' ? args.limit : 50,
+        });
+        return {
+          success: true,
+          data: {
+            issues,
+            errorCount: issues.filter((issue) => issue.severity === 'error').length,
+            warningCount: issues.filter((issue) => issue.severity === 'warning').length,
+            checked: {
+              clips: project.timeline.clips.length,
+              markers: (project.timeline.markers ?? []).length,
+              media: project.media.length,
+            },
+          },
+        };
+      }
 
       case 'manage_clip_links': {
         try {

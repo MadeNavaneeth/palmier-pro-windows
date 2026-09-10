@@ -531,6 +531,8 @@ Choose the best available model from the configured providers. If a preferred mo
 
 **Project files:** new_project, open_project, and save_project manage .vproj files directly, and export_project renders the timeline to a file with the same exporter the delivery panel uses — mainly for MCP batch workflows.
 
+**Verification:** verify_timeline is a read-only audit (zero-length clips, source overruns, overlaps, offline media, orphaned link groups, bad fades, empty titles, invalid markers). Run it after any destructive batch and fix what it reports before saying the edit is done.
+
 **Settings:** set_project_settings changes fps/canvas/aspect ratio as one undoable step. undo/redo wrap everything above.
 
 ## Guidelines

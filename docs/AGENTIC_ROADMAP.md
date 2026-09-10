@@ -52,19 +52,20 @@ Acceptance:
 - Assertions read domain state after the run, never tool receipts alone.
 - One scenario pins undo discipline: each call is exactly one undo entry.
 
-### L2 — Verification tool (next)
+### L2 — Verification tool (shipped)
 
 Mechanism: evaluator-optimizer / Self-Refine. A read-only `verify_timeline`
 tool returns structured diagnostics (overlaps, zero-length clips, clips past
-source end, offline media, markers out of range, sync-lock drift, orphaned
-linked partners) so the model can check its own work instead of asking the
-user to spot mistakes.
+source end, offline media, orphaned linked partners, fades longer than the
+clip, empty titles, invalid markers) so the model can check its own work
+instead of asking the user to spot mistakes.
 
-Acceptance:
-- Pure domain module with unit tests; tool result is a short list with
-  `severity`, `clipId`/`markerId`, and an actionable message.
-- Agent prompt instructs a verify pass after multi-clip destructive batches.
-- Eval scenario: seeded project with two defects returns exactly those two.
+Shipped: `shared/editor/diagnostics.ts` (pure, unit-tested — every code has a
+seeded-defect test and a clean project returns none), `verify_timeline` in
+`main/ai/tools.ts` + `executor.ts` (the executor supplies the one fact the
+pure audit cannot know: whether each library file is still on disk), and an
+agent-prompt rule to run it after destructive batches. `executor.verify.test.ts`
+pins that the tool is read-only: no project change, no undo entry.
 
 ### L3 — Plan tool
 
