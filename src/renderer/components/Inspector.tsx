@@ -21,10 +21,12 @@ import {
   COLOR_GRADE_LIMITS,
   DEFAULT_COLOR_GRADE,
   GRADE_PRESETS,
+  GRADE_PRESET_NAME_MAX,
   sanitizeColorGrade,
   type ColorGrade,
   type GradePreset,
 } from '../../shared/editor/color-grade';
+import { useGradePresetsStore } from '../store/grade-presets';
 import {
   COMPRESSOR_LIMITS,
   DEFAULT_COMPRESSOR,
@@ -388,6 +390,26 @@ export function Inspector() {
 }
 
 /**
+ * Write a preset's whole grade onto one or more clips in one undo step.
+ * Fields the preset does not define are cleared, which is what makes the
+ * built-in "Neutral" a real reset rather than a no-op.
+ */
+function applyGradePresetTo(
+  controller: EditorController,
+  clipIds: string[],
+  preset: GradePreset,
+): void {
+  const grade = sanitizeColorGrade(preset.grade);
+  controller.applyClipProperties(clipIds, `Grade: ${preset.label}`, (draft) => {
+    for (const field of Object.keys(COLOR_GRADE_LIMITS) as Array<keyof typeof COLOR_GRADE_LIMITS>) {
+      if (grade[field] === undefined) delete draft[field];
+      else draft[field] = grade[field];
+    }
+    return true;
+  });
+}
+
+/**
  * Color grade + named presets (upstream #157).
  *
  * The grade fields (brightness/contrast/saturation/hue) were rendered by both
@@ -395,8 +417,8 @@ export function Inspector() {
  * model knew them. Each slider writes one field through `applyClipProperties`
  * as one undo step and removes the field at its default, so a neutral clip
  * still reads as ungraded everywhere (`hasColorGrade`). Presets apply the
- * whole grade at once and clear fields the preset does not define, which is
- * what makes "Neutral" a real reset.
+ * whole grade at once; the built-in list and the user's own saved looks share
+ * one picker, and a saved look can be deleted from the same row.
  */
 function ColorGradeControls({
   clipId,
@@ -407,6 +429,14 @@ function ColorGradeControls({
   clip: Clip;
   controller: EditorController;
 }) {
+  const userPresets = useGradePresetsStore((state) => state.presets);
+  const saveUserPreset = useGradePresetsStore((state) => state.save);
+  const removeUserPreset = useGradePresetsStore((state) => state.remove);
+  const [lastPresetId, setLastPresetId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [presetName, setPresetName] = useState('');
+  const [saveError, setSaveError] = useState('');
+
   const current: ColorGrade = {
     brightness: clip.brightness ?? DEFAULT_COLOR_GRADE.brightness,
     contrast: clip.contrast ?? DEFAULT_COLOR_GRADE.contrast,
@@ -430,14 +460,24 @@ function ColorGradeControls({
   };
 
   const applyPreset = (preset: GradePreset) => {
-    const grade = sanitizeColorGrade(preset.grade);
-    controller.applyClipProperties([clipId], `Grade: ${preset.label}`, (draft) => {
-      for (const field of Object.keys(COLOR_GRADE_LIMITS) as Array<keyof typeof COLOR_GRADE_LIMITS>) {
-        if (grade[field] === undefined) delete draft[field];
-        else draft[field] = grade[field];
-      }
-      return true;
-    });
+    applyGradePresetTo(controller, [clipId], preset);
+    setLastPresetId(preset.id);
+  };
+
+  const lastUserPreset = lastPresetId
+    ? userPresets.find((preset) => preset.id === lastPresetId) ?? null
+    : null;
+
+  const commitSave = () => {
+    const stored = saveUserPreset(presetName, { ...current });
+    if (!stored) {
+      setSaveError(`Enter a name (max ${GRADE_PRESET_NAME_MAX} characters).`);
+      return;
+    }
+    setLastPresetId(stored.id);
+    setSaving(false);
+    setPresetName('');
+    setSaveError('');
   };
 
   const reset = () => {
@@ -467,7 +507,8 @@ function ColorGradeControls({
       <select
         value=""
         onChange={(event) => {
-          const preset = GRADE_PRESETS.find((candidate) => candidate.id === event.target.value);
+          const preset = [...GRADE_PRESETS, ...userPresets]
+            .find((candidate) => candidate.id === event.target.value);
           if (preset) applyPreset(preset);
         }}
         aria-label="Apply grade preset"
@@ -477,12 +518,75 @@ function ColorGradeControls({
         <option value="" disabled>
           Apply a preset…
         </option>
-        {GRADE_PRESETS.map((preset) => (
-          <option key={preset.id} value={preset.id}>
-            {preset.label}
-          </option>
-        ))}
+        <optgroup label="Built-in">
+          {GRADE_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.label}
+            </option>
+          ))}
+        </optgroup>
+        {userPresets.length > 0 && (
+          <optgroup label="My presets">
+            {userPresets.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </optgroup>
+        )}
       </select>
+
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => {
+            setSaving((value) => !value);
+            setSaveError('');
+          }}
+          data-grade-preset-save
+          className="rounded border border-surface-4 px-1.5 py-0.5 text-[9px] text-text-secondary hover:bg-white/10 hover:text-text-primary"
+        >
+          Save current as preset…
+        </button>
+        {lastUserPreset && (
+          <button
+            type="button"
+            onClick={() => {
+              removeUserPreset(lastUserPreset.id);
+              setLastPresetId(null);
+            }}
+            data-grade-preset-delete
+            className="rounded px-1.5 py-0.5 text-[9px] text-red-400 hover:bg-red-500/10"
+          >
+            Delete “{lastUserPreset.label}”
+          </button>
+        )}
+      </div>
+      {saving && (
+        <div className="flex items-center gap-1.5">
+          <input
+            value={presetName}
+            onChange={(event) => setPresetName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') commitSave();
+              if (event.key === 'Escape') setSaving(false);
+            }}
+            placeholder="Preset name"
+            maxLength={GRADE_PRESET_NAME_MAX}
+            autoFocus
+            aria-label="New grade preset name"
+            className="min-w-0 flex-1 rounded border border-surface-3 bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={commitSave}
+            className="rounded bg-accent px-1.5 py-0.5 text-[9px] font-medium text-surface-0 hover:bg-accent-hover"
+          >
+            Save
+          </button>
+        </div>
+      )}
+      {saveError && <p className="text-[9px] text-red-400">{saveError}</p>}
 
       <GradeSlider
         label="Brightness"
@@ -1201,6 +1305,7 @@ function MultiClipInspector() {
 
   const clips = getSelectedClips();
   const visualClips = clips.filter((item) => item.type !== 'audio');
+  const userPresets = useGradePresetsStore((state) => state.presets);
   const sharedBlendMode = sharedValue(visualClips.map((item) => item.blendMode ?? 'normal'));
   const sharedOpacity = sharedValue(visualClips.map((item) => item.opacity));
   const sharedFadeIn = sharedValue(clips.map((item) => item.fadeInFrames ?? 0));
@@ -1258,6 +1363,44 @@ function MultiClipInspector() {
                 aria-label="Opacity for the selected clips"
                 className="w-full accent-accent"
               />
+            </div>
+
+            {/* Grade a whole selection with one named look (upstream #157). */}
+            <div className="flex flex-col gap-1">
+              <label className="text-2xs text-text-muted uppercase tracking-wide">Grade Preset</label>
+              <select
+                value=""
+                onChange={(event) => {
+                  const preset = [...GRADE_PRESETS, ...userPresets]
+                    .find((candidate) => candidate.id === event.target.value);
+                  if (preset) {
+                    applyGradePresetTo(controller, visualClips.map((item) => item.id), preset);
+                  }
+                }}
+                aria-label="Apply grade preset to the selected clips"
+                data-grade-preset-multi
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+              >
+                <option value="" disabled>
+                  Apply to all {visualClips.length} clips…
+                </option>
+                <optgroup label="Built-in">
+                  {GRADE_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.label}
+                    </option>
+                  ))}
+                </optgroup>
+                {userPresets.length > 0 && (
+                  <optgroup label="My presets">
+                    {userPresets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
             </div>
           </>
         )}

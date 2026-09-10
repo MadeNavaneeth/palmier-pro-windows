@@ -89,6 +89,36 @@ export function gradePresetById(id: string): GradePreset | undefined {
   return GRADE_PRESETS.find((preset) => preset.id === id);
 }
 
+export const GRADE_PRESET_NAME_MAX = 40;
+export const MAX_USER_GRADE_PRESETS = 50;
+
+/**
+ * Narrow persisted user presets (upstream #157's "name and reuse" half).
+ *
+ * The stored file is user-writable, so every entry is validated: an id that
+ * is not a safe token, an empty or over-long label, or a grade with no
+ * usable fields is dropped rather than trusted. Later duplicates of an id
+ * win, and the list is capped so a hand-edited file cannot grow without
+ * bound. Unknown grade fields are stripped by `sanitizeColorGrade`.
+ */
+export function normalizeUserGradePresets(input: unknown): GradePreset[] {
+  if (!Array.isArray(input)) return [];
+  const byId = new Map<string, GradePreset>();
+  for (const entry of input) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const candidate = entry as { id?: unknown; label?: unknown; grade?: unknown };
+    if (typeof candidate.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(candidate.id)) continue;
+    if (typeof candidate.label !== 'string') continue;
+    const label = candidate.label.trim();
+    if (label.length === 0 || label.length > GRADE_PRESET_NAME_MAX) continue;
+    const grade = sanitizeColorGrade(candidate.grade as Partial<ColorGrade> | undefined);
+    if (Object.keys(grade).length === 0) continue;
+    byId.set(candidate.id, { id: candidate.id, label, grade });
+    if (byId.size >= MAX_USER_GRADE_PRESETS) break;
+  }
+  return [...byId.values()];
+}
+
 /** Extract non-default color fields from a clip; null when no grading. */
 export function colorGradeOf(clip: Clip): ColorGrade | null {
   const grade: ColorGrade = {

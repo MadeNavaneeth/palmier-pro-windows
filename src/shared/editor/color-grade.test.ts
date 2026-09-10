@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_COLOR_GRADE,
   GRADE_PRESETS,
+  GRADE_PRESET_NAME_MAX,
+  MAX_USER_GRADE_PRESETS,
   colorGradeOf,
   gradePresetById,
   hasColorGrade,
+  normalizeUserGradePresets,
   sanitizeColorGrade,
   toCanvasFilter,
   toFfmpegEq,
@@ -122,5 +125,43 @@ describe('grade presets (#157)', () => {
       hueRotation: 0,
       invertColors: false,
     });
+  });
+});
+
+describe('normalizeUserGradePresets (#157)', () => {
+  it('keeps valid entries and sanitizes their grades', () => {
+    const result = normalizeUserGradePresets([
+      { id: 'user-abc', label: '  My Look  ', grade: { brightness: 0.2, nonsense: true } },
+    ]);
+    expect(result).toEqual([
+      { id: 'user-abc', label: 'My Look', grade: { brightness: 0.2 } },
+    ]);
+  });
+
+  it('drops entries with bad ids, names, or empty grades', () => {
+    expect(normalizeUserGradePresets([
+      { id: 'has spaces', label: 'X', grade: { brightness: 0.1 } },
+      { id: 'ok1', label: '', grade: { brightness: 0.1 } },
+      { id: 'ok2', label: 'x'.repeat(GRADE_PRESET_NAME_MAX + 1), grade: { contrast: 1.2 } },
+      { id: 'ok3', label: 'Empty', grade: {} },
+      { id: 'ok4', label: 'Absurd', grade: { contrast: 99 } },
+      null,
+      'nope',
+    ])).toEqual([]);
+  });
+
+  it('never returns more than the cap and lets later duplicates win', () => {
+    const many = Array.from({ length: MAX_USER_GRADE_PRESETS + 10 }, (_, index) => ({
+      id: `user-${index}`,
+      label: `P${index}`,
+      grade: { brightness: 0.1 },
+    }));
+    expect(normalizeUserGradePresets(many)).toHaveLength(MAX_USER_GRADE_PRESETS);
+
+    const dup = normalizeUserGradePresets([
+      { id: 'user-1', label: 'First', grade: { brightness: 0.1 } },
+      { id: 'user-1', label: 'Second', grade: { brightness: 0.2 } },
+    ]);
+    expect(dup).toEqual([{ id: 'user-1', label: 'Second', grade: { brightness: 0.2 } }]);
   });
 });
