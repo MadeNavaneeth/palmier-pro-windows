@@ -7,7 +7,8 @@
  * operation (upstream PR #419).
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Pipette } from 'lucide-react';
 import { useTimelineStore } from '../store/timeline';
 import { useProjectStore } from '../store/project';
 import { BLEND_MODES, BLEND_MODE_LABELS, type BlendMode } from '../../shared/types/blend-mode';
@@ -387,6 +388,10 @@ function ChromaKeyControls({
   const tolerancePct = Math.round((chromaKey?.tolerance ?? 0) * 100);
   const softnessPct = Math.round((chromaKey?.softness ?? 0.05) * 100);
   const spillPct = Math.round((chromaKey?.spill ?? 0.5) * 100);
+  const [eyedropSupported, setEyedropSupported] = useState(false);
+  useEffect(() => {
+    setEyedropSupported(typeof window !== 'undefined' && 'EyeDropper' in window);
+  }, []);
 
   const update = (fields: { keyColor?: string; tolerance?: number; softness?: number; spill?: number }) => {
     controller.applyClipProperties([clipId], 'Set chroma key', (draft) => {
@@ -395,6 +400,16 @@ function ChromaKeyControls({
       else delete draft.chromaKey;
       return true;
     });
+  };
+
+  const pickColor = async () => {
+    try {
+      const eyeDropper = new (window as unknown as { EyeDropper: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper();
+      const result = await eyeDropper.open();
+      if (result?.sRGBHex) update({ keyColor: result.sRGBHex });
+    } catch {
+      // User cancelled the picker or API unavailable — no state change.
+    }
   };
 
   return (
@@ -418,13 +433,26 @@ function ChromaKeyControls({
         <div className="flex flex-col gap-2 pl-0.5">
           <div className="flex items-center justify-between gap-2">
             <label className="text-2xs text-text-muted uppercase tracking-wide">Key Color</label>
-            <input
-              type="color"
-              value={chromaKey?.keyColor ?? DEFAULT_CHROMA_KEY_COLOR}
-              onChange={(e) => update({ keyColor: e.target.value })}
-              aria-label="Chroma key color"
-              className="h-6 w-10 cursor-pointer rounded border border-surface-3 bg-surface-2"
-            />
+            <div className="flex items-center gap-1.5">
+              <input
+                type="color"
+                value={chromaKey?.keyColor ?? DEFAULT_CHROMA_KEY_COLOR}
+                onChange={(e) => update({ keyColor: e.target.value })}
+                aria-label="Chroma key color"
+                className="h-6 w-10 cursor-pointer rounded border border-surface-3 bg-surface-2"
+              />
+              {eyedropSupported && (
+                <button
+                  type="button"
+                  onClick={pickColor}
+                  title="Pick color from preview"
+                  aria-label="Pick chroma key color from preview"
+                  className="flex h-6 w-6 items-center justify-center rounded border border-surface-3 bg-surface-2 text-text-muted transition hover:bg-surface-3 hover:text-text-primary"
+                >
+                  <Pipette size={12} />
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between">
