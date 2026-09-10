@@ -1,6 +1,6 @@
 /**
  * MarkerIndexBrowser — review list for timeline markers (upstream PR #552's
- * MarkerBrowser, first slice without thumbnails).
+ * MarkerBrowser, slice with canvas-proportioned placeholder thumbnails).
  *
  * Sorted by start frame, filterable by search text (name + comment) and by
  * review status. Clicking a row selects the marker and seeks the playhead to
@@ -13,6 +13,11 @@ import { Search, Flag } from 'lucide-react';
 import type { MarkerStatus } from '../../../shared/editor/markers';
 import { useTimelineStore } from '../../store/timeline';
 import { frameToTimecode } from '../../../shared/utils/time';
+
+function thumbnailSize(canvasWidth: number, canvasHeight: number, thumbHeight: number): { width: number; height: number } {
+  if (canvasWidth <= 0 || canvasHeight <= 0 || thumbHeight <= 0) return { width: 64, height: 36 };
+  return { width: Math.round((canvasWidth * thumbHeight) / canvasHeight), height: thumbHeight };
+}
 
 function sortedMarkers(
   markers: ReturnType<ReturnType<typeof useTimelineStore.getState>['controller']['getMarkers']>,
@@ -32,6 +37,7 @@ function sortedMarkers(
 export function MarkerIndexBrowser() {
   const markers = useTimelineStore((s) => s.controller.getMarkers());
   const fps = useTimelineStore((s) => s.getProjectFps());
+  const canvas = useTimelineStore((s) => s.project.settings);
   const selectMarker = useTimelineStore((s) => s.selectMarker);
   const setPlayhead = useTimelineStore((s) => s.setPlayhead);
   const deleteSelectedMarkers = useTimelineStore((s) => s.deleteSelectedMarkers);
@@ -103,6 +109,7 @@ export function MarkerIndexBrowser() {
           {filtered.map((marker) => {
             const selected = selectedMarkerIds.has(marker.id);
             const isEditing = editingId === marker.id;
+            const thumb = thumbnailSize(canvas.width, canvas.height, 36);
             return (
               <div
                 key={marker.id}
@@ -110,6 +117,17 @@ export function MarkerIndexBrowser() {
                 data-selected={selected}
                 className={`flex items-center gap-2 border-b border-white/[0.06] px-2 py-1.5 transition ${selected ? 'bg-accent/15' : 'hover:bg-white/[0.04]'}`}
               >
+                {/* Canvas-proportioned placeholder — real composited thumbnails need the preview compositor */}
+                <div
+                  className="shrink-0 overflow-hidden rounded-sm border border-white/10 bg-black"
+                  style={{ width: thumb.width, height: thumb.height }}
+                  title={`Frame ${frameToTimecode(marker.startFrame, fps)}`}
+                  data-marker-thumb={marker.id}
+                >
+                  <div className="flex h-full w-full items-center justify-center" style={{ backgroundColor: `${marker.color}18` }}>
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: marker.color }} />
+                  </div>
+                </div>
                 <button
                   type="button"
                   onClick={() => jump(marker)}
