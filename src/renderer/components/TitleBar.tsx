@@ -1,15 +1,22 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Bot,
   ChevronDown,
   Columns3,
   PanelLeft,
   PanelRight,
+  PanelsTopLeft,
   Save,
   Share2,
 } from 'lucide-react';
 import { useProjectStore } from '../store/project';
 import { useUiStore } from '../store/ui';
+import {
+  PANEL_KEYS,
+  PANEL_LABELS,
+  othersInRegion,
+  type PanelKey,
+} from '../../shared/ui/panel-groups';
 import {
   LAYOUT_PRESET_INFO,
   layoutPresetInfo,
@@ -99,6 +106,7 @@ export function TitleBar({
           </button>
         )}
         <LayoutSwitcher />
+        <PanelArrangementMenu />
         {onToggleExport && (
           <button
             onClick={onToggleExport}
@@ -153,5 +161,118 @@ function LayoutSwitcher() {
         ))}
       </select>
     </span>
+  );
+}
+
+function PanelMenuIcon({ panel }: { panel: PanelKey }) {
+  switch (panel) {
+    case 'media':
+      return <PanelLeft size={13} strokeWidth={1.8} aria-hidden="true" />;
+    case 'inspector':
+      return <PanelRight size={13} strokeWidth={1.8} aria-hidden="true" />;
+    case 'agent':
+      return <Bot size={13} strokeWidth={1.8} aria-hidden="true" />;
+    case 'export':
+      return <Share2 size={13} strokeWidth={1.8} aria-hidden="true" />;
+  }
+}
+
+/**
+ * Panel tab grouping control (upstream #286's "turn the components into tabs").
+ *
+ * An explicit picker rather than drag-to-dock, matching the choice upstream made
+ * for the layout presets: each panel says which other panel it shares a region
+ * with, and "Standalone" splits it back out. A native select per row keeps the
+ * whole thing keyboard-reachable and screen-reader legible without a custom
+ * listbox. The Agent row reads the same as any other, but the store keeps the
+ * Agent anchored to its own region so its chat is never remounted.
+ */
+function PanelArrangementMenu() {
+  const groups = useUiStore((s) => s.groups);
+  const panels = useUiStore((s) => s.panels);
+  const assignPanel = useUiStore((s) => s.assignPanel);
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && open) {
+            event.stopPropagation();
+            setOpen(false);
+          }
+        }}
+        className="flex h-7 items-center gap-1 rounded-md px-1.5 text-[11px] text-text-secondary transition hover:bg-white/[0.08] hover:text-text-primary"
+        title="Group panels into tabs"
+        aria-label="Group panels into tabs"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+      >
+        <PanelsTopLeft size={14} strokeWidth={1.7} />
+        <span>Panels</span>
+      </button>
+
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Panel tabs"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              setOpen(false);
+            }
+          }}
+          className="absolute right-0 top-full z-50 mt-1 w-64 rounded-md border border-surface-3 bg-surface-2 p-1 shadow-2xl"
+        >
+          <p className="px-2 pb-1 pt-1.5 text-[10px] leading-4 text-text-muted">
+            Put panels in the same region to show them as tabs.
+          </p>
+          {PANEL_KEYS.map((panel) => {
+            const others = othersInRegion(groups, panel);
+            const value = others[0] ?? 'standalone';
+            return (
+              <label
+                key={panel}
+                className={`flex items-center justify-between gap-2 rounded px-2 py-1 ${
+                  panels[panel] ? '' : 'opacity-50'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 text-[11px] text-text-secondary">
+                  <PanelMenuIcon panel={panel} />
+                  {PANEL_LABELS[panel]}
+                </span>
+                <select
+                  value={value}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    assignPanel(panel, next === 'standalone' ? panel : (next as PanelKey));
+                  }}
+                  aria-label={`${PANEL_LABELS[panel]} region`}
+                  className="cursor-pointer rounded border border-white/12 bg-surface-0 px-1 py-0.5 text-[10px] text-text-secondary outline-none hover:border-white/25"
+                >
+                  <option value="standalone">Standalone</option>
+                  {PANEL_KEYS.filter((other) => other !== panel).map((other) => (
+                    <option key={other} value={other}>
+                      With {PANEL_LABELS[other]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

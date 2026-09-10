@@ -43,10 +43,14 @@ export function Preview() {
   const loopEnabled = useTimelineStore((state) => state.loopEnabled);
   const selectedClipIds = useTimelineStore((state) => state.selectedClipIds);
   const applyLayout = useTimelineStore((state) => state.applyLayout);
-  const loopRange = useTimelineStore((state) => ({
-    inFrame: state.project.timeline.inFrame,
-    outFrame: state.project.timeline.outFrame,
-  }));
+  // Selected as two primitives, not as one object. zustand v5 hands the
+  // selector straight to useSyncExternalStore, which requires a cached
+  // snapshot: returning a fresh `{ inFrame, outFrame }` object on every call
+  // throws React #185 ("The result of getSnapshot should be cached") and takes
+  // the whole workspace down with it — the probe measured a blank page, which
+  // is how this was found.
+  const loopInFrame = useTimelineStore((state) => state.project.timeline.inFrame);
+  const loopOutFrame = useTimelineStore((state) => state.project.timeline.outFrame);
   const durationFrames = useTimelineStore((state) =>
     Math.max(
       1,
@@ -114,14 +118,16 @@ export function Preview() {
 
   // Sync loop state to engine (upstream #428)
   useEffect(() => {
-    const { inFrame, outFrame } = loopRange;
-    const hasRange = loopEnabled && inFrame !== undefined && outFrame !== undefined && outFrame > inFrame;
+    const hasRange = loopEnabled
+      && loopInFrame !== undefined
+      && loopOutFrame !== undefined
+      && loopOutFrame > loopInFrame;
     engine.current.setLoopRange(
       !!hasRange,
-      hasRange ? inFrame : undefined,
-      hasRange ? outFrame : undefined,
+      hasRange ? loopInFrame : undefined,
+      hasRange ? loopOutFrame : undefined,
     );
-  }, [loopEnabled, loopRange.inFrame, loopRange.outFrame]);
+  }, [loopEnabled, loopInFrame, loopOutFrame]);
 
   const handleTogglePlay = useCallback(() => {
     togglePlayback();

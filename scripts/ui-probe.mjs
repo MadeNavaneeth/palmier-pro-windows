@@ -8,6 +8,10 @@
  * screenshot: no document scrollbars, no element extending past the
  * viewport, and the `--text-2xs` token resolving to 10px on a live element.
  *
+ * A project is started before measuring so the workspace is what gets
+ * measured; `workspace` in the report is the proof of that, and a blank or
+ * crashed workspace fails the run instead of passing on zero offenders.
+ *
  * Usage: npm run ui:probe   → exits non-zero on failure, prints a table,
  * writes scripts/ui-probe-report.json for diffing between runs.
  */
@@ -66,14 +70,15 @@ async function main() {
   // ─── Report ──────────────────────────────────────────────────────────────
   let failed = false;
   console.log('\n[ui-probe] rendered matrix');
-  console.log('size        | scrollX | scrollY | offenders | --text-2xs | live el');
+  console.log('size        | state   | scrollX | scrollY | offenders | workspace | --text-2xs | live el');
   for (const r of results) {
     const ok =
-      r.overflowX <= 0 && r.overflowY <= 0 && r.offenderCount === 0
+      r.workspaceReady === true
+      && r.overflowX <= 0 && r.overflowY <= 0 && r.offenderCount === 0
       && (!r.textProbe || r.textProbe === '10px');
     if (!ok) failed = true;
     console.log(
-      `${String(`${r.width}x${r.height}`).padEnd(11)} | ${String(r.overflowX).padEnd(7)} | ${String(r.overflowY).padEnd(7)} | ${String(r.offenderCount).padEnd(9)} | ${String(r.token || '(unset)').padEnd(10)} | ${r.textProbe ?? '(none)'}`,
+      `${String(`${r.width}x${r.height}`).padEnd(11)} | ${String(r.panelState ?? '-').padEnd(7)} | ${String(r.overflowX).padEnd(7)} | ${String(r.overflowY).padEnd(7)} | ${String(r.offenderCount).padEnd(9)} | ${String(r.workspaceReady === true ? 'yes' : 'NO').padEnd(9)} | ${String(r.token || '(unset)').padEnd(10)} | ${r.textProbe ?? '(none)'}`,
     );
     for (const offender of r.offenders.slice(0, 8)) {
       console.log(`             ↳ <${offender.tag} class="${offender.cls}"> right=${offender.right} bottom=${offender.bottom}`);

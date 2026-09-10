@@ -13,6 +13,17 @@
 import { create } from 'zustand';
 import { asGuideKind, type GuideKind } from '../../shared/preview/guides';
 import {
+  DEFAULT_PANEL_GROUPS,
+  PANEL_KEYS,
+  assignPanelToGroup,
+  isPanelKey,
+  normalizePanelGroups,
+  samePanelGroups,
+  type PanelGroup,
+  type PanelKey,
+  type PanelVisibility,
+} from '../../shared/ui/panel-groups';
+import {
   DEFAULT_LAYOUT,
   asLayoutPreset,
   type LayoutPreset,
@@ -20,8 +31,12 @@ import {
 
 const GUIDES_STORAGE_KEY = 'palmier.preview.guides';
 const PANELS_STORAGE_KEY = 'palmier.layout.panels';
+const PANEL_GROUPS_STORAGE_KEY = 'palmier.layout.panelGroups';
 const LAYOUT_STORAGE_KEY = 'palmier.layout.preset';
 const SPLITS_STORAGE_KEY = 'palmier.layout.splits';
+
+// Re-exported so callers keep importing the panel vocabulary from the store.
+export type { PanelKey, PanelVisibility } from '../../shared/ui/panel-groups';
 
 /** Persisted layout preset, or the default when unset or unrecognized. */
 function loadLayout(): LayoutPreset {
@@ -39,13 +54,6 @@ function saveLayout(preset: LayoutPreset): void {
     // A full or unavailable storage quota must not break the switch itself.
   }
 }
-
-/** The side panels a user can show or hide (upstream #286). Export joined them with #166. */
-export type PanelKey = 'media' | 'inspector' | 'agent' | 'export';
-
-export type PanelVisibility = Record<PanelKey, boolean>;
-
-const PANEL_KEYS: readonly PanelKey[] = ['media', 'inspector', 'agent', 'export'];
 
 /** Media and Inspector in, Agent and Export out — the first-run editing layout. */
 const DEFAULT_PANELS: PanelVisibility = { media: true, inspector: true, agent: false, export: false };
@@ -80,6 +88,29 @@ function savePanels(panels: PanelVisibility): void {
     window.localStorage?.setItem(PANELS_STORAGE_KEY, JSON.stringify(panels));
   } catch {
     // A full or unavailable storage quota must not break the toggle itself.
+  }
+}
+
+/**
+ * Read persisted tab grouping, degrading to independent columns on anything
+ * unusable. `normalizePanelGroups` owns the narrowing rules (unknown keys
+ * dropped, no duplicates, omitted panels restored to their own region).
+ */
+function loadPanelGroups(): PanelGroup[] {
+  try {
+    const raw = window.localStorage?.getItem(PANEL_GROUPS_STORAGE_KEY);
+    if (!raw) return normalizePanelGroups(DEFAULT_PANEL_GROUPS);
+    return normalizePanelGroups(JSON.parse(raw));
+  } catch {
+    return normalizePanelGroups(DEFAULT_PANEL_GROUPS);
+  }
+}
+
+function savePanelGroups(groups: readonly PanelGroup[]): void {
+  try {
+    window.localStorage?.setItem(PANEL_GROUPS_STORAGE_KEY, JSON.stringify(groups));
+  } catch {
+    // A full or unavailable storage quota must not break regrouping.
   }
 }
 
@@ -192,6 +223,15 @@ interface UiState {
    */
   panels: PanelVisibility;
   /**
+   * Which panels share a region as tabs (upstream #286).
+   *
+   * Orthogonal to both `panels` and `layout`: a partition of the panels into
+   * ordered groups, the first entry of each being the region anchor. Persisted
+   * for the same reason as everything else here — a user who tabs the Agent and
+   * Media together expects that to survive a restart — and narrowed on read.
+   */
+  groups: PanelGroup[];
+  /**
    * How the workspace is arranged (upstream PR #430).
    *
    * Orthogonal to `panels`: the preset decides where things sit, the toggles
@@ -215,6 +255,8 @@ interface UiState {
   togglePanel: (panel: PanelKey) => void;
   /** Restore the first-run layout. */
   resetPanels: () => void;
+  /** Put `panel` in the same region as `anchor`; anchoring it to itself ungroups. */
+  assignPanel: (panel: PanelKey, anchor: PanelKey) => void;
   setLayout: (preset: LayoutPreset) => void;
   /** Move one divider; the value is clamped into range and persisted. */
   setSplit: (key: SplitKey, value: number) => void;
@@ -227,6 +269,7 @@ export const useUiStore = create<UiState>((set) => ({
   commandPaletteOpen: false,
   guides: loadGuides(),
   panels: loadPanels(),
+  groups: loadPanelGroups(),
   layout: loadLayout(),
   splits: loadSplits(),
 
@@ -278,6 +321,17 @@ export const useUiStore = create<UiState>((set) => ({
       const next = { ...DEFAULT_PANELS };
       savePanels(next);
       return { panels: next };
+    }),
+
+  assignPanel: (panel, anchor) =>
+    set((state) => {
+      // Both ends are guarded so an untyped caller cannot persist a grouping
+      // the renderer could not place.
+      if (!isPanelKey(panel) || !isPanelKey(anchor)) return {};
+      const next = assignPanelToGroup(state.groups, panel, anchor);
+      if (samePanelGroups(next, state.groups)) return {};
+      savePanelGroups(next);
+      return { groups: next };
     }),
 
   setLayout: (preset) =>
