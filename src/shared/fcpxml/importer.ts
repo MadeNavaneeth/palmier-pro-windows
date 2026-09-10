@@ -13,6 +13,8 @@
  * nothing disappears silently.
  */
 
+import { secondsToTimecode } from '../media/timecode';
+
 export interface ImportedAsset {
   /** Resource id as referenced by clips (e.g. "4"). */
   ref: string;
@@ -21,6 +23,11 @@ export interface ImportedAsset {
   hasVideo: boolean;
   hasAudio: boolean;
   durationSec: number;
+  /**
+   * Source start timecode rebuilt from the asset's `<timecode>` child
+   * (#154), in the project's frame rate. Absent when the XML carries none.
+   */
+  startTimecode?: string;
 }
 
 export interface ImportedVideoClip {
@@ -157,12 +164,22 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     const ref = attr(tag, 'id');
     const src = attr(tag, 'src');
     if (!ref || !src) continue;
+    // A <timecode> child carries the source start offset; rebuild the SMPTE
+    // string at the project rate so the asset round-trips through export.
+    const timecodeTag = tag.match(/<timecode\b[^>]*/)?.[0] ?? '';
+    const startSeconds = timecodeTag
+      ? parseFcpxmlTime(attr(timecodeTag, 'start') ?? '')
+      : null;
+    const startTimecode = startSeconds !== null && fps
+      ? secondsToTimecode(startSeconds, fps) ?? undefined
+      : undefined;
     assets.push({
       ref,
       path: fileUrlToPath(src),
       hasVideo: attr(tag, 'hasVideo') === '1',
       hasAudio: attr(tag, 'hasAudio') === '1',
       durationSec: parseFcpxmlTime(attr(tag, 'duration') ?? '') ?? 0,
+      ...(startTimecode ? { startTimecode } : {}),
     });
   }
   const assetByRef = new Map(assets.map((a) => [a.ref, a]));

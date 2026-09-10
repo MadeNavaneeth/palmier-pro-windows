@@ -9,6 +9,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
+import { pickTimecodeFromTags } from '../../shared/media/timecode';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +26,8 @@ export interface MediaProbeResult {
   channels?: number;
   fileSize: number;
   type: 'video' | 'audio' | 'image';
+  /** Embedded SMPTE start timecode, when the container carries one (#154). */
+  startTimecode?: string;
 }
 
 export async function probeMedia(filePath: string): Promise<MediaProbeResult> {
@@ -54,6 +57,7 @@ export async function probeMedia(filePath: string): Promise<MediaProbeResult> {
   const fps = den ? num / den : 0;
 
   const stat = await fs.stat(filePath);
+  const timecode = pickTimecodeFromTags(videoStream?.tags, format?.tags);
 
   return {
     path: filePath,
@@ -64,9 +68,11 @@ export async function probeMedia(filePath: string): Promise<MediaProbeResult> {
     fps: fps > 0 ? Math.round(fps * 100) / 100 : undefined,
     codec: videoStream?.codec_name,
     audioCodec: audioStream?.codec_name,
-    sampleRate: audioStream ? parseInt(audioStream.sample_rate) : undefined,
+    sampleRate: audioStream ? parseInt(audioStream.sample_rate) :
+      undefined,
     channels: audioStream?.channels,
     fileSize: stat.size,
     type,
+    ...(timecode ? { startTimecode: timecode } : {}),
   };
 }

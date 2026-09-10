@@ -81,6 +81,7 @@ function mediaAssetsFromProbeResults(
     channels: probe.channels,
     fileSize: probe.fileSize,
     addedAt,
+    ...(probe.startTimecode ? { startTimecode: probe.startTimecode } : {}),
   }));
 }
 

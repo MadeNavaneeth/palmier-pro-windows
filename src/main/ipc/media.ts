@@ -126,6 +126,11 @@ export function registerMediaHandlers(): void {
         if (fsSync.existsSync(entry.path)) {
           try {
             probe = await probeMedia(entry.path);
+            // The XML's source timecode fills in when the container has none
+            // (#154); a container tag wins because it describes the bytes.
+            if (entry.startTimecode && !probe.startTimecode) {
+              probe = { ...probe, startTimecode: entry.startTimecode };
+            }
             assetId = crypto.randomUUID();
           } catch { /* falls through as offline */ }
         }

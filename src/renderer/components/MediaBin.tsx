@@ -1101,6 +1101,7 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
             ? `Click to swap this media in — ${item.filename}`
             : `Not eligible: ${swapVerdict.reason}`
           : `Drag onto the timeline to add - ${item.filename}`
+            + (item.startTimecode ? ` · TC ${item.startTimecode}` : '')
       }
       data-swap-eligible={armedSwap ? (swapVerdict?.ok ? 'yes' : 'no') : undefined}
       className={`group relative min-w-0 cursor-grab active:cursor-grabbing ${armedSwap && !swapVerdict?.ok ? 'opacity-40' : ''}`}

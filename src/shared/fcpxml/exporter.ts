@@ -20,6 +20,7 @@
  */
 
 import type { Project, Clip, MediaAsset } from '../types/project';
+import { timecodeToSeconds } from '../media/timecode';
 
 const SEC_PRECISION = 6;
 
@@ -122,10 +123,24 @@ export function exportFcpxml(project: Project): string {
       assetHasAudio(asset) ? 'hasAudio="1"' : null,
     ].filter(Boolean).join(' ');
     const durSec = asset.duration > 0 ? `${asset.duration.toFixed(SEC_PRECISION)}s` : '0s';
-    lines.push(
+    const assetAttrs =
       `<asset id="${id}" name="${escapeAttr(asset.filename)}" src="${escapeAttr(fileUrl(asset.path))}"`
-      + ` start="0s" duration="${durSec}" ${flags} format="r1"/>`,
-    );
+      + ` start="0s" duration="${durSec}" ${flags} format="r1"`;
+    // A source start timecode (#154) rides a standard <timecode> child, so
+    // conforming apps keep the source offset; drop-frame strings cannot be
+    // converted exactly and are omitted rather than written wrong.
+    const startSeconds = asset.startTimecode
+      ? timecodeToSeconds(asset.startTimecode, asset.fps ?? fps)
+      : null;
+    if (startSeconds === null) {
+      lines.push(`${assetAttrs}/>`);
+    } else {
+      lines.push(`${assetAttrs}>`);
+      lines.push(
+        `<timecode start="${startSeconds.toFixed(SEC_PRECISION)}s" duration="${durSec}" format="r1"/>`,
+      );
+      lines.push('</asset>');
+    }
   }
 
   // â”€â”€ Library / event / spine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

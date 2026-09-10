@@ -31,7 +31,7 @@ function baseProject(): Project {
 function fixtureProject(): Project {
   const p = baseProject();
   p.media.push(
-    { id: 'a', path: 'C:/media/footage.mp4', filename: 'footage.mp4', type: 'video', duration: 60, fileSize: 1, addedAt: '', width: 1920, height: 1080, audioCodec: 'aac' },
+    { id: 'a', path: 'C:/media/footage.mp4', filename: 'footage.mp4', type: 'video', duration: 60, fileSize: 1, addedAt: '', width: 1920, height: 1080, audioCodec: 'aac', startTimecode: '01:00:00:00' },
     { id: 'm', path: 'C:/media/music.wav', filename: 'music.wav', type: 'audio', duration: 90, fileSize: 1, addedAt: '' },
   );
   const base = {
@@ -79,6 +79,14 @@ describe('#154 round trip', () => {
     const music = parsed.assets.find((a) => a.path === 'C:/media/music.wav');
     expect(footage).toMatchObject({ hasVideo: true, hasAudio: true });
     expect(music).toMatchObject({ hasVideo: false, hasAudio: true });
+  });
+
+  it('recovers the source start timecode (#154)', () => {
+    const footage = parsed.assets.find((a) => a.path === 'C:/media/footage.mp4');
+    expect(footage?.startTimecode).toBe('01:00:00:00');
+    // An asset without a timecode stays without one.
+    const music = parsed.assets.find((a) => a.path === 'C:/media/music.wav');
+    expect(music?.startTimecode).toBeUndefined();
   });
 
   it('maps frames exactly through decimal seconds at 30fps', () => {

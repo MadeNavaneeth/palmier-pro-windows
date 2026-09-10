@@ -130,6 +130,30 @@ describe('exportFcpxml (#154)', () => {
     expect(xml).toContain('</text-style-def></fcpxml>');
   });
 
+  it('writes a source timecode child when the asset carries one (#154)', () => {
+    const p = baseProject();
+    addMedia(p, 'a', 'X:/clip.mp4', 'video', 'aac');
+    p.media[0].startTimecode = '01:00:00:00';
+    addClip(p, { assetId: 'a' });
+
+    const xml = exportFcpxml(p);
+
+    expect(xml).toContain('<timecode start="3600.000000s" duration="60.000000s" format="r1"/>');
+    expect(xml).toMatch(/<asset [^>]*>\s*<timecode/);
+    expect(xml).toContain('</asset>');
+  });
+
+  it('omits the timecode child for drop-frame strings rather than guessing', () => {
+    const p = baseProject();
+    addMedia(p, 'a', 'X:/clip.mp4', 'video', 'aac');
+    p.media[0].startTimecode = '01:00:00;00';
+    addClip(p, { assetId: 'a' });
+
+    const xml = exportFcpxml(p);
+
+    expect(xml).not.toContain('<timecode');
+  });
+
   it('throws when there is nothing representable', () => {
     const p = baseProject();
     expect(() => exportFcpxml(p)).toThrow();

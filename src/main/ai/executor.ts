@@ -1346,7 +1346,17 @@ export class ToolExecutor {
           try {
             const probed = await probeMedia(asset.path);
             const id = nanoid();
-            this.editor.addMedia({ id, addedAt: new Date().toISOString(), ...probed });
+            this.editor.addMedia({
+              id,
+              addedAt: new Date().toISOString(),
+              ...probed,
+              // The XML's source timecode fills in when the container has
+              // none (#154); a container tag wins because it describes the
+              // bytes.
+              ...(asset.startTimecode && !probed.startTimecode
+                ? { startTimecode: asset.startTimecode }
+                : {}),
+            });
             assetIdByPath.set(asset.path, id);
           } catch {
             offline.push(asset.path);

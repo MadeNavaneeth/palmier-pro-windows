@@ -31,6 +31,12 @@ export interface MediaAsset {
   thumbnailPath?: string;
   addedAt: string; // ISO timestamp
   /**
+   * Embedded SMPTE start timecode (`HH:MM:SS:FF`), when the source carries
+   * one (#154). Round-trips through FCPXML assets so conform workflows keep
+   * the source offset.
+   */
+  startTimecode?: string;
+  /**
    * Lightweight mezzanine used for preview/decode only (roadmap R2).
    * Exports always read `path`.
    */
