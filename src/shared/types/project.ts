@@ -107,6 +107,14 @@ export interface Clip {
   muted: boolean;
   /** Stereo balance, -1 hard left … +1 hard right (R5). Audio clips only. */
   pan?: number;
+  /**
+   * Three-band EQ in dB, ±15 (upstream #158). Low 100 Hz shelf, mid 1 kHz
+   * peaking, high 3 kHz shelf — the same bands the preview biquads and the
+   * FFmpeg export chain use. Absent/0 = neutral. Audio clips only.
+   */
+  eqLowDb?: number;
+  eqMidDb?: number;
+  eqHighDb?: number;
 
   // Metadata
   label?: string;

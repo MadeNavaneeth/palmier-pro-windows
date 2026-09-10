@@ -744,6 +744,27 @@ export const tools = {
     }),
   },
 
+  setClipEq: {
+    name: 'set_clip_eq',
+    description:
+      'Three-band EQ on an audio clip (upstream #158): low 100 Hz shelf, mid 1 kHz bell, high 3 kHz shelf, '
+      + 'each -15 to +15 dB. Preview and export apply the exact same bands. Omitted bands stay untouched; '
+      + 'a band passed 0 clears just that band, and clear: true resets all three.',
+    parameters: z.object({
+      clipId: z.string().describe('The audio clip to equalize.'),
+      lowDb: z.number().finite().min(-15).max(15).optional()
+        .describe('Low shelf gain at 100 Hz, -15 to 15 dB. 0 = neutral.'),
+      midDb: z.number().finite().min(-15).max(15).optional()
+        .describe('Mid bell gain at 1 kHz (Q 1), -15 to 15 dB. 0 = neutral.'),
+      highDb: z.number().finite().min(-15).max(15).optional()
+        .describe('High shelf gain at 3 kHz, -15 to 15 dB. 0 = neutral.'),
+      clear: z.boolean().optional().describe('Reset all three bands to neutral.'),
+    }).refine(
+      (op) => op.clear === true || op.lowDb !== undefined || op.midDb !== undefined || op.highDb !== undefined,
+      { message: 'Pass at least one band, or clear: true.' },
+    ),
+  },
+
   applyLayout: {
     name: 'apply_layout',
     description:

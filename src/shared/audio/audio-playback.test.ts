@@ -30,8 +30,24 @@ describe('computeAudioPlan (preview audio)', () => {
     });
     // inPoint 30f (1s) + 1s into the clip = 2s of source.
     expect(entries).toEqual([
-      { path: 'C:/m/a.mp3', sourceTimeSec: 2, volume: 1, pan: 0 },
+      { path: 'C:/m/a.mp3', sourceTimeSec: 2, volume: 1, pan: 0, eq: null },
     ]);
+  });
+
+  it('carries a three-band EQ when set (#158), null when neutral', () => {
+    const equalized = computeAudioPlan({
+      ...base,
+      clips: [clip({ eqLowDb: 6, eqMidDb: -2, eqHighDb: 3 })],
+      playhead: 320,
+    });
+    expect(equalized[0].eq).toEqual({ lowDb: 6, midDb: -2, highDb: 3 });
+
+    const neutral = computeAudioPlan({
+      ...base,
+      clips: [clip({ eqLowDb: 0, eqMidDb: 0, eqHighDb: 0 })],
+      playhead: 320,
+    });
+    expect(neutral[0].eq).toBeNull();
   });
 
   it('excludes muted clips, muted tracks, and offline sources', () => {

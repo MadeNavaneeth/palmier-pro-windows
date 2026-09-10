@@ -37,6 +37,7 @@ import { sanitizeCrop } from '../../shared/media/source-crop';
 import { sanitizeMotion } from '../../shared/media/motion';
 import { mergeChromaKey } from '../../shared/editor/chroma-key';
 import { hasColorGrade, sanitizeColorGrade } from '../../shared/editor/color-grade';
+import { sanitizeEq } from '../../shared/audio/eq';
 import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
 import { planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
@@ -703,6 +704,58 @@ export class ToolExecutor {
             error: err instanceof Error ? err.message : 'Pan change failed.',
           };
         }
+      }
+
+      case 'set_clip_eq': {
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'audio') {
+          return { success: false, error: 'EQ applies to audio clips only.' };
+        }
+        const clear = args.clear === true;
+        const sanitized = sanitizeEq({
+          ...(args.lowDb !== undefined ? { lowDb: args.lowDb } : {}),
+          ...(args.midDb !== undefined ? { midDb: args.midDb } : {}),
+          ...(args.highDb !== undefined ? { highDb: args.highDb } : {}),
+        });
+        const receipt = this.editor.applyClipProperties(
+          [clip.id],
+          clear ? 'Reset audio EQ' : 'Audio EQ',
+          (draft) => {
+            if (clear) {
+              delete draft.eqLowDb;
+              delete draft.eqMidDb;
+              delete draft.eqHighDb;
+              return true;
+            }
+            const fields = { lowDb: 'eqLowDb', midDb: 'eqMidDb', highDb: 'eqHighDb' } as const;
+            for (const key of ['lowDb', 'midDb', 'highDb'] as const) {
+              if (args[key] === undefined) continue;
+              const value = sanitized[key];
+              if (value === undefined) continue;
+              // A band passed at 0 dB clears it, so an equalized clip can
+              // return to structurally neutral without a separate clear.
+              if (value === 0) delete draft[fields[key]];
+              else draft[fields[key]] = value;
+            }
+            return true;
+          },
+        );
+        const updated = this.editor.getClips().find((candidate) => candidate.id === clip.id);
+        return {
+          success: true,
+          data: {
+            clipId: clip.id,
+            changed: receipt.changedClipIds.length > 0,
+            lowDb: updated?.eqLowDb ?? 0,
+            midDb: updated?.eqMidDb ?? 0,
+            highDb: updated?.eqHighDb ?? 0,
+            cleared:
+              (updated?.eqLowDb ?? 0) === 0
+              && (updated?.eqMidDb ?? 0) === 0
+              && (updated?.eqHighDb ?? 0) === 0,
+          },
+        };
       }
 
       case 'manage_tracks': {

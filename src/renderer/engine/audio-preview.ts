@@ -15,12 +15,13 @@
 
 import { useTimelineStore } from '../store/timeline';
 import { computeAudioPlan } from '../../shared/audio/audio-playback';
+import { eqBiquadParams } from '../../shared/audio/eq';
 
 const RESYNC_THRESHOLD_SEC = 0.25;
 
 type PoolEntry = {
   el: HTMLAudioElement;
-  /** Web Audio routing for per-element pan (R5) and gain. Created lazily. */
+  /** Web Audio routing for per-element pan (R5), gain, and EQ. Created lazily. */
   ctx: AudioContext | null;
   panner: StereoPannerNode | null;
   /**
@@ -31,6 +32,8 @@ type PoolEntry = {
    * graph exists.
    */
   gainNode: GainNode | null;
+  /** Three-band EQ (upstream #158), same bands the export chain emits. */
+  eqNodes: [BiquadFilterNode, BiquadFilterNode, BiquadFilterNode] | null;
   sourceNode: MediaElementAudioSourceNode | null;
   /** The plan path this element is currently serving, null when idle. */
   activePath: string | null;
@@ -66,13 +69,28 @@ export class AudioPreviewManager {
       this.sharedCtx ??= new AudioContext();
       const source = this.sharedCtx.createMediaElementSource(entry.el);
       const panner = new StereoPannerNode(this.sharedCtx, { pan: 0 });
+      // EQ sits between pan and gain; neutral bands are 0 dB, so the chain
+      // is bit-transparent when no EQ is set and there is no bypass branch.
+      const eqNodes = eqBiquadParams({ lowDb: 0, midDb: 0, highDb: 0 }).map((params) => {
+        const node = new BiquadFilterNode(this.sharedCtx!, {
+          type: params.type,
+          frequency: params.frequency,
+          gain: params.gain,
+          ...(params.q !== undefined ? { Q: params.q } : {}),
+        });
+        return node;
+      }) as [BiquadFilterNode, BiquadFilterNode, BiquadFilterNode];
       const gain = new GainNode(this.sharedCtx, { gain: 1 });
       source.connect(panner);
-      panner.connect(gain);
+      panner.connect(eqNodes[0]);
+      eqNodes[0].connect(eqNodes[1]);
+      eqNodes[1].connect(eqNodes[2]);
+      eqNodes[2].connect(gain);
       gain.connect(this.sharedCtx.destination);
       entry.ctx = this.sharedCtx;
       entry.sourceNode = source;
       entry.panner = panner;
+      entry.eqNodes = eqNodes;
       entry.gainNode = gain;
       // Gain now lives in the Web Audio graph; leave the element itself at
       // full volume so it never double-applies.
@@ -82,7 +100,17 @@ export class AudioPreviewManager {
       // or the context is unavailable; audio still plays un-panned, and
       // applyGain falls back to el.volume (clamped to its [0,1] domain).
       entry.panner = null;
+      entry.eqNodes = null;
       entry.gainNode = null;
+    }
+  }
+
+  /** Push the clip's three band gains into the live biquads (dB). */
+  private applyEq(entry: PoolEntry, eq: { lowDb: number; midDb: number; highDb: number } | null): void {
+    if (!entry.eqNodes) return;
+    const params = eqBiquadParams(eq ?? { lowDb: 0, midDb: 0, highDb: 0 });
+    for (let i = 0; i < 3; i++) {
+      entry.eqNodes[i].gain.value = params[i].gain;
     }
   }
 
@@ -122,11 +150,12 @@ export class AudioPreviewManager {
         const el = document.createElement('audio');
         el.src = encodeURI(`file:///${item.path.replace(/\\/g, '/')}`).replace(/#/g, '%23');
         el.preload = 'auto';
-        entry = { el, ctx: null, panner: null, gainNode: null, sourceNode: null, activePath: null };
+        entry = { el, ctx: null, panner: null, gainNode: null, eqNodes: null, sourceNode: null, activePath: null };
         this.pool.set(item.path, entry);
       }
       this.connectPanner(entry);
       this.ensurePanner(entry, item.pan);
+      this.applyEq(entry, item.eq);
 
       const expectedSourceTime = item.sourceTimeSec;
       if (entry.activePath !== item.path || entry.el.paused) {

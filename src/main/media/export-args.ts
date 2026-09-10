@@ -28,6 +28,7 @@ import { motionExpression } from '../../shared/media/motion';
 import { hasEdgeEffects, buildEdgeGeqExpr } from '../../shared/editor/edge-effects';
 import { chromaKeyOf, buildChromaKeyFilterChain } from '../../shared/editor/chroma-key';
 import { volumeFilterExpression } from '../../shared/audio/volume-keyframes';
+import { eqOf, eqFilterChain } from '../../shared/audio/eq';
 
 export interface ExportArgOptions {
   outputPath: string;
@@ -269,6 +270,11 @@ export function buildFfmpegArgs(
       } else if (Number.isFinite(clip.volume) && clip.volume >= 0 && clip.volume !== 1) {
         chain += `,volume=${Math.min(1, clip.volume).toFixed(4)}`;
       }
+      // Three-band EQ (upstream #158) — same bands and frequencies the
+      // preview biquads use, so a +6 dB low shelf sounds the same live and
+      // in the delivered file.
+      const eq = eqOf(clip);
+      if (eq) chain += `,${eqFilterChain(eq)}`;
       const pan = clampPan(clip.pan ?? 0);
       if (pan !== 0) {
         // Balance-style pan (R5): attenuate one channel toward the other.

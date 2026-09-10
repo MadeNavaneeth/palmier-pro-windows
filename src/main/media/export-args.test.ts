@@ -354,6 +354,33 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(graph).toContain('[a0][a1]amix=inputs=2:normalize=0[aout]');
   });
 
+  it('emits the three-band EQ filters for set bands (#158)', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
+      [{
+        type: 'audio', assetId: 'a', startFrame: 0, durationFrames: 60,
+        eqLowDb: 6, eqMidDb: -2, eqHighDb: 3,
+      }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('atrim'))!;
+    expect(graph).toContain(
+      'bass=g=+6,equalizer=f=1000:t=q:w=1:g=-2,treble=g=+3',
+    );
+  });
+
+  it('emits no EQ filters for a neutral clip', () => {
+    const project = projectWithMedia(
+      [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],
+      [{ type: 'audio', assetId: 'a', startFrame: 0, durationFrames: 60 }],
+    );
+
+    const graph = build(project).find((arg) => arg.includes('atrim'))!;
+    expect(graph).not.toContain('bass=');
+    expect(graph).not.toContain('equalizer=');
+    expect(graph).not.toContain('treble=');
+  });
+
   it('emits a time-varying volume expression when volumeDb is set, overriding the static field', () => {
     const project = projectWithMedia(
       [{ id: 'a', path: 'C:/media/a.mp3', type: 'audio', duration: 900 }],

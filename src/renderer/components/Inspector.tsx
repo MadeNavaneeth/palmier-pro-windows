@@ -354,8 +354,9 @@ export function Inspector() {
         {isAudio && (
           <>
             <p className="text-2xs text-text-muted">
-              Audio clip â€” compositing properties don't apply.
+              Audio clip — compositing properties don't apply.
             </p>
+            <EqControls clipId={clip.id} clip={clip} />
             <VolumeKeyframeControls clipId={clip.id} />
           </>
         )}
@@ -686,6 +687,74 @@ function ChromaKeyControls({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Three-band EQ (upstream #158): low 100 Hz shelf, mid 1 kHz bell, high
+ * 3 kHz shelf, each ±15 dB with 0 as neutral. Preview biquads and the
+ * FFmpeg export chain read the same bands, so a boost sounds the same live
+ * and delivered. Each change is one undo step and a band returned to 0
+ * deletes the field, matching the color grade.
+ */
+function EqControls({ clipId, clip }: { clipId: string; clip: Clip }) {
+  const controller = useTimelineStore((s) => s.controller);
+  const current = {
+    lowDb: clip.eqLowDb ?? 0,
+    midDb: clip.eqMidDb ?? 0,
+    highDb: clip.eqHighDb ?? 0,
+  };
+
+  const set = (field: 'eqLowDb' | 'eqMidDb' | 'eqHighDb', value: number) => {
+    controller.applyClipProperties([clipId], 'Audio EQ', (draft) => {
+      if (value === 0) delete draft[field];
+      else draft[field] = value;
+      return true;
+    });
+  };
+
+  const reset = () => {
+    controller.applyClipProperties([clipId], 'Reset audio EQ', (draft) => {
+      delete draft.eqLowDb;
+      delete draft.eqMidDb;
+      delete draft.eqHighDb;
+      return true;
+    });
+  };
+
+  const modified = current.lowDb !== 0 || current.midDb !== 0 || current.highDb !== 0;
+  const db = (value: number) => `${value > 0 ? '+' : ''}${value} dB`;
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1" data-audio-eq>
+      <div className="flex items-center justify-between">
+        <label className="text-2xs uppercase tracking-wide text-text-muted">EQ</label>
+        {modified && (
+          <button
+            onClick={reset}
+            className="text-2xs text-text-muted underline decoration-dotted transition hover:text-text-secondary"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      {([
+        ['Low 100 Hz', current.lowDb, 'eqLowDb'],
+        ['Mid 1 kHz', current.midDb, 'eqMidDb'],
+        ['High 3 kHz', current.highDb, 'eqHighDb'],
+      ] as const).map(([label, value, field]) => (
+        <GradeSlider
+          key={field}
+          label={label}
+          value={value}
+          min={-15}
+          max={15}
+          step={0.5}
+          format={db}
+          onChange={(next) => set(field, next)}
+        />
+      ))}
     </div>
   );
 }

@@ -11,6 +11,7 @@
 import type { Clip, Frame, MediaAsset } from '../types/project';
 import { clampPan } from './pan';
 import { resolveClipVolumeLinear } from './volume-keyframes';
+import { eqOf, type ClipEq } from './eq';
 
 export interface AudioPlanInput {
   clips: readonly Clip[];
@@ -37,6 +38,8 @@ export interface AudioPlaybackEntry {
   volume: number;
   /** Stereo balance, -1 left … +1 right (R5). */
   pan: number;
+  /** Three-band EQ (upstream #158); null when every band is neutral. */
+  eq: ClipEq | null;
 }
 
 /**
@@ -79,6 +82,7 @@ export function computeAudioPlan(input: AudioPlanInput): AudioPlaybackEntry[] {
       // [0,1]-only HTMLMediaElement.volume.
       volume: resolveClipVolumeLinear(clip, input.playhead),
       pan: clampPan(clip.pan ?? 0),
+      eq: eqOf(clip),
     });
   }
   return entries;
