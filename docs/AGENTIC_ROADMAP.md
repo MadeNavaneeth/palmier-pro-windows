@@ -96,10 +96,21 @@ digest regenerated from the controller on each turn, (3) LLM summarization at
 ~90% of the provider window with pinned user messages + plan + digest,
 (4) hard reset as last resort. Raw transcript stays on disk.
 
-Acceptance:
-- Digest is derived (never edited), and a test asserts it matches the
-  controller after arbitrary mutations.
-- Compaction keeps: user messages, current plan, digest, last N observations.
+Shipped so far — step (2), the derived digest: `shared/editor/project-digest.ts`
+is pure and regenerated on every turn (name/canvas/fps, content length, track
+and per-type clip counts, library size, marker statuses, and a structural-audit
+line that points at `verify_timeline` when anything is wrong). It rides the
+system prompt for both provider paths, and `agent.digest.test.ts` pins that it
+reaches the outgoing request *and* is re-derived between two turns rather than
+cached. Unit tests cover empty, populated, and defective projects.
+
+Still to do: (1) tool-result elision with `keep`/`elide` tags and last-N
+retention, (3) LLM summarization at ~90% of the provider window with pinned
+user messages + plan + digest, (4) hard reset, plus persisting the raw
+transcript to disk so compaction stays auditable. Elision is deferred because
+it must transform the Anthropic block history and the OpenAI message list
+separately, and the existing stress suite pins replay growth — that change
+needs its own test pass, not a rushed edit.
 
 ### L5 — Read-only parallelism
 

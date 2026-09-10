@@ -19,6 +19,7 @@ import {
 } from './openai-compatible';
 import type { ProviderKind } from '../../shared/ai/provider-config';
 import type { PlanStep } from '../../shared/editor/plan';
+import { buildProjectDigest } from '../../shared/editor/project-digest';
 import type { EditorController } from '../../shared/editor/controller';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -87,6 +88,7 @@ export interface StreamCallbacks {
 
 export class PalmierAgent {
   private executor: ToolExecutor;
+  private editor: EditorController;
   private config: AgentConfig | null = null;
   private conversationHistory: any[] = [];
   /** Non-null exactly while a turn is running (upstream #58). */
@@ -95,9 +97,19 @@ export class PalmierAgent {
   private activeCallbacks: StreamCallbacks | null = null;
 
   constructor(editor: EditorController) {
+    this.editor = editor;
     this.executor = new ToolExecutor(editor, {
       onPlanUpdate: (plan) => this.activeCallbacks?.onPlan?.(plan),
     });
+  }
+
+  /**
+   * The system prompt for a turn: the static contract plus a digest derived
+   * from the controller *right now* (L4). Regenerated per turn, never cached,
+   * so it cannot drift away from the authoritative project.
+   */
+  private systemPrompt(): string {
+    return `${SYSTEM_PROMPT}\n\n${buildProjectDigest(this.editor.getProject())}`;
   }
 
   configure(config: AgentConfig): void {
@@ -189,7 +201,7 @@ export class PalmierAgent {
 
     const openAiTools = toOpenAiTools(toolsToJsonSchema());
     const messages: OpenAiMessage[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: this.systemPrompt() },
       ...this.openAiHistory(),
       { role: 'user', content: userMessage },
     ];
@@ -381,7 +393,7 @@ export class PalmierAgent {
           {
             model,
             max_tokens: maxTokens,
-            system: SYSTEM_PROMPT,
+            system: this.systemPrompt(),
             messages: this.conversationHistory,
             tools: anthropicTools,
           },
