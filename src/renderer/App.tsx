@@ -4,6 +4,7 @@ import { MediaBin } from './components/MediaBin';
 import { Timeline } from './components/Timeline';
 import { Preview } from './components/Preview';
 import { WelcomeScreen } from './components/WelcomeScreen';
+import { OnboardingTour } from './components/OnboardingTour';
 import { ChatPanel, SettingsPanel } from './components/ai';
 import { Inspector } from './components/Inspector';
 import { ExportPanel } from './components/ExportDialog';
@@ -79,6 +80,7 @@ export function App() {
       <div className="flex h-screen w-screen flex-col bg-surface-0">
         <TitleBar />
         <WelcomeScreen />
+        <OnboardingTour />
       </div>
     );
   }
