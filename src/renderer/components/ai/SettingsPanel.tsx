@@ -11,7 +11,19 @@
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { AlertTriangle, Check, Loader2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  Check,
+  Loader2,
+  Sparkles,
+  Globe,
+  Zap,
+  Cpu,
+  HardDrive,
+  Monitor,
+  Bot,
+  Boxes,
+} from 'lucide-react';
 import { useAiStore } from '../../store/ai';
 import {
   PROVIDER_PRESETS,
@@ -36,6 +48,24 @@ type SaveState =
   | { status: 'saving' }
   | { status: 'saved' }
   | { status: 'error'; message: string };
+
+function providerLogo(id: string): React.ReactNode {
+  const cls = 'h-3.5 w-3.5 shrink-0';
+  switch (id) {
+    case 'anthropic': return <Sparkles className={`${cls} text-violet-400`} />;
+    case 'openai': return <Bot className={`${cls} text-emerald-400`} />;
+    case 'openrouter':
+    case 'openrouter-free': return <Globe className={`${cls} text-sky-400`} />;
+    case 'groq': return <Zap className={`${cls} text-amber-400`} />;
+    case 'together': return <Boxes className={`${cls} text-orange-400`} />;
+    case 'gemini': return <Sparkles className={`${cls} text-blue-400`} />;
+    case 'mistral': return <HardDrive className={`${cls} text-cyan-400`} />;
+    case 'cerebras': return <Cpu className={`${cls} text-rose-400`} />;
+    case 'ollama': return <HardDrive className={`${cls} text-zinc-400`} />;
+    case 'lmstudio': return <Monitor className={`${cls} text-zinc-400`} />;
+    default: return <Bot className={`${cls} text-text-muted`} />;
+  }
+}
 
 export function SettingsPanel() {
   const showSettings = useAiStore((state) => state.showSettings);
@@ -159,18 +189,23 @@ export function SettingsPanel() {
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
           <Field label="Provider" htmlFor="ai-provider">
-            <select
-              id="ai-provider"
-              value={selectedId}
-              onChange={(event) => setSelectedId(event.target.value)}
-              className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 text-xs text-text-primary focus:border-accent focus:outline-none"
-            >
-              {PROVIDER_PRESETS.map((entry) => (
-                <option key={entry.id} value={entry.id} className="bg-surface-2">
-                  {entry.label}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded border border-surface-3 bg-surface-2">
+                {providerLogo(selectedId)}
+              </span>
+              <select
+                id="ai-provider"
+                value={selectedId}
+                onChange={(event) => setSelectedId(event.target.value)}
+                className="min-w-0 flex-1 rounded border border-surface-3 bg-surface-2 px-3 py-1.5 text-xs text-text-primary focus:border-accent focus:outline-none"
+              >
+                {PROVIDER_PRESETS.map((entry) => (
+                  <option key={entry.id} value={entry.id} className="bg-surface-2">
+                    {entry.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             {preset?.hint && <Hint>{preset.hint}</Hint>}
           </Field>
 
