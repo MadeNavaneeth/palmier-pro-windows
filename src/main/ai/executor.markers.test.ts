@@ -82,11 +82,13 @@ describe('manage_markers tool (#542)', () => {
       startFrame: 30,
       durationFrames: 10,
       comment: 'check audio',
+      status: 'review',
     });
     const id = editor.getMarkers()[0].id;
+    expect(editor.getMarkers()[0].status).toBe('review');
 
     const timeline = await executor.execute('get_timeline', {});
-    expect((timeline.data as { markers?: Array<{ id: string }> }).markers?.[0]?.id).toBe(id);
+    expect((timeline.data as { markers?: Array<{ id: string; status: string }> }).markers?.[0]?.id).toBe(id);
 
     const deleted = await executor.execute('manage_markers', {
       action: 'delete',

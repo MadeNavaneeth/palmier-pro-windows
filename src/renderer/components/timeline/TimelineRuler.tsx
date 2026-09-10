@@ -4,13 +4,15 @@
  *
  * Also renders timeline markers (upstream PRs #542 / #560): point markers as
  * pennant flags, range markers as bands. Click selects, drag moves (one undo
- * step per drag), double-click opens the marker editor popover. Marker frames
- * feed the snap engine through the store's getSnapPoints.
+ * step per drag), Alt-drag stretches the duration (upstream's Option-drag),
+ * double-click opens the marker editor popover. Marker frames feed the snap
+ * engine through the store's getSnapPoints.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTimelineStore } from '../../store/timeline';
 import { frameToTimecode } from '../../../shared/utils/time';
+import { MAX_FRAME } from '../../../shared/utils/safe-number';
 import { MarkerEditorPopover } from './MarkerEditorPopover';
 
 interface TimelineRulerProps {
@@ -21,7 +23,13 @@ interface MarkerDragState {
   id: string;
   startX: number;
   origStart: number;
+  origDuration: number;
   deltaFrames: number;
+  previewDuration: number;
+  /** Alt-drag stretches duration (upstream Option-drag); plain drag moves. */
+  adjustsDuration: boolean;
+  /** Client x of the marker's start edge, so the stretch end tracks the pointer. */
+  originClientX: number;
 }
 
 export function TimelineRuler({ width }: TimelineRulerProps) {
@@ -54,12 +62,28 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
   useEffect(() => {
     if (!drag) return;
     const onMove = (event: MouseEvent) => {
+      if (drag.adjustsDuration) {
+        // Upstream tracks the absolute pointer frame, not the grab offset:
+        // the stretch end follows the cursor, clamped at the marker's start.
+        const pointerFrame = drag.origStart
+          + Math.round((event.clientX - drag.originClientX) / viewport.pixelsPerFrame);
+        const previewDuration = Math.min(
+          Math.max(0, pointerFrame - drag.origStart),
+          Math.max(0, MAX_FRAME - drag.origStart),
+        );
+        setDrag((current) => (current ? { ...current, previewDuration } : current));
+        return;
+      }
       const raw = Math.round((event.clientX - drag.startX) / viewport.pixelsPerFrame);
       const clamped = Math.max(-drag.origStart, raw);
       setDrag((current) => (current ? { ...current, deltaFrames: clamped } : current));
     };
     const onUp = () => {
-      if (drag.deltaFrames !== 0) {
+      if (drag.adjustsDuration) {
+        if (drag.previewDuration !== drag.origDuration) {
+          updateMarker(drag.id, { durationFrames: drag.previewDuration });
+        }
+      } else if (drag.deltaFrames !== 0) {
         updateMarker(drag.id, { startFrame: Math.max(0, drag.origStart + drag.deltaFrames) });
       }
       setDrag(null);
@@ -73,13 +97,23 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
   }, [drag, viewport.pixelsPerFrame, updateMarker]);
 
   const beginMarkerDrag = useCallback(
-    (event: React.MouseEvent, id: string, startFrame: number) => {
+    (event: React.MouseEvent, marker: { id: string; startFrame: number; durationFrames: number }) => {
       event.stopPropagation();
-      selectMarker(id, event.shiftKey);
+      selectMarker(marker.id, event.shiftKey);
       setEditorMarkerId(null);
-      setDrag({ id, startX: event.clientX, origStart: startFrame, deltaFrames: 0 });
+      const rect = event.currentTarget.getBoundingClientRect();
+      setDrag({
+        id: marker.id,
+        startX: event.clientX,
+        origStart: marker.startFrame,
+        origDuration: marker.durationFrames,
+        deltaFrames: 0,
+        previewDuration: marker.durationFrames,
+        adjustsDuration: event.altKey,
+        originClientX: rect.left + (marker.startFrame - viewport.scrollFrame) * viewport.pixelsPerFrame,
+      });
     },
-    [selectMarker],
+    [selectMarker, viewport.scrollFrame, viewport.pixelsPerFrame],
   );
 
   const openEditor = useCallback((event: React.MouseEvent, id: string) => {
@@ -147,10 +181,11 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
     if (!markers || markers.length === 0) return [];
     return markers.flatMap((marker) => {
       const isDragging = drag?.id === marker.id;
-      const start = isDragging
+      const start = isDragging && !drag!.adjustsDuration
         ? Math.max(0, marker.startFrame + drag!.deltaFrames)
         : marker.startFrame;
-      const end = start + marker.durationFrames;
+      const duration = isDragging && drag!.adjustsDuration ? drag!.previewDuration : marker.durationFrames;
+      const end = start + duration;
       const x = xOf(start);
       const endX = xOf(end);
       if (endX < -20 || x > width + 20) return [];
@@ -247,8 +282,11 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
         ))}
 
         {/* Timeline markers (#542): ranges as bands, points as pennants. */}
-        {visibleMarkers.map(({ marker, x, endX, selected }) => (
-          <g key={marker.id} data-marker-id={marker.id} data-selected={selected}>
+        {visibleMarkers.map(({ marker, x, endX, selected }) => {
+          const statusOpacity = marker.status === 'resolved' ? 0.35 : marker.status === 'review' ? 0.85 : 1;
+          const bandOpacity = selected ? 0.45 : 0.22;
+          return (
+          <g key={marker.id} data-marker-id={marker.id} data-selected={selected} data-status={marker.status} style={{ opacity: statusOpacity }}>
             {marker.durationFrames > 0 && (
               <>
                 <rect
@@ -257,7 +295,7 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
                   width={Math.max(1, endX - x)}
                   height={24}
                   fill={marker.color}
-                  fillOpacity={selected ? 0.45 : 0.22}
+                  fillOpacity={bandOpacity}
                   stroke={selected ? '#ffffff' : 'none'}
                   strokeWidth={1}
                 />
@@ -291,11 +329,14 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
               height={24}
               fill="transparent"
               className="cursor-ew-resize"
-              onMouseDown={(event) => beginMarkerDrag(event, marker.id, marker.startFrame)}
+              onMouseDown={(event) => beginMarkerDrag(event, marker)}
               onDoubleClick={(event) => openEditor(event, marker.id)}
-            />
+            >
+              <title>Drag to move · Alt-drag to stretch duration{(marker.status !== 'open' ? ` · ${marker.status}` : '') + (marker.comment ? ` — ${marker.comment.slice(0, 80)}` : '')}</title>
+            </rect>
           </g>
-        ))}
+        );
+        })}
       </svg>
 
       {/* Hover timecode badge */}

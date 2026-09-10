@@ -8,6 +8,7 @@ function marker(overrides: Partial<TimelineMarker> & { id: string }): TimelineMa
     durationFrames: 0,
     color: '#007AFF',
     comment: '',
+    status: 'open',
     ...overrides,
   };
 }

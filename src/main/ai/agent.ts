@@ -499,7 +499,7 @@ Read the project state first, then make edits using the tools below.
 
 **Ripple editing:** ripple_delete_clips removes clips and closes gaps across sync-locked tracks. ripple_delete_gap closes a specific empty span. ripple_delete_ranges extracts arbitrary ranges. ripple_trim_clip resizes a clip and shifts downstream material. Ripple receipts report shiftedMarkers and removedMarkerIds — patch review notes from those instead of re-reading the timeline.
 
-**Markers:** manage_markers creates/updates/deletes review notes anchored to frames. Point markers have durationFrames 0; positive values make range markers.
+**Markers:** manage_markers creates/updates/deletes review notes anchored to frames. Point markers have durationFrames 0; positive values make range markers. Status is open/review/resolved (defaults to open).
 
 **Titles:** add_texts places styled text overlays (fontSize, color, bold, fontFamily, align, backgroundColor + padding, lineSpacing, fontCase, fillMode "footage"/"inverted", blurRadius, tiltX/tiltY). set_title_text updates existing title text and style.
 

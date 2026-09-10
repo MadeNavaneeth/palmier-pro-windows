@@ -11,7 +11,7 @@
  */
 
 import React, { useState } from 'react';
-import { MARKER_DEFAULT_COLOR } from '../../../shared/editor/markers';
+import { MARKER_DEFAULT_COLOR, type MarkerStatus } from '../../../shared/editor/markers';
 import { frameToTimecode } from '../../../shared/utils/time';
 import { useTimelineStore } from '../../store/timeline';
 import { parseMarkerFrameInput } from './marker-frame-input';
@@ -51,6 +51,7 @@ export function MarkerEditorPopover({ markerId, x, width, onClose }: MarkerEdito
   const [duration, setDuration] = useState(marker ? frameToTimecode(marker.durationFrames, fps) : '');
   const [comment, setComment] = useState(marker?.comment ?? '');
   const [color, setColor] = useState(marker?.color ?? MARKER_DEFAULT_COLOR);
+  const [status, setStatus] = useState<MarkerStatus>(marker?.status ?? 'open');
   const [error, setError] = useState<string | null>(null);
 
   // The marker vanished underneath (deleted via keyboard while open).
@@ -63,7 +64,7 @@ export function MarkerEditorPopover({ markerId, x, width, onClose }: MarkerEdito
       setError('Enter frames or HH:MM:SS:FF for start and duration.');
       return;
     }
-    const ok = updateMarker(marker.id, { name, startFrame, durationFrames, color, comment });
+    const ok = updateMarker(marker.id, { name, startFrame, durationFrames, color, comment, status });
     if (!ok) {
       setError('Check the marker name, position, and duration.');
       return;
@@ -155,6 +156,19 @@ export function MarkerEditorPopover({ markerId, x, width, onClose }: MarkerEdito
           />
         ))}
       </div>
+      <label className="mb-1 block text-2xs uppercase tracking-wide text-text-muted" htmlFor="marker-editor-status">
+        Status
+      </label>
+      <select
+        id="marker-editor-status"
+        value={status}
+        onChange={(event) => setStatus(event.target.value as MarkerStatus)}
+        className="mb-2 w-full rounded-sm border border-white/10 bg-surface-0 px-1.5 py-1 text-xs text-text-primary outline-none focus:border-accent/70"
+      >
+        <option value="open">Open</option>
+        <option value="review">Review</option>
+        <option value="resolved">Resolved</option>
+      </select>
       {error && (
         <p role="alert" className="mb-2 text-xs text-red-400">
           {error}

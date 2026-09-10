@@ -45,4 +45,22 @@ describe('marker editor store surface (#542)', () => {
 
     expect(controller.getMarkers().find((m) => m.id === id)?.comment).toBe('');
   });
+
+  it('stretches duration as one undo step', () => {
+    const { store, controller, id } = storeWithMarker();
+
+    expect(store.getState().updateMarker(id, { durationFrames: 60 })).toBe(true);
+
+    expect(controller.getMarkers().find((m) => m.id === id)?.durationFrames).toBe(60);
+    controller.undo();
+    expect(controller.getMarkers().find((m) => m.id === id)?.durationFrames).toBe(0);
+  });
+
+  it('patches review status', () => {
+    const { store, controller, id } = storeWithMarker();
+
+    expect(store.getState().updateMarker(id, { status: 'resolved' })).toBe(true);
+
+    expect(controller.getMarkers().find((m) => m.id === id)?.status).toBe('resolved');
+  });
 });

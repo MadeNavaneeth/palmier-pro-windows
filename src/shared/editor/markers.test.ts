@@ -26,6 +26,7 @@ function marker(overrides: Partial<TimelineMarker> = {}): TimelineMarker {
     durationFrames: 0,
     color: MARKER_DEFAULT_COLOR,
     comment: '',
+    status: 'open',
     ...overrides,
   };
 }

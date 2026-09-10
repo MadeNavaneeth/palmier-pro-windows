@@ -1,12 +1,17 @@
 /**
  * Timeline markers — review notes anchored to timeline frames
- * (upstream PRs #542 and #560).
+ * (upstream PRs #542 and #560, plus #552 review statuses).
  *
  * A marker is a point (`durationFrames === 0`) or a half-open range
  * (`durationFrames > 0`, end exclusive) with a user name, color, and comment.
  * Markers are timeline-level, never clip-level; they ride the project file as
  * an optional `Timeline.markers` array so projects saved before markers
  * decode unchanged.
+ *
+ * Review statuses (`open` / `review` / `resolved`) arrive in PR #552 so
+ * filmmakers and Agent workflows can coordinate without overloading color or
+ * comments. A missing status decodes as `open`, so the entire list cannot be
+ * silently discarded when an older project is opened.
  *
  * The ripple mapping below is the Windows translation of upstream's engine,
  * including its two embedded fixes: a marker is remapped by the *smallest*
@@ -17,6 +22,8 @@
 
 import type { Frame } from '../types/project';
 import { MAX_FRAME } from '../utils/safe-number';
+
+export type MarkerStatus = 'open' | 'review' | 'resolved';
 
 export interface TimelineMarker {
   id: string;
@@ -29,12 +36,16 @@ export interface TimelineMarker {
   color: string;
   /** Up to 4000 chars of free-form note text. */
   comment: string;
+  /** Review state (upstream #552); older projects decode as `open`. */
+  status: MarkerStatus;
 }
 
 export const MARKER_NAME_MAX_LENGTH = 120;
 export const MARKER_COMMENT_MAX_LENGTH = 4000;
 /** Upstream's default marker blue, RGB(0, 0.478, 1). */
 export const MARKER_DEFAULT_COLOR = '#007AFF';
+export const MARKER_DEFAULT_STATUS: MarkerStatus = 'open';
+export const MARKER_STATUSES: readonly MarkerStatus[] = ['open', 'review', 'resolved'] as const;
 
 const MARKER_COLOR_PATTERN = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
 
@@ -78,7 +89,19 @@ export function validateMarker(marker: TimelineMarker): string | null {
   if (!MARKER_COLOR_PATTERN.test(marker.color)) {
     return 'Marker color must be #RRGGBB or #RRGGBBAA.';
   }
+  if (!isMarkerStatus(marker.status)) {
+    return 'Marker status must be open, review, or resolved.';
+  }
   return null;
+}
+
+export function isMarkerStatus(value: unknown): value is MarkerStatus {
+  return value === 'open' || value === 'review' || value === 'resolved';
+}
+
+/** Narrow an unknown persisted value back to a status; unknown → `open`. */
+export function normalizeMarkerStatus(value: unknown): MarkerStatus {
+  return isMarkerStatus(value) ? value : MARKER_DEFAULT_STATUS;
 }
 
 /** Canonical order: by start frame, then id, so ties are deterministic. */

@@ -38,9 +38,11 @@ import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/
 import { resolveTrackName, TRACK_NAME_MAX_LENGTH } from './track-name';
 import {
   MARKER_DEFAULT_COLOR,
+  MARKER_DEFAULT_STATUS,
   diffMarkers,
   mapMarkersOpeningAt,
   mapMarkersThroughClosingHoles,
+  normalizeMarkerStatus,
   rescaleMarker,
   sortMarkers,
   validateMarker,
@@ -2177,7 +2179,10 @@ export class EditorController {  private project: Project;
   }
 
   getMarkers(): TimelineMarker[] {
-    return this.project.timeline.markers ?? [];
+    return (this.project.timeline.markers ?? []).map((marker) => ({
+      ...marker,
+      status: marker.status ?? MARKER_DEFAULT_STATUS,
+    }));
   }
 
   /**
@@ -2226,6 +2231,7 @@ export class EditorController {  private project: Project;
       durationFrames: input.durationFrames ?? 0,
       color: input.color ?? MARKER_DEFAULT_COLOR,
       comment: input.comment ?? '',
+      status: normalizeMarkerStatus(input.status),
     }));
     const updated: TimelineMarker[] = [];
 
@@ -2240,6 +2246,7 @@ export class EditorController {  private project: Project;
         ...(patch.durationFrames !== undefined ? { durationFrames: patch.durationFrames } : {}),
         ...(patch.color !== undefined ? { color: patch.color } : {}),
         ...(patch.comment !== undefined ? { comment: patch.comment } : {}),
+        ...(patch.status !== undefined ? { status: normalizeMarkerStatus(patch.status) } : {}),
       };
       next = next.map((marker, index_) => (index_ === index ? merged : marker));
       updated.push(merged);
@@ -2257,7 +2264,8 @@ export class EditorController {  private project: Project;
         && marker.startFrame === current[index].startFrame
         && marker.durationFrames === current[index].durationFrames
         && marker.color === current[index].color
-        && marker.comment === current[index].comment,
+        && marker.comment === current[index].comment
+        && (marker.status ?? MARKER_DEFAULT_STATUS) === (current[index].status ?? MARKER_DEFAULT_STATUS),
       )
     ) {
       return null;

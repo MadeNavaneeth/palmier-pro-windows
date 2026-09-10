@@ -13,6 +13,7 @@ import type { ClipTransition } from '../../shared/editor/transition';
 import type { MediaProbeResult } from '../../main/ipc/media';
 import { normalizePlaybackRate } from '../../shared/editor/playback-rate';
 import { normalizeMarkerSettings } from '../../shared/editor/marker-settings';
+import type { MarkerStatus } from '../../shared/editor/markers';
 import type { GridLayoutPreset } from '../../shared/editor/grid-layout';
 import type { SilenceConfig } from '../../shared/audio/silence-detector';
 import { nextEditPoint, previousEditPoint, timelineContentEnd } from '../../shared/editor/edit-points';
@@ -168,7 +169,7 @@ export interface TimelineState {
   /** Patch one marker; false when the id is unknown or validation refused it. */
   updateMarker: (
     markerId: string,
-    patch: { name?: string; startFrame?: Frame; durationFrames?: Frame; color?: string; comment?: string },
+    patch: { name?: string; startFrame?: Frame; durationFrames?: Frame; color?: string; comment?: string; status?: MarkerStatus },
   ) => boolean;
   /** Jump to the nearest marker start after the playhead; selects it. */
   goToNextMarker: () => boolean;

@@ -801,6 +801,7 @@ export class ToolExecutor {
                 ...(args.durationFrames !== undefined ? { durationFrames: args.durationFrames } : {}),
                 ...(args.color !== undefined ? { color: args.color } : {}),
                 ...(args.comment !== undefined ? { comment: args.comment } : {}),
+                ...(args.status !== undefined ? { status: args.status } : {}),
               }],
             }, 'Add marker');
             return receipt
@@ -818,6 +819,7 @@ export class ToolExecutor {
               ...(args.durationFrames !== undefined ? { durationFrames: args.durationFrames } : {}),
               ...(args.color !== undefined ? { color: args.color } : {}),
               ...(args.comment !== undefined ? { comment: args.comment } : {}),
+              ...(args.status !== undefined ? { status: args.status } : {}),
             };
             const fields = Object.keys(patch).filter((key) => key !== 'id');
             if (fields.length === 0) {

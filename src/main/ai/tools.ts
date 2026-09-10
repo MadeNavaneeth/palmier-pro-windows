@@ -558,7 +558,7 @@ export const tools = {
   manageMarkers: {
     name: 'manage_markers',
     description:
-      'Create, update, or delete timeline markers â€” review notes anchored to frames. '
+      'Create, update, or delete timeline markers — review notes anchored to frames. '
       + 'A marker with durationFrames 0 is a point; a positive duration makes it a range.',
     parameters: z.object({
       action: z.enum(['create', 'update', 'delete']).describe('Which marker operation to perform.'),
@@ -569,6 +569,8 @@ export const tools = {
       color: z.string().regex(/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/).optional()
         .describe('Marker color as #RRGGBB or #RRGGBBAA. Defaults to blue.'),
       comment: z.string().max(4000).optional().describe('Free-form note text (max 4000 chars).'),
+      status: z.enum(['open', 'review', 'resolved']).optional()
+        .describe('Review state. Defaults to open for a new marker; updates patch only when supplied.'),
     }),
   },
 
