@@ -17,6 +17,14 @@ import { useSilenceSettings } from '../hooks/useSilenceSettings';
 import { useMediaPanelStore } from '../store/media-panel';
 import { evaluateMotion } from '../../shared/media/motion';
 import { mergeChromaKey, DEFAULT_CHROMA_KEY_COLOR } from '../../shared/editor/chroma-key';
+import {
+  COLOR_GRADE_LIMITS,
+  DEFAULT_COLOR_GRADE,
+  GRADE_PRESETS,
+  sanitizeColorGrade,
+  type ColorGrade,
+  type GradePreset,
+} from '../../shared/editor/color-grade';
 import { linearToDb } from '../../shared/audio/normalize';
 import type { Clip } from '../../shared/types/project';
 import type { EditorController } from '../../shared/editor/controller';
@@ -279,6 +287,9 @@ export function Inspector() {
               </label>
             </div>
 
+            {/* Color grade + named presets (upstream #157, stack from R4) */}
+            <ColorGradeControls clipId={clip.id} clip={clip} controller={controller} />
+
             {/* Chroma key (upstream issue #97) */}
             <ChromaKeyControls clipId={clip.id} chromaKey={clip.chromaKey} controller={controller} />
 
@@ -362,6 +373,180 @@ export function Inspector() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Color grade + named presets (upstream #157).
+ *
+ * The grade fields (brightness/contrast/saturation/hue) were rendered by both
+ * preview and export since R4 but had no way to be set from the UI — only the
+ * model knew them. Each slider writes one field through `applyClipProperties`
+ * as one undo step and removes the field at its default, so a neutral clip
+ * still reads as ungraded everywhere (`hasColorGrade`). Presets apply the
+ * whole grade at once and clear fields the preset does not define, which is
+ * what makes "Neutral" a real reset.
+ */
+function ColorGradeControls({
+  clipId,
+  clip,
+  controller,
+}: {
+  clipId: string;
+  clip: Clip;
+  controller: EditorController;
+}) {
+  const current: ColorGrade = {
+    brightness: clip.brightness ?? DEFAULT_COLOR_GRADE.brightness,
+    contrast: clip.contrast ?? DEFAULT_COLOR_GRADE.contrast,
+    saturation: clip.saturation ?? DEFAULT_COLOR_GRADE.saturation,
+    hueRotation: clip.hueRotation ?? DEFAULT_COLOR_GRADE.hueRotation,
+  };
+  const graded =
+    clip.brightness !== undefined
+    || clip.contrast !== undefined
+    || clip.saturation !== undefined
+    || clip.hueRotation !== undefined;
+
+  const setField = (field: keyof typeof COLOR_GRADE_LIMITS, value: number) => {
+    const sanitized = sanitizeColorGrade({ [field]: value });
+    if (sanitized[field] === undefined) return;
+    controller.applyClipProperties([clipId], 'Color grade', (draft) => {
+      if (sanitized[field] === DEFAULT_COLOR_GRADE[field]) delete draft[field];
+      else draft[field] = sanitized[field];
+      return true;
+    });
+  };
+
+  const applyPreset = (preset: GradePreset) => {
+    const grade = sanitizeColorGrade(preset.grade);
+    controller.applyClipProperties([clipId], `Grade: ${preset.label}`, (draft) => {
+      for (const field of Object.keys(COLOR_GRADE_LIMITS) as Array<keyof typeof COLOR_GRADE_LIMITS>) {
+        if (grade[field] === undefined) delete draft[field];
+        else draft[field] = grade[field];
+      }
+      return true;
+    });
+  };
+
+  const reset = () => {
+    controller.applyClipProperties([clipId], 'Reset color grade', (draft) => {
+      delete draft.brightness;
+      delete draft.contrast;
+      delete draft.saturation;
+      delete draft.hueRotation;
+      return true;
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-white/10 pt-1" data-color-grade>
+      <div className="flex items-center justify-between">
+        <label className="text-2xs uppercase tracking-wide text-text-muted">Color Grade</label>
+        {graded && (
+          <button
+            onClick={reset}
+            className="text-2xs text-text-muted underline decoration-dotted transition hover:text-text-secondary"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+
+      <select
+        value=""
+        onChange={(event) => {
+          const preset = GRADE_PRESETS.find((candidate) => candidate.id === event.target.value);
+          if (preset) applyPreset(preset);
+        }}
+        aria-label="Apply grade preset"
+        data-grade-preset
+        className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+      >
+        <option value="" disabled>
+          Apply a preset…
+        </option>
+        {GRADE_PRESETS.map((preset) => (
+          <option key={preset.id} value={preset.id}>
+            {preset.label}
+          </option>
+        ))}
+      </select>
+
+      <GradeSlider
+        label="Brightness"
+        value={current.brightness}
+        min={COLOR_GRADE_LIMITS.brightness.min}
+        max={COLOR_GRADE_LIMITS.brightness.max}
+        step={0.01}
+        format={(value) => `${Math.round(value * 100)}%`}
+        onChange={(value) => setField('brightness', value)}
+      />
+      <GradeSlider
+        label="Contrast"
+        value={current.contrast}
+        min={COLOR_GRADE_LIMITS.contrast.min}
+        max={COLOR_GRADE_LIMITS.contrast.max}
+        step={0.01}
+        format={(value) => `${value.toFixed(2)}×`}
+        onChange={(value) => setField('contrast', value)}
+      />
+      <GradeSlider
+        label="Saturation"
+        value={current.saturation}
+        min={COLOR_GRADE_LIMITS.saturation.min}
+        max={COLOR_GRADE_LIMITS.saturation.max}
+        step={0.01}
+        format={(value) => `${value.toFixed(2)}×`}
+        onChange={(value) => setField('saturation', value)}
+      />
+      <GradeSlider
+        label="Hue"
+        value={current.hueRotation}
+        min={COLOR_GRADE_LIMITS.hueRotation.min}
+        max={COLOR_GRADE_LIMITS.hueRotation.max}
+        step={1}
+        format={(value) => `${Math.round(value)}°`}
+        onChange={(value) => setField('hueRotation', value)}
+      />
+    </div>
+  );
+}
+
+function GradeSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  format,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  format: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center justify-between">
+        <span className="text-2xs text-text-muted uppercase tracking-wide">{label}</span>
+        <span className="text-2xs tabular-nums text-text-secondary">{format(value)}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        aria-label={`Color grade ${label.toLowerCase()}`}
+        className="w-full accent-accent"
+      />
     </div>
   );
 }

@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { colorGradeOf, toCanvasFilter, toFfmpegEq, hasColorGrade } from './color-grade';
+import {
+  DEFAULT_COLOR_GRADE,
+  GRADE_PRESETS,
+  colorGradeOf,
+  gradePresetById,
+  hasColorGrade,
+  sanitizeColorGrade,
+  toCanvasFilter,
+  toFfmpegEq,
+} from './color-grade';
 import type { Clip } from '../types/project';
 
 function clip(fields: Partial<Clip> = {}): Clip {
@@ -57,5 +66,61 @@ describe('toCanvasFilter / toFfmpegEq', () => {
     const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0 };
     expect(toCanvasFilter(g)).toBe('');
     expect(toFfmpegEq(g)).toBe('');
+  });
+});
+
+describe('sanitizeColorGrade (#157)', () => {
+  it('keeps finite in-range values', () => {
+    expect(sanitizeColorGrade({ brightness: -0.5, hueRotation: 90 })).toEqual({
+      brightness: -0.5,
+      hueRotation: 90,
+    });
+  });
+
+  it('drops out-of-range values instead of clamping them to a boundary', () => {
+    expect(sanitizeColorGrade({ contrast: 99 })).toEqual({});
+    expect(sanitizeColorGrade({ saturation: -3 })).toEqual({});
+    expect(sanitizeColorGrade({ hueRotation: 900 })).toEqual({});
+  });
+
+  it('drops non-finite values from an untrusted writer', () => {
+    expect(sanitizeColorGrade({ brightness: Number.NaN })).toEqual({});
+    expect(sanitizeColorGrade({ brightness: Number.POSITIVE_INFINITY })).toEqual({});
+  });
+
+  it('passes invertColors through only as a boolean', () => {
+    expect(sanitizeColorGrade({ invertColors: true })).toEqual({ invertColors: true });
+    // @ts-expect-error probe: a corrupt stored value must not become truthy
+    expect(sanitizeColorGrade({ invertColors: 'yes' })).toEqual({});
+  });
+
+  it('returns an empty patch for absent input', () => {
+    expect(sanitizeColorGrade(undefined)).toEqual({});
+    expect(sanitizeColorGrade({})).toEqual({});
+  });
+});
+
+describe('grade presets (#157)', () => {
+  it('keeps every preset value inside the slider limits', () => {
+    for (const preset of GRADE_PRESETS) {
+      const sanitized = sanitizeColorGrade(preset.grade);
+      expect(sanitized, preset.id).toEqual(preset.grade);
+    }
+  });
+
+  it('offers Neutral as an empty grade that clears everything', () => {
+    const neutral = gradePresetById('neutral');
+    expect(neutral?.grade).toEqual({});
+    expect(gradePresetById('nope')).toBeUndefined();
+  });
+
+  it('defaults match the neutral preset', () => {
+    expect(DEFAULT_COLOR_GRADE).toEqual({
+      brightness: 0,
+      contrast: 1,
+      saturation: 1,
+      hueRotation: 0,
+      invertColors: false,
+    });
   });
 });

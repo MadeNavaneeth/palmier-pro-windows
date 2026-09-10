@@ -24,8 +24,8 @@ this file is the exhaustive per-issue record.
 | Disposition | Count |
 |---|---|
 | Implemented | 23 |
-| Partial | 7 |
-| Planned | 15 |
+| Partial | 8 |
+| Planned | 14 |
 | N/A platform | 14 |
 | Needs investigation | 2 |
 | **Total** | **61** |
@@ -98,7 +98,7 @@ Ordered by issue number.
 | [#154](https://github.com/palmier-io/palmier-pro/issues/154) | XML import/export for professional NLE compatibility | Planned | No interchange layer. Tracked jointly with #289 in the parity ledger. |
 | [#155](https://github.com/palmier-io/palmier-pro/issues/155) | Compound clips (nested sequences) | Planned | The project model has a single flat timeline; a clip cannot reference another timeline. Needs a nested-sequence type plus recursive preview and export resolution. |
 | [#156](https://github.com/palmier-io/palmier-pro/issues/156) | Library / Event / Project hierarchy | Planned | Projects are single files opened individually; there is no library container or browser. |
-| [#157](https://github.com/palmier-io/palmier-pro/issues/157) | Named presets for color grading and shot settings | Planned | Depends on the missing effect stack (#97) â€” there are no grading parameters to name or reuse. |
+| [#157](https://github.com/palmier-io/palmier-pro/issues/157) | Named presets for color grading and shot settings | Partial | The effect stack is now user-reachable: the Inspector exposes Brightness/Contrast/Saturation/Hue sliders that previously existed only in the model (rendered by preview and export but settable by nothing), and seven built-in named presets (Neutral/Warm/Cool/Black & White/Faded/Punchy/Vintage) apply a whole grade as one undo step, with Neutral clearing the fields so a reset clip reads ungraded everywhere (`shared/editor/color-grade.ts`, `Inspector.tsx:ColorGradeControls`, `color-grade.test.ts`). Remaining: user-defined preset naming and persistence, and shot settings beyond the color grade. |
 | [#158](https://github.com/palmier-io/palmier-pro/issues/158) | Audio editing tools beyond volume control | Planned | Audio support is clip placement, fades, linked A/V, and silence detection. No EQ, compression, or gain automation. |
 | [#164](https://github.com/palmier-io/palmier-pro/issues/164) | Keyboard shortcuts for common editing actions (Premiere/Resolve parity) | Implemented | `shared/editor/shortcuts.ts` is a declarative catalogue with strict modifier matching and a conflict test; the handler dispatches on command id with a compile-time exhaustiveness guard, so an unbound command fails the build. Adds edit-point navigation, mark navigation, snapping, fit-to-window, project I/O, and guide toggles, and a generated shortcut sheet (F1 or `?`). `shortcuts.test.ts`, `edit-points.test.ts`, `timeline-navigation.test.ts`. |
 | [#165](https://github.com/palmier-io/palmier-pro/issues/165) | Noise reduction for audio clips | Planned | Same missing effect stack as #97, on the audio side. |
