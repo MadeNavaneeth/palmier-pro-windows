@@ -46,6 +46,7 @@ export function MarkerIndexBrowser() {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<MarkerStatus | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
   const [editStatus, setEditStatus] = useState<MarkerStatus>('open');
   const updateMarker = useTimelineStore((s) => s.updateMarker);
 
@@ -58,12 +59,15 @@ export function MarkerIndexBrowser() {
 
   const startEdit = (marker: (typeof markers)[number]) => {
     setEditingId(marker.id);
+    setEditName(marker.name);
     setEditStatus(marker.status);
   };
 
-  const commitStatus = () => {
+  const commitEdit = () => {
     if (!editingId) return;
-    updateMarker(editingId, { status: editStatus });
+    const trimmed = editName.trim();
+    if (trimmed.length === 0) return;
+    updateMarker(editingId, { name: trimmed, status: editStatus });
     setEditingId(null);
   };
 
@@ -147,6 +151,18 @@ export function MarkerIndexBrowser() {
 
                 {isEditing ? (
                   <>
+                    <input
+                      value={editName}
+                      onChange={(event) => setEditName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') commitEdit();
+                        if (event.key === 'Escape') setEditingId(null);
+                      }}
+                      placeholder="Marker name"
+                      autoFocus
+                      className="min-w-0 flex-1 rounded-sm border border-white/10 bg-surface-0 px-1.5 py-0.5 text-xs text-text-primary outline-none focus:border-accent/60"
+                      aria-label={`Name for ${marker.name}`}
+                    />
                     <select
                       value={editStatus}
                       onChange={(event) => setEditStatus(event.target.value as MarkerStatus)}
@@ -159,7 +175,7 @@ export function MarkerIndexBrowser() {
                     </select>
                     <button
                       type="button"
-                      onClick={commitStatus}
+                      onClick={commitEdit}
                       className="rounded bg-accent px-2 py-0.5 text-xs font-medium text-surface-0 hover:bg-accent-hover"
                     >
                       Save
