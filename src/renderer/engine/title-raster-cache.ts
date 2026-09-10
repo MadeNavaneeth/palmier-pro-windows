@@ -41,7 +41,7 @@
  * preview would show a rotated/scaled title that exports unrotated.
  */
 
-import type { Clip } from '../../shared/types/project';
+import type { Clip, Project } from '../../shared/types/project';
 import { drawTitle, isAdvancedTitle } from './title-render';
 
 export interface RasterizedTitle {
@@ -157,4 +157,52 @@ export function rasterizeTitle(
 /** Drop every cached bitmap (project switch, or when memory pressure calls for it). */
 export function clearTitleRasterCache(): void {
   cache.clear();
+}
+
+/** One rasterized title layer, shaped for the compositor IPC payload. */
+export type TitleRasterForIpc = {
+  clipId: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  rgba: Uint8ClampedArray;
+};
+
+/**
+ * Rasterize every title clip visible at `frame`, matching the exact
+ * visibility rule main/media/visible-clips.ts applies for every other
+ * non-audio clip: solo-active tracks (when any track is soloed) plus
+ * track-visible plus frame inside [startFrame, startFrame+durationFrames).
+ * A title clip is not excluded from the solo filter just because it has no
+ * media asset -- title clips participate in solo/hide exactly like video
+ * and image clips do on the main-process side, and this must agree or
+ * soloing a track would hide its video but leave its titles behind.
+ *
+ * Shared by the playback engine's preview requests and the marker-index
+ * thumbnails, so both surfaces composite a title the same way.
+ */
+export function visibleTitleRasters(project: Project, frame: number): TitleRasterForIpc[] {
+  const { width, height } = project.settings;
+  const trackById = new Map(project.timeline.tracks.map((track) => [track.id, track] as const));
+  const anySoloed = project.timeline.tracks.some((track) => track.soloed);
+  const results: TitleRasterForIpc[] = [];
+  for (const clip of project.timeline.clips) {
+    if (clip.type !== 'title') continue;
+    const track = trackById.get(clip.trackId);
+    if (!track || track.visible === false) continue;
+    if (anySoloed && !track.soloed) continue;
+    if (frame < clip.startFrame || frame >= clip.startFrame + clip.durationFrames) continue;
+    const rasterized = rasterizeTitle(clip as Clip, width, height);
+    if (!rasterized) continue;
+    results.push({
+      clipId: clip.id,
+      width: rasterized.width,
+      height: rasterized.height,
+      x: rasterized.x,
+      y: rasterized.y,
+      rgba: rasterized.data,
+    });
+  }
+  return results;
 }

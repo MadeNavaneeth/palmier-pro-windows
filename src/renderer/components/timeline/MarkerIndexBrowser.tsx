@@ -18,6 +18,7 @@ import type { MarkerStatus, TimelineMarker } from '../../../shared/editor/marker
 import { useTimelineStore } from '../../store/timeline';
 import { frameToTimecode } from '../../../shared/utils/time';
 import { thumbnailSize } from '../../../shared/media/thumbnail';
+import { visibleTitleRasters } from '../../engine/title-raster-cache';
 
 function sortedMarkers(
   markers: ReturnType<ReturnType<typeof useTimelineStore.getState>['controller']['getMarkers']>,
@@ -255,8 +256,11 @@ function MarkerThumb({
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
+    // Titles need the renderer's canvas/font engine, so rasterize them here
+    // exactly like the live preview does and hand them to the compositor.
+    const titles = visibleTitleRasters(useTimelineStore.getState().project, marker.startFrame);
     void window.palmier.preview
-      .thumbnail(marker.startFrame, 36)
+      .thumbnail(marker.startFrame, 36, titles)
       .then((raw: unknown) => {
         if (cancelled) return;
         const result = raw as ThumbnailResult | undefined;

@@ -333,9 +333,9 @@ export class PreviewCompositor {
    * Composes at the project canvas exactly like the live preview — same
    * visibility, layering, grade, chroma key, crop, and motion rules — then
    * box-samples down to a bounded thumbnail before returning, so the IPC
-   * payload is kilobytes instead of the multi-megabyte canvas. Title clips
-   * are not included: their raster is produced by the renderer and handed in
-   * per frame, and the index only needs the picture underneath.
+   * payload is kilobytes instead of the multi-megabyte canvas. Titles ride
+   * the same `titles` path the live preview uses, so a marker over a title
+   * shows the title.
    *
    * Returns null when there is no project or a newer thumbnail superseded
    * this one.
@@ -344,6 +344,7 @@ export class PreviewCompositor {
     frameIndex: Frame,
     targetHeight = 36,
     maxWidth = 160,
+    titles: TitleRasterInput[] = [],
   ): Promise<{ width: number; height: number; rgba: Buffer } | null> {
     const project = this.project;
     if (!project) return null;
@@ -354,7 +355,7 @@ export class PreviewCompositor {
     if (cached) return cached;
 
     const request = this.thumbnailRequests.begin(0);
-    const composited = await this.composeToBuffer(project, frameIndex, width, height, request);
+    const composited = await this.composeToBuffer(project, frameIndex, width, height, request, titles);
     if (composited === null || !this.thumbnailRequests.isCurrent(request)) return null;
 
     const result = {
@@ -491,20 +492,29 @@ export function registerPreviewHandlers(getProject: () => Project | null): void 
   });
 
   // Marker-index thumbnails (upstream #552): compose at the canvas, return a
-  // bounded RGBA thumbnail the renderer paints into a small canvas.
-  ipcMain.handle('preview:thumbnail', async (_event, frameIndex: unknown, targetHeight?: unknown) => {
-    const frame = typeof frameIndex === 'number' && Number.isFinite(frameIndex)
-      ? Math.max(0, Math.floor(frameIndex))
-      : null;
-    if (frame === null) return { success: false, error: 'Invalid frame.' };
-    const height = typeof targetHeight === 'number' && Number.isFinite(targetHeight)
-      ? Math.min(96, Math.max(16, Math.floor(targetHeight)))
-      : 36;
-    const project = getProject();
-    if (project) compositor.setProject(project);
-    const result = await compositor.renderThumbnail(frame, height);
-    if (!result) return { success: false };
-    return { success: true, width: result.width, height: result.height, rgba: result.rgba };
-  });
+  // bounded RGBA thumbnail the renderer paints into a small canvas. Titles
+  // are renderer-rasterized and arrive in the same shape the preview uses.
+  ipcMain.handle(
+    'preview:thumbnail',
+    async (_event, frameIndex: unknown, targetHeight?: unknown, titles?: unknown) => {
+      const frame = typeof frameIndex === 'number' && Number.isFinite(frameIndex)
+        ? Math.max(0, Math.floor(frameIndex))
+        : null;
+      if (frame === null) return { success: false, error: 'Invalid frame.' };
+      const height = typeof targetHeight === 'number' && Number.isFinite(targetHeight)
+        ? Math.min(96, Math.max(16, Math.floor(targetHeight)))
+        : 36;
+      const project = getProject();
+      if (project) compositor.setProject(project);
+      const result = await compositor.renderThumbnail(
+        frame,
+        height,
+        160,
+        Array.isArray(titles) ? (titles as TitleRasterInput[]) : [],
+      );
+      if (!result) return { success: false };
+      return { success: true, width: result.width, height: result.height, rgba: result.rgba };
+    },
+  );
 }
 

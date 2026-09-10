@@ -163,10 +163,14 @@ const api = {
       ipcRenderer.invoke('preview:prefetch', frames),
     /**
      * Bounded RGBA thumbnail of the composited frame (upstream #552 marker
-     * index). Raw pixels, already downscaled in main.
+     * index). Raw pixels, already downscaled in main. `titles` carries the
+     * renderer-rasterized title layers for this frame, same as compositeFrame.
      */
-    thumbnail: (frameIndex: number, targetHeight = 36) =>
-      ipcRenderer.invoke('preview:thumbnail', frameIndex, targetHeight),
+    thumbnail: (
+      frameIndex: number,
+      targetHeight = 36,
+      titles?: Array<{ clipId: string; width: number; height: number; x: number; y: number; rgba: Uint8ClampedArray }>,
+    ) => ipcRenderer.invoke('preview:thumbnail', frameIndex, targetHeight, titles),
   },
 
   // â”€â”€ Export (Phase 4+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
