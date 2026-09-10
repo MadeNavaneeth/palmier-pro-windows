@@ -14,6 +14,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import {
   AlertTriangle,
   Check,
+  Film,
   Loader2,
   Sparkles,
   Globe,
@@ -64,6 +65,16 @@ function providerLogo(id: string): React.ReactNode {
     case 'ollama': return <HardDrive className={`${cls} text-zinc-400`} />;
     case 'lmstudio': return <Monitor className={`${cls} text-zinc-400`} />;
     default: return <Bot className={`${cls} text-text-muted`} />;
+  }
+}
+
+function generationProviderLogo(id: string): React.ReactNode {
+  const cls = 'h-3.5 w-3.5 shrink-0';
+  switch (id) {
+    case 'fal': return <Sparkles className={`${cls} text-violet-400`} />;
+    case 'replicate': return <Boxes className={`${cls} text-sky-400`} />;
+    case 'higgsfield': return <Film className={`${cls} text-amber-400`} />;
+    default: return <Boxes className={`${cls} text-text-muted`} />;
   }
 }
 
@@ -434,7 +445,10 @@ function GenerationProvidersSection() {
           {providers.map((provider) => (
             <div key={provider.id} className="rounded border border-surface-3 bg-surface-2 px-2 py-1.5">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-medium text-text-primary">{provider.name}</span>
+                <span className="flex items-center gap-1.5 text-[11px] font-medium text-text-primary">
+                  {generationProviderLogo(provider.id)}
+                  {provider.name}
+                </span>
                 <span
                   className={`flex items-center gap-1 text-[9px] ${provider.configured ? 'text-emerald-400' : 'text-text-muted'}`}
                   title={provider.configured ? 'API key saved' : 'No API key'}
