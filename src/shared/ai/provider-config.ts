@@ -110,6 +110,15 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     hint: 'Free evaluation tier on La Plateforme, no card. Strict rate limits — best for light use.',
   },
   {
+    id: 'cerebras',
+    label: 'Cerebras (free tier)',
+    kind: 'openai-compatible',
+    baseUrl: 'https://api.cerebras.ai/v1',
+    defaultModel: 'llama-3.3-70b',
+    requiresApiKey: true,
+    hint: 'Free tier 1M tokens/month with no card — key from Cerebras Cloud. Fast inference on wafer-scale hardware.',
+  },
+  {
     id: 'ollama',
     label: 'Ollama (local)',
     kind: 'openai-compatible',

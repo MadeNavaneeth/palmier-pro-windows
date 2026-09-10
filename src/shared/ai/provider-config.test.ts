@@ -226,7 +226,7 @@ describe('presets', () => {
   });
 
   it('offers zero-cost presets that still validate end to end', () => {
-    for (const id of ['openrouter-free', 'gemini', 'mistral']) {
+    for (const id of ['openrouter-free', 'gemini', 'mistral', 'cerebras']) {
       const preset = presetById(id);
       expect(preset?.kind).toBe('openai-compatible');
       expect(preset?.requiresApiKey).toBe(true);
