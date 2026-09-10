@@ -4,9 +4,10 @@
  * Manages API key storage via Electron safeStorage.
  */
 
-import { ipcMain, BrowserWindow, safeStorage } from 'electron';
+import { ipcMain, BrowserWindow, app, safeStorage } from 'electron';
 import Store from 'electron-store';
 import { PalmierAgent, type StreamCallbacks } from './agent';
+import { agentTranscriptPath } from './transcript-path';
 import { applyMcpHttpSettings } from './mcp-http-settings';
 import {
   PROVIDER_PRESETS,
@@ -149,6 +150,7 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
       apiKey,
       baseUrl: config.baseUrl,
       model: config.model,
+      transcriptPath: agentTranscriptPath(app.getPath('userData')),
     });
 
     // Extract the last user message

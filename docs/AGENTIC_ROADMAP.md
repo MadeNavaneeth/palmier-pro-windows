@@ -117,9 +117,36 @@ verified by identity). The stored history keeps full fidelity; only the request
 is elided, which is also why the OpenAI path needs nothing — `openAiHistory()`
 already replays text only.
 
-Still to do: (3) LLM summarization at ~90% of the provider window with pinned
-user messages + plan + digest, (4) hard reset, plus persisting the raw
-transcript to disk so compaction stays auditable.
+Shipped steps (3) and (4), budget + summarization + hard reset, with the raw
+transcript on disk. `shared/ai/context-budget.ts` is pure: a deliberate
+four-characters-per-token estimate (a 90% threshold does not need a tokenizer in
+the main process), conservative per-provider windows (200k Anthropic, 128k for
+the heterogeneous OpenAI-compatible set) with a validated `contextWindow`
+override, the 90% threshold, and the transcript rendering that bounds the
+summarizer's input twice — per tool result, because one `get_timeline` dump can
+dwarf the conversation, and in total by dropping the middle with an explicit
+marker, keeping the head (what the user asked for) and the tail (where the work
+stands).
+
+`compactIfNeeded` runs **once per turn, before the request is built, never
+mid-round**: a summary landing between an assistant turn and its tool results
+would leave a tool call unanswered, which both providers reject. Order of
+resort is summarize → if the summary still does not fit, drop the past entirely,
+keeping only the freshly derived system prompt and the user's new message. A
+summarization failure degrades to the same reset rather than failing the turn,
+because losing the backlog is bad but refusing to answer is worse. The
+measurement itself is exposed as `estimatedRequestTokens` so the tests threshold
+on the same number the agent does rather than an approximation that could
+disagree with the decision.
+
+The raw transcript is always on in the app: JSON Lines, one file per UTC day
+under `<userData>/agent-transcripts`, recording each user turn, assistant
+completion, tool result and compaction event (`compaction-start`, `compacted`,
+`reset` with the reason) so what a summary dropped stays auditable. Appends are
+tiny, happen at turn boundaries, and an unwritable path is swallowed — auditing
+must never break a turn.
+
+L4 is complete. Remaining in the layer at large: nothing; L6/L7 are separate.
 
 ### L5 — Read-only parallelism
 

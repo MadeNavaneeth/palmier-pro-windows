@@ -8,6 +8,8 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { appendFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 import { tools, toolsToJsonSchema, isReadOnlyTool } from './tools';
 import { ToolExecutor, type ToolResult } from './executor';
 import {
@@ -21,6 +23,14 @@ import type { ProviderKind } from '../../shared/ai/provider-config';
 import type { PlanStep } from '../../shared/editor/plan';
 import { buildProjectDigest } from '../../shared/editor/project-digest';
 import { elideToolResults } from '../../shared/editor/tool-output-policy';
+import {
+  SUMMARY_HEADER,
+  contextWindowFor,
+  estimateOutgoingTokens,
+  renderTranscriptForSummary,
+  shouldCompact,
+  summarizeInstruction,
+} from '../../shared/ai/context-budget';
 import type { EditorController } from '../../shared/editor/controller';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -40,6 +50,17 @@ export interface AgentConfig {
   baseUrl?: string;
   model?: string;
   maxTokens?: number;
+  /**
+   * Context window in tokens, when the deployment differs from the provider
+   * default (L4c). Nonsensical values are ignored rather than trusted.
+   */
+  contextWindow?: number;
+  /**
+   * Where to append the raw turn transcript as JSON Lines, when the caller
+   * wants the conversation auditable on disk (L4c). Compaction replaces
+   * history, so without this the only record of what was dropped is gone.
+   */
+  transcriptPath?: string;
 }
 
 /**
@@ -198,6 +219,14 @@ export class PalmierAgent {
     this.turn = turn;
     this.activeCallbacks = callbacks;
     try {
+      this.appendTranscript({ event: 'user', content: userMessage });
+      // Once per turn, before any request is built (L4c).
+      await this.compactIfNeeded(userMessage, turn.signal);
+      if (turn.signal.aborted) {
+        callbacks.onCancelled('');
+        return;
+      }
+
       if (this.config.provider === 'anthropic') {
         await this.chatAnthropic(userMessage, callbacks, turn.signal);
       } else if (this.config.provider === 'openai-compatible') {
@@ -264,6 +293,7 @@ export class PalmierAgent {
         if (!result.wantsTools) {
           messages.push({ role: 'assistant', content: result.content });
           this.conversationHistory.push({ role: 'assistant', content: result.content });
+          this.appendTranscript({ event: 'assistant', content: fullResponse });
           callbacks.onComplete(fullResponse);
           return;
         }
@@ -354,6 +384,7 @@ export class PalmierAgent {
       segment.forEach((call, offset) => {
         outcomes[start + offset] = { name: call.name, result: results[offset] };
         callbacks.onToolResult(call.name, results[offset]);
+        this.appendTranscript({ event: 'tool', name: call.name, result: results[offset] });
       });
     }
 
@@ -393,6 +424,140 @@ export class PalmierAgent {
       return;
     }
     this.conversationHistory.push({ role: 'user', content: text });
+  }
+
+  /**
+   * Append one event to the raw transcript on disk (L4c), when configured.
+   *
+   * Auditing must never break a turn: an unwritable transcript path is ignored
+   * rather than surfaced, matching how the rest of the app treats a failed
+   * non-essential write. Appends are small and happen at turn boundaries and
+   * tool completions, not inside a render or frame path.
+   */
+  private appendTranscript(entry: Record<string, unknown>): void {
+    const path = this.config?.transcriptPath;
+    if (!path) return;
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      appendFileSync(path, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`, 'utf8');
+    } catch {
+      // Deliberately swallowed; see above.
+    }
+  }
+
+  /** One-shot summarization call on whichever provider is configured. */
+  private async summarize(transcript: string, signal: AbortSignal): Promise<string> {
+    const config = this.config!;
+    const instruction = summarizeInstruction();
+
+    if (config.provider === 'anthropic') {
+      const client = new Anthropic({
+        apiKey: config.apiKey,
+        ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
+      });
+      const response = await client.messages.create(
+        {
+          model: config.model || 'claude-sonnet-4-20250514',
+          max_tokens: 1024,
+          system: instruction,
+          messages: [{ role: 'user', content: transcript }],
+        },
+        { signal },
+      );
+      return response.content
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .filter((text) => text.length > 0)
+        .join('\n')
+        .trim();
+    }
+
+    const result = await createCompletion({
+      baseUrl: config.baseUrl ?? '',
+      apiKey: config.apiKey,
+      model: config.model ?? '',
+      messages: [
+        { role: 'system', content: instruction },
+        { role: 'user', content: transcript },
+      ],
+      tools: [],
+      maxTokens: 1024,
+      signal,
+    });
+    return result.content.trim();
+  }
+
+  /**
+   * Estimated cost of a request in tokens (L4c).
+   *
+   * The same arithmetic `compactIfNeeded` thresholds on, exposed so a caller
+   * (and the tests) can reason about the budget without re-deriving it — an
+   * approximation that disagrees with the decision is worse than no number.
+   */
+  private measureRequestTokens(history: unknown, userMessage: string): number {
+    return estimateOutgoingTokens({
+      system: this.systemPrompt(),
+      history,
+      tools: toolsToJsonSchema(),
+      userMessage,
+    });
+  }
+
+  /** Estimated cost of the next request, against the current history. */
+  estimatedRequestTokens(userMessage: string): number {
+    return this.measureRequestTokens(this.conversationHistory, userMessage);
+  }
+
+  /**
+   * Compress the conversation when the next request would fill the window (L4c).
+   *
+   * Runs once per turn, before the request is built, and never mid-round: a
+   * summary that landed between an assistant turn and its tool results would
+   * leave a tool call unanswered, which both providers reject. Order of resort:
+   * summarize, then — if even that does not bring the request under the
+   * threshold — drop the past entirely, keeping only the freshly derived system
+   * prompt and the user's new message.
+   *
+   * A summarization failure falls through to the same reset rather than failing
+   * the turn: losing the backlog is bad, refusing to answer is worse.
+   */
+  private async compactIfNeeded(userMessage: string, signal: AbortSignal): Promise<void> {
+    const config = this.config!;
+    const contextWindow = contextWindowFor(config.provider, config.contextWindow);
+    const measure = (history: unknown) => this.measureRequestTokens(history, userMessage);
+
+    if (!shouldCompact(measure(this.conversationHistory), contextWindow)) return;
+    // A provider that cannot take a request cannot take a summary request either.
+    if (config.provider === 'openai-compatible' && (!config.baseUrl || !config.model)) return;
+
+    const before = measure(this.conversationHistory);
+    const entries = this.conversationHistory.length;
+    this.appendTranscript({ event: 'compaction-start', estimatedTokens: before, contextWindow, entries });
+
+    let summary = '';
+    try {
+      summary = await this.summarize(renderTranscriptForSummary(this.conversationHistory), signal);
+    } catch (err) {
+      this.appendTranscript({
+        event: 'compaction-failed',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if (summary.length > 0) {
+      this.conversationHistory = [{ role: 'user', content: `${SUMMARY_HEADER}\n${summary}` }];
+      const after = measure(this.conversationHistory);
+      if (!shouldCompact(after, contextWindow)) {
+        this.appendTranscript({ event: 'compacted', estimatedTokens: after, entries, summary });
+        return;
+      }
+      this.appendTranscript({ event: 'reset', reason: 'summary still over window', estimatedTokens: after });
+    } else if (!signal.aborted) {
+      this.appendTranscript({ event: 'reset', reason: 'summarization unavailable', estimatedTokens: before });
+    }
+
+    // Last resort. The new user message is not in history yet, so nothing the
+    // user just asked for is lost.
+    this.conversationHistory = [];
   }
 
   /**
@@ -585,6 +750,7 @@ export class PalmierAgent {
         continueLoop = toolResults.length > 0;
       }
 
+      this.appendTranscript({ event: 'assistant', content: fullResponse });
       callbacks.onComplete(fullResponse);
     } catch (err: any) {
       // The SDK surfaces an aborted request as APIUserAbortError; the signal is
