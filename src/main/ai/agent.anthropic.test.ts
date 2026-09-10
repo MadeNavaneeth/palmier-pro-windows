@@ -40,6 +40,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
 
 import { PalmierAgent, MAX_TOOL_ROUNDS, type StreamCallbacks } from './agent';
 import { EditorController } from '../../shared/editor/controller';
+import { TOOL_RESULT_KEEP_LAST, isElidedToolResult } from '../../shared/editor/tool-output-policy';
 
 const CONFIG = {
   provider: 'anthropic' as const,
@@ -327,6 +328,39 @@ describe('Anthropic history when a turn is stopped', () => {
     expect(messages).toHaveLength(3);
     const trailing = blocks(messages[2].content);
     expect(trailing.at(-1)).toMatchObject({ type: 'text', text: 'and now trim the head' });
+  });
+});
+
+describe('Anthropic tool-result elision (L4b)', () => {
+  it('elides older tool results but keeps the last N and the message shape', async () => {
+    const { agent } = harness();
+    agent.configure(CONFIG);
+    const rounds = TOOL_RESULT_KEEP_LAST + 3;
+    for (let i = 0; i < rounds; i += 1) {
+      mocks.create.mockResolvedValueOnce(
+        toolTurn([{ id: `t${i}`, name: 'get_timeline', input: {} }]),
+      );
+    }
+    mocks.create.mockResolvedValueOnce(textTurn('Audit done.'));
+
+    const { callbacks } = recorder();
+    await agent.chat('audit the timeline', callbacks);
+
+    const finalPayload = sentRounds().at(-1)!;
+    // Structure is untouched: the API would reject anything else.
+    expectWellFormed(finalPayload);
+
+    const contents = finalPayload
+      .flatMap((entry) => blocks(entry.content))
+      .filter((block) => block.type === 'tool_result')
+      .map((block) => (block as { content?: unknown }).content as string);
+    expect(contents).toHaveLength(rounds);
+
+    const elidedCount = rounds - TOOL_RESULT_KEEP_LAST;
+    expect(contents.slice(0, elidedCount).every((value) => isElidedToolResult(value))).toBe(true);
+    expect(contents.slice(elidedCount).some((value) => isElidedToolResult(value))).toBe(false);
+    // The kept results are the real thing, not placeholders.
+    expect(contents.at(-1)).toContain('tracks');
   });
 });
 

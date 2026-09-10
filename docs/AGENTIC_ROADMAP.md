@@ -104,13 +104,22 @@ system prompt for both provider paths, and `agent.digest.test.ts` pins that it
 reaches the outgoing request *and* is re-derived between two turns rather than
 cached. Unit tests cover empty, populated, and defective projects.
 
-Still to do: (1) tool-result elision with `keep`/`elide` tags and last-N
-retention, (3) LLM summarization at ~90% of the provider window with pinned
+Shipped step (1), tool-result elision: `shared/editor/tool-output-policy.ts` is
+pure and rewrites only the *content* of older `tool_result` blocks in the
+outgoing Anthropic request, keeping the last `TOOL_RESULT_KEEP_LAST` (6) verbatim
+and replacing earlier ones with a placeholder. Message count, order, and
+`tool_use_id`s are untouched by construction, so the API's history invariants
+survive — `expectWellFormed` in `agent.anthropic.test.ts` still passes on the
+elided payload, which is the real guarantee here. Two deliberate exceptions:
+error results are never elided (short, and a model that forgets its own failed
+calls repeats them), and an already-elided result is never re-wrapped (idempotent,
+verified by identity). The stored history keeps full fidelity; only the request
+is elided, which is also why the OpenAI path needs nothing — `openAiHistory()`
+already replays text only.
+
+Still to do: (3) LLM summarization at ~90% of the provider window with pinned
 user messages + plan + digest, (4) hard reset, plus persisting the raw
-transcript to disk so compaction stays auditable. Elision is deferred because
-it must transform the Anthropic block history and the OpenAI message list
-separately, and the existing stress suite pins replay growth — that change
-needs its own test pass, not a rushed edit.
+transcript to disk so compaction stays auditable.
 
 ### L5 — Read-only parallelism
 

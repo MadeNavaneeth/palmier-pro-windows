@@ -20,6 +20,7 @@ import {
 import type { ProviderKind } from '../../shared/ai/provider-config';
 import type { PlanStep } from '../../shared/editor/plan';
 import { buildProjectDigest } from '../../shared/editor/project-digest';
+import { elideToolResults } from '../../shared/editor/tool-output-policy';
 import type { EditorController } from '../../shared/editor/controller';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -394,7 +395,10 @@ export class PalmierAgent {
             model,
             max_tokens: maxTokens,
             system: this.systemPrompt(),
-            messages: this.conversationHistory,
+            // Older tool observations ride along as placeholders (L4b): the
+            // stored history keeps full fidelity, only the request is elided,
+            // and message count/order/ids are untouched.
+            messages: elideToolResults(this.conversationHistory),
             tools: anthropicTools,
           },
           { signal },

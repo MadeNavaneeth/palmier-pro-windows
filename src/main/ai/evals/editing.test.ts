@@ -187,7 +187,7 @@ describe('evals: editing outcomes', () => {
   it('refused calls leave the project and the undo stack untouched', async () => {
     const { editor, executor, a } = twoClipScene();
     await executor.execute('set_clip_color_grade', { clipId: a, brightness: 0.1 });
-    const snapshot = JSON.stringify(editor.getProject());
+    const snapshot = contentJson(editor);
     const depthBefore = undoDepth(editor);
 
     const refusals = [
@@ -199,7 +199,7 @@ describe('evals: editing outcomes', () => {
     ];
     for (const refusal of refusals) expect(refusal.success).toBe(false);
 
-    expect(JSON.stringify(editor.getProject())).toBe(snapshot);
+    expect(contentJson(editor)).toBe(snapshot);
     expect(undoDepth(editor)).toBe(depthBefore);
   });
 
