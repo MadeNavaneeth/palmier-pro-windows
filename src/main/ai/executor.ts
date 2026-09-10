@@ -55,6 +55,7 @@ import {
 } from '../../shared/project/aspect-ratio';
 import { createEmptyProject } from '../../shared/types/project';
 import type { ProjectSettings } from '../../shared/types/project';
+import type { ExportEventSink, ExportOptions } from '../media/exporter';
 import { EditorController } from '../../shared/editor/controller';
 
 export interface ToolResult {
@@ -142,13 +143,22 @@ export function resolveProjectSettings(
   };
 }
 
-/** Injected capability seams â€” Electron-bound defaults live in ./ipc. */
+/** Injected capability seams — Electron-bound defaults live in ./ipc. */
 export interface ToolExecutorDeps {
   /**
    * OpenAI-compatible runtime (baseUrl + decrypted key) for audio
    * transcription. Null = no usable provider configured.
    */
   getTranscriptionRuntime?: () => Promise<{ baseUrl: string; apiKey: string } | null>;
+  /**
+   * FFmpeg export runner. Defaults to the real exporter (`media/exporter`);
+   * tests inject a fake so `export_project` is covered without encoding.
+   */
+  runExport?: (
+    project: ReturnType<EditorController['getProject']>,
+    options: ExportOptions,
+    sink: ExportEventSink,
+  ) => Promise<void>;
 }
 
 export class ToolExecutor {
@@ -1270,9 +1280,50 @@ export class ToolExecutor {
         }
       }
 
-      case 'export_project':
-        // Phase 4 â€” placeholder
-        return { success: false, error: 'Export not yet implemented (Phase 4).' };
+      case 'export_project': {
+        const outputPath = typeof args.outputPath === 'string' ? args.outputPath : '';
+        if (!path.isAbsolute(outputPath)) {
+          return { success: false, error: 'outputPath must be an absolute path.' };
+        }
+        const format = args.format ?? 'mp4';
+        const quality = args.quality ?? 'normal';
+        const options = { outputPath, format, quality };
+
+        // The exporter reports through the same events the delivery panel
+        // consumes; capture them so an error that only arrives as an event
+        // (e.g. FFmpeg's stderr tail) reaches the caller instead of a bare
+        // exit-code message.
+        const events: { error?: string; bytes?: number } = {};
+        const sink = {
+          send: (channel: string, payload?: unknown) => {
+            if (channel === 'export:complete') {
+              events.bytes = (payload as { bytes?: number } | undefined)?.bytes;
+            }
+            if (channel === 'export:error') {
+              events.error = typeof payload === 'string' ? payload : String(payload);
+            }
+          },
+        };
+
+        try {
+          if (this.deps.runExport) {
+            await this.deps.runExport(this.editor.getProject(), options, sink);
+          } else {
+            const { getExporter } = await import('../media/exporter');
+            await getExporter().export(this.editor.getProject(), options, sink);
+          }
+          if (events.error) return { success: false, error: events.error };
+          return {
+            success: true,
+            data: { outputPath, format, quality, bytes: events.bytes ?? null },
+          };
+        } catch (err) {
+          return {
+            success: false,
+            error: events.error ?? (err instanceof Error ? err.message : String(err)),
+          };
+        }
+      }
 
       case 'import_fcpxml': {
         const xml = await fs.readFile(args.path, 'utf8');

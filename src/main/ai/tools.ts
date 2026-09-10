@@ -604,10 +604,12 @@ export const tools = {
 
   exportProject: {
     name: 'export_project',
-    description: 'Export the project to a video file via FFmpeg.',
+    description:
+      'Render the timeline to a video or audio file with FFmpeg — the same exporter the delivery panel uses, with identical grade/effects/eligibility rules. '
+      + 'Returns when the file is written (long timelines take minutes). outputPath must be absolute; the parent folder must exist.',
     parameters: z.object({
-      outputPath: z.string().describe('Output file path.'),
-      format: z.enum(['mp4', 'mov', 'webm']).default('mp4').describe('Container format.'),
+      outputPath: z.string().min(1).describe('Absolute output file path.'),
+      format: z.enum(['mp4', 'mov', 'webm', 'audio']).default('mp4').describe('Container format. "audio" writes an M4A mix.'),
       quality: z.enum(['draft', 'normal', 'high']).default('normal').describe('Encoding quality preset.'),
     }),
   },

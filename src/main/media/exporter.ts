@@ -54,6 +54,17 @@ export interface ExportProgress {
   eta: string; // estimated time remaining
 }
 
+/**
+ * Where export events go.
+ *
+ * The IPC path passes `win.webContents`; the Agent/MCP path passes a sink
+ * that captures the receipt, so `Exporter.export` itself never needs an
+ * Electron window and can run from a tool call.
+ */
+export interface ExportEventSink {
+  send(channel: string, payload?: unknown): void;
+}
+
 // ─── Exporter ────────────────────────────────────────────────────────────────
 
 export class Exporter {
@@ -65,7 +76,7 @@ export class Exporter {
     this.nativeAddon = addon;
   }
 
-  async export(project: Project, options: ExportOptions, win: BrowserWindow): Promise<void> {
+  async export(project: Project, options: ExportOptions, sink: ExportEventSink): Promise<void> {
     this.cancelled = false;
     const { outputPath } = options;
     const width = options.width || project.settings.width;
@@ -83,12 +94,12 @@ export class Exporter {
         : 0;
 
     if (totalFrames === 0) {
-      win.webContents.send('export:error', 'No clips on timeline');
+      sink.send('export:error', 'No clips on timeline');
       return;
     }
     if (options.format === 'audio' && !clips.some((c) => c.type === 'audio')) {
       const message = 'No audio to export — add an audio clip or pick a video format.';
-      win.webContents.send('export:error', message);
+      sink.send('export:error', message);
       throw new Error(message);
     }
 
@@ -98,7 +109,7 @@ export class Exporter {
     const blockers = offlineExportBlockers(project, (p) => fsSync.existsSync(p));
     if (blockers.length > 0) {
       const message = `Media offline: ${formatOfflineNames(blockers)}. Relink or remove ${blockers.length === 1 ? 'it' : 'them'} before exporting.`;
-      win.webContents.send('export:error', message);
+      sink.send('export:error', message);
       // The IPC wrapper turns this into { success:false } for the caller.
       throw new Error(message);
     }
@@ -111,10 +122,10 @@ export class Exporter {
       // Argument-building refusals (e.g. audio-only with no eligible audio)
       // are user-facing; surface them through the same channel as progress.
       const message = err instanceof Error ? err.message : String(err);
-      win.webContents.send('export:error', message);
+      sink.send('export:error', message);
       throw err;
     }
-    win.webContents.send('export:progress', {
+    sink.send('export:progress', {
       percent: 0,
       frame: 0,
       totalFrames,
@@ -139,21 +150,21 @@ export class Exporter {
         // Parse progress from FFmpeg stderr
         const progress = this.parseProgress(stderrData, totalFrames);
         if (progress) {
-          win.webContents.send('export:progress', progress);
+          sink.send('export:progress', progress);
         }
       });
 
       proc.on('close', (code) => {
         this.currentProcess = null;
         if (this.cancelled) {
-          win.webContents.send('export:error', 'Export cancelled');
+          sink.send('export:error', 'Export cancelled');
           resolve();
           return;
         }
 
         if (code !== 0) {
           const errorLines = stderrData.split('\n').slice(-5).join('\n');
-          win.webContents.send('export:error', `FFmpeg exited with code ${code}: ${errorLines}`);
+          sink.send('export:error', `FFmpeg exited with code ${code}: ${errorLines}`);
           reject(new Error(`FFmpeg exit code ${code}`));
           return;
         }
@@ -165,7 +176,7 @@ export class Exporter {
         fs.stat(outputPath)
           .then(async (stat) => {
             if (!stat.isFile() || stat.size === 0) {
-              win.webContents.send(
+              sink.send(
                 'export:error',
                 `Export reported success but no output file was written to "${outputPath}".`,
               );
@@ -207,21 +218,21 @@ export class Exporter {
                 ...(options.exportCaptions !== undefined ? { exportCaptions: options.exportCaptions } : {}),
               },
             });
-            win.webContents.send('export:complete', { outputPath, bytes: stat.size });
+            sink.send('export:complete', { outputPath, bytes: stat.size });
             resolve();
           })
           .catch((statErr: NodeJS.ErrnoException) => {
             const reason = statErr.code === 'ENOENT'
               ? `no output file was written to "${outputPath}"`
               : statErr.message;
-            win.webContents.send('export:error', `Export failed: ${reason}.`);
+            sink.send('export:error', `Export failed: ${reason}.`);
             reject(new Error(`Export verification failed: ${reason}`));
           });
       });
 
       proc.on('error', (err) => {
         this.currentProcess = null;
-        win.webContents.send('export:error', `FFmpeg error: ${err.message}`);
+        sink.send('export:error', `FFmpeg error: ${err.message}`);
         reject(err);
       });
     });
@@ -392,7 +403,7 @@ export function registerExportHandlers(getProject: () => Project | null): void {
     }
 
     try {
-      await exporter.export(project, options, win);
+      await exporter.export(project, options, win.webContents);
       return { success: true, outputPath };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -413,9 +424,5 @@ export function registerExportHandlers(getProject: () => Project | null): void {
       shell.showItemInFolder(outputPath);
     }
     return { success: true };
-  });
-
-  ipcMain.handle('export:history', () => {
-    return { success: true, history: loadExportHistory() };
   });
 }
