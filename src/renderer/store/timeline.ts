@@ -168,7 +168,7 @@ export interface TimelineState {
   /** Patch one marker; false when the id is unknown or validation refused it. */
   updateMarker: (
     markerId: string,
-    patch: { name?: string; startFrame?: Frame; durationFrames?: Frame },
+    patch: { name?: string; startFrame?: Frame; durationFrames?: Frame; color?: string; comment?: string },
   ) => boolean;
   /** Jump to the nearest marker start after the playhead; selects it. */
   goToNextMarker: () => boolean;

@@ -4,13 +4,14 @@
  *
  * Also renders timeline markers (upstream PRs #542 / #560): point markers as
  * pennant flags, range markers as bands. Click selects, drag moves (one undo
- * step per drag), double-click renames. Marker frames feed the snap engine
- * through the store's getSnapPoints.
+ * step per drag), double-click opens the marker editor popover. Marker frames
+ * feed the snap engine through the store's getSnapPoints.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTimelineStore } from '../../store/timeline';
 import { frameToTimecode } from '../../../shared/utils/time';
+import { MarkerEditorPopover } from './MarkerEditorPopover';
 
 interface TimelineRulerProps {
   width: number;
@@ -42,7 +43,7 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
   const updateMarker = useTimelineStore((s) => s.updateMarker);
 
   const [drag, setDrag] = useState<MarkerDragState | null>(null);
-  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+  const [editorMarkerId, setEditorMarkerId] = useState<string | null>(null);
 
   const xOf = useCallback(
     (frame: number) => (frame - viewport.scrollFrame) * viewport.pixelsPerFrame,
@@ -75,23 +76,24 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
     (event: React.MouseEvent, id: string, startFrame: number) => {
       event.stopPropagation();
       selectMarker(id, event.shiftKey);
-      setRenaming(null);
+      setEditorMarkerId(null);
       setDrag({ id, startX: event.clientX, origStart: startFrame, deltaFrames: 0 });
     },
     [selectMarker],
   );
 
-  const beginRename = useCallback((event: React.MouseEvent, id: string, name: string) => {
+  const openEditor = useCallback((event: React.MouseEvent, id: string) => {
     event.stopPropagation();
-    setRenaming({ id, value: name });
-  }, []);
+    selectMarker(id, false);
+    setEditorMarkerId(id);
+  }, [selectMarker]);
 
-  const commitRename = useCallback(() => {
-    if (renaming) {
-      updateMarker(renaming.id, { name: renaming.value });
-      setRenaming(null);
+  // The edited marker vanished (deleted via keyboard, selection cleared).
+  useEffect(() => {
+    if (editorMarkerId && (!selectedMarkerIds.has(editorMarkerId) || !markers?.some((m) => m.id === editorMarkerId))) {
+      setEditorMarkerId(null);
     }
-  }, [renaming, updateMarker]);
+  }, [editorMarkerId, selectedMarkerIds, markers]);
 
   // ─── Ticks ─────────────────────────────────────────────────────────────────
 
@@ -159,6 +161,11 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
   const [hoverTimecode, setHoverTimecode] = useState<string | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
 
+  const editorMarker = useMemo(() => {
+    if (!editorMarkerId || !selectedMarkerIds.has(editorMarkerId)) return undefined;
+    return markers?.find((m) => m.id === editorMarkerId);
+  }, [editorMarkerId, selectedMarkerIds, markers]);
+
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       const rect = e.currentTarget.getBoundingClientRect();
@@ -170,12 +177,16 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
   );
 
   return (
-    <div
-      className="relative h-6 border-b border-surface-3 bg-surface-2 cursor-pointer select-none overflow-hidden"
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={() => { setHoverTimecode(null); setHoverX(null); }}
-    >
+    // Outer wrapper owns popover positioning: the bar itself stays
+    // overflow-hidden (ruler content clips like the lanes do) while the
+    // editor popover overlays the lanes below without disturbing layout.
+    <div className="relative">
+      <div
+        className="relative h-6 border-b border-surface-3 bg-surface-2 cursor-pointer select-none overflow-hidden"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => { setHoverTimecode(null); setHoverX(null); }}
+      >
       <svg width={width} height={24} className="absolute inset-0">
         {rangeStart !== undefined && rangeEnd !== undefined && rangeEnd > rangeStart && (
           <rect
@@ -280,9 +291,8 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
               height={24}
               fill="transparent"
               className="cursor-ew-resize"
-              style={{ pointerEvents: renaming?.id === marker.id ? 'none' : 'auto' }}
               onMouseDown={(event) => beginMarkerDrag(event, marker.id, marker.startFrame)}
-              onDoubleClick={(event) => beginRename(event, marker.id, marker.name)}
+              onDoubleClick={(event) => openEditor(event, marker.id)}
             />
           </g>
         ))}
@@ -297,21 +307,15 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
           {hoverTimecode}
         </div>
       )}
+      </div>
 
-      {renaming && (
-        <input
-          autoFocus
-          value={renaming.value}
-          onChange={(event) => setRenaming({ id: renaming.id, value: event.target.value })}
-          onBlur={commitRename}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') commitRename();
-            if (event.key === 'Escape') setRenaming(null);
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          className="absolute top-0 z-10 h-4 rounded-sm border border-accent/70 bg-surface-0 px-1 text-[9px] text-text-primary outline-none"
-          style={{ left: Math.min(Math.max(0, xOf(markers?.find((m) => m.id === renaming.id)?.startFrame ?? 0)) + 11, width - 96), width: 90 }}
-          aria-label="Marker name"
+      {editorMarker && (
+        <MarkerEditorPopover
+          key={editorMarker.id}
+          markerId={editorMarker.id}
+          x={xOf(editorMarker.startFrame)}
+          width={width}
+          onClose={() => setEditorMarkerId(null)}
         />
       )}
     </div>
