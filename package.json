@@ -22,6 +22,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "evals": "vitest run src/main/ai/evals",
     "lint": "eslint src/ --ext .ts,.tsx",
     "upstream:audit": "node scripts/upstream-audit.mjs",
     "upstream:audit:write": "node scripts/upstream-audit.mjs --write",
