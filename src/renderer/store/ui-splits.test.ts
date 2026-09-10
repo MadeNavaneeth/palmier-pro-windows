@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const STORAGE_KEY = 'palmier.layout.splits';
-const DEFAULTS = { mediaWidth: 480, inspectorWidth: 320, previewWidth: 608, timelineHeight: 270 };
+const DEFAULTS = { mediaWidth: 480, inspectorWidth: 320, previewWidth: 608, timelineHeight: 350 };
 
 function installStorage(initial: Record<string, string> = {}): Map<string, string> {
   const store = new Map(Object.entries(initial));

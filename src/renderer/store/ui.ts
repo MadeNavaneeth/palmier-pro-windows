@@ -126,7 +126,7 @@ export const SPLITS_DEFAULTS: Record<SplitKey, number> = {
   mediaWidth: 480,
   inspectorWidth: 320,
   previewWidth: 608,
-  timelineHeight: 270,
+  timelineHeight: 350,
 };
 
 /** Floors mirror the panel/preview/timeline minimums the layout already enforces. */
