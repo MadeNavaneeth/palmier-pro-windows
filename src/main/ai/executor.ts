@@ -36,6 +36,7 @@ import { diffMarkers } from '../../shared/editor/markers';
 import { sanitizeCrop } from '../../shared/media/source-crop';
 import { sanitizeMotion } from '../../shared/media/motion';
 import { mergeChromaKey } from '../../shared/editor/chroma-key';
+import { hasColorGrade, sanitizeColorGrade } from '../../shared/editor/color-grade';
 import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
 import { planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
@@ -1445,6 +1446,63 @@ export class ToolExecutor {
             changed: true,
             chromaKey: updated?.chromaKey ?? null,
             cleared: !updated?.chromaKey,
+          },
+        };
+      }
+
+      case 'set_clip_color_grade': {
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'video' && clip.type !== 'image') {
+          return { success: false, error: 'Color grading applies to video and image clips only.' };
+        }
+        const clear = args.clear === true;
+        const sanitized = sanitizeColorGrade({
+          ...(args.brightness !== undefined ? { brightness: args.brightness } : {}),
+          ...(args.contrast !== undefined ? { contrast: args.contrast } : {}),
+          ...(args.saturation !== undefined ? { saturation: args.saturation } : {}),
+          ...(args.hueRotation !== undefined ? { hueRotation: args.hueRotation } : {}),
+          ...(args.invertColors !== undefined ? { invertColors: args.invertColors } : {}),
+        });
+        const receipt = this.editor.applyClipProperties(
+          [clip.id],
+          clear ? 'Reset color grade' : 'Set color grade',
+          (draft) => {
+            if (clear) {
+              delete draft.brightness;
+              delete draft.contrast;
+              delete draft.saturation;
+              delete draft.hueRotation;
+              delete draft.invertColors;
+              return true;
+            }
+            // A field passed at its default clears it, so a graded clip can
+            // return to ungraded without a separate clear call.
+            const defaults = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0 } as const;
+            for (const field of ['brightness', 'contrast', 'saturation', 'hueRotation'] as const) {
+              if (args[field] === undefined) continue;
+              const value = sanitized[field];
+              if (value === undefined) continue;
+              if (value === defaults[field]) delete draft[field];
+              else draft[field] = value;
+            }
+            if (args.invertColors === true) draft.invertColors = true;
+            else if (args.invertColors === false) delete draft.invertColors;
+            return true;
+          },
+        );
+        const updated = this.editor.getClips().find((candidate) => candidate.id === clip.id);
+        return {
+          success: true,
+          data: {
+            clipId: clip.id,
+            changed: receipt.changedClipIds.length > 0,
+            brightness: updated?.brightness ?? 0,
+            contrast: updated?.contrast ?? 1,
+            saturation: updated?.saturation ?? 1,
+            hueRotation: updated?.hueRotation ?? 0,
+            invertColors: updated?.invertColors ?? false,
+            cleared: !updated || !hasColorGrade(updated),
           },
         };
       }
