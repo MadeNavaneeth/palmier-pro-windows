@@ -27,6 +27,7 @@ import { effectiveSourcePath } from '../../shared/media/proxy';
 import { ByteBudgetLru } from './render-cache';
 import { loadProxyMode } from './proxy-mode';
 import { visualClipsAtFrame } from './visible-clips';
+import { downscaleRgba, thumbnailSize } from '../../shared/media/thumbnail';
 import { isCropped, cropRect } from '../../shared/media/source-crop';
 import { evaluateMotion } from '../../shared/media/motion';
 import { chromaKeyOf, applyChromaKey } from '../../shared/editor/chroma-key';
@@ -78,6 +79,19 @@ export class PreviewCompositor {
   private readonly renderCache = new ByteBudgetLru<Buffer>(256 * 1024 * 1024);
   private readonly projectTokens = new WeakMap<Project, number>();
   private nextToken = 1;
+
+  /**
+   * Marker thumbnails (upstream #552) run on their own latest-wins gate so a
+   * scroll through the marker list cannot cancel the live preview's frame
+   * requests, and a burst of rows only ever publishes the newest result.
+   */
+  private readonly thumbnailRequests = new LatestRequestGate<number>();
+  /**
+   * Bounded by entry count, keyed by project token + frame + size, so an
+   * edit (which mints a new token) invalidates every entry at once. The
+   * bound matters because each entry holds decoded pixels.
+   */
+  private readonly thumbnailCache = new Map<string, { width: number; height: number; rgba: Buffer }>();
 
   constructor() {}
 
@@ -314,6 +328,46 @@ export class PreviewCompositor {
   }
 
   /**
+   * Compose one frame and downscale it for the marker index (upstream #552).
+   *
+   * Composes at the project canvas exactly like the live preview — same
+   * visibility, layering, grade, chroma key, crop, and motion rules — then
+   * box-samples down to a bounded thumbnail before returning, so the IPC
+   * payload is kilobytes instead of the multi-megabyte canvas. Title clips
+   * are not included: their raster is produced by the renderer and handed in
+   * per frame, and the index only needs the picture underneath.
+   *
+   * Returns null when there is no project or a newer thumbnail superseded
+   * this one.
+   */
+  async renderThumbnail(
+    frameIndex: Frame,
+    targetHeight = 36,
+    maxWidth = 160,
+  ): Promise<{ width: number; height: number; rgba: Buffer } | null> {
+    const project = this.project;
+    if (!project) return null;
+    const { width, height } = project.settings;
+    const target = thumbnailSize(width, height, targetHeight, maxWidth);
+    const key = `${this.tokenFor(project)}:${frameIndex}:${target.width}x${target.height}`;
+    const cached = this.thumbnailCache.get(key);
+    if (cached) return cached;
+
+    const request = this.thumbnailRequests.begin(0);
+    const composited = await this.composeToBuffer(project, frameIndex, width, height, request);
+    if (composited === null || !this.thumbnailRequests.isCurrent(request)) return null;
+
+    const result = {
+      width: target.width,
+      height: target.height,
+      rgba: Buffer.from(downscaleRgba(composited, width, height, target.width, target.height)),
+    };
+    if (this.thumbnailCache.size >= 256) this.thumbnailCache.clear();
+    this.thumbnailCache.set(key, result);
+    return result;
+  }
+
+  /**
    * Prefetch frames for smooth playback.
    */
   async prefetchFrames(frames: Frame[]): Promise<void> {
@@ -434,6 +488,23 @@ export function registerPreviewHandlers(getProject: () => Project | null): void 
     const project = getProject();
     if (project) compositor.setProject(project);
     await compositor.prefetchFrames(frames);
+  });
+
+  // Marker-index thumbnails (upstream #552): compose at the canvas, return a
+  // bounded RGBA thumbnail the renderer paints into a small canvas.
+  ipcMain.handle('preview:thumbnail', async (_event, frameIndex: unknown, targetHeight?: unknown) => {
+    const frame = typeof frameIndex === 'number' && Number.isFinite(frameIndex)
+      ? Math.max(0, Math.floor(frameIndex))
+      : null;
+    if (frame === null) return { success: false, error: 'Invalid frame.' };
+    const height = typeof targetHeight === 'number' && Number.isFinite(targetHeight)
+      ? Math.min(96, Math.max(16, Math.floor(targetHeight)))
+      : 36;
+    const project = getProject();
+    if (project) compositor.setProject(project);
+    const result = await compositor.renderThumbnail(frame, height);
+    if (!result) return { success: false };
+    return { success: true, width: result.width, height: result.height, rgba: result.rgba };
   });
 }
 

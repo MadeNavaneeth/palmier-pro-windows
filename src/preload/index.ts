@@ -151,6 +151,12 @@ const api = {
     ) => ipcRenderer.invoke('preview:composite-frame', frameIndex, titles),
     prefetch: (frames: number[]) =>
       ipcRenderer.invoke('preview:prefetch', frames),
+    /**
+     * Bounded RGBA thumbnail of the composited frame (upstream #552 marker
+     * index). Raw pixels, already downscaled in main.
+     */
+    thumbnail: (frameIndex: number, targetHeight = 36) =>
+      ipcRenderer.invoke('preview:thumbnail', frameIndex, targetHeight),
   },
 
   // â”€â”€ Export (Phase 4+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

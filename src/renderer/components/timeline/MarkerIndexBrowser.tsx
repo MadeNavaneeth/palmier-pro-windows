@@ -1,23 +1,23 @@
 /**
  * MarkerIndexBrowser — review list for timeline markers (upstream PR #552's
- * MarkerBrowser, slice with canvas-proportioned placeholder thumbnails).
+ * MarkerBrowser).
  *
  * Sorted by start frame, filterable by search text (name + comment) and by
  * review status. Clicking a row selects the marker and seeks the playhead to
  * its start, matching upstream's `select(seek: true)`; the row's Edit button
  * reopens the same popover the ruler uses so there is one editor path, not two.
+ *
+ * Rows show a composited thumbnail of the frame the marker sits on, fetched
+ * from the preview compositor over IPC and cached per project revision in the
+ * main process; the marker's color dot stands in until the pixels arrive.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Flag } from 'lucide-react';
-import type { MarkerStatus } from '../../../shared/editor/markers';
+import type { MarkerStatus, TimelineMarker } from '../../../shared/editor/markers';
 import { useTimelineStore } from '../../store/timeline';
 import { frameToTimecode } from '../../../shared/utils/time';
-
-function thumbnailSize(canvasWidth: number, canvasHeight: number, thumbHeight: number): { width: number; height: number } {
-  if (canvasWidth <= 0 || canvasHeight <= 0 || thumbHeight <= 0) return { width: 64, height: 36 };
-  return { width: Math.round((canvasWidth * thumbHeight) / canvasHeight), height: thumbHeight };
-}
+import { thumbnailSize } from '../../../shared/media/thumbnail';
 
 function sortedMarkers(
   markers: ReturnType<ReturnType<typeof useTimelineStore.getState>['controller']['getMarkers']>,
@@ -123,17 +123,7 @@ export function MarkerIndexBrowser() {
                 data-selected={selected}
                 className={`flex items-center gap-2 border-b border-white/[0.06] px-2 py-1.5 transition ${selected ? 'bg-accent/15' : 'hover:bg-white/[0.04]'}`}
               >
-                {/* Canvas-proportioned placeholder — real composited thumbnails need the preview compositor */}
-                <div
-                  className="shrink-0 overflow-hidden rounded-sm border border-white/10 bg-black"
-                  style={{ width: thumb.width, height: thumb.height }}
-                  title={`Frame ${frameToTimecode(marker.startFrame, fps)}`}
-                  data-marker-thumb={marker.id}
-                >
-                  <div className="flex h-full w-full items-center justify-center" style={{ backgroundColor: `${marker.color}18` }}>
-                    <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: marker.color }} />
-                  </div>
-                </div>
+                <MarkerThumb marker={marker} thumb={thumb} fps={fps} />
                 <button
                   type="button"
                   onClick={() => jump(marker)}
@@ -231,6 +221,87 @@ export function MarkerIndexBrowser() {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+interface ThumbnailResult {
+  success: boolean;
+  width?: number;
+  height?: number;
+  rgba?: Uint8Array | ArrayBuffer;
+}
+
+/**
+ * One marker's composited frame, drawn into a small canvas. The color-dot
+ * plate underneath stays visible until (or if) the pixels arrive, so a row
+ * never collapses to an empty box while the compositor works.
+ */
+function MarkerThumb({
+  marker,
+  thumb,
+  fps,
+}: {
+  marker: TimelineMarker;
+  thumb: { width: number; height: number };
+  fps: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [loaded, setLoaded] = useState(false);
+  // Every project mutation mints a new revision; re-requesting is cheap
+  // because main caches thumbnails per project token + frame + size.
+  const revision = useTimelineStore((s) => s.project.updatedAt);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoaded(false);
+    void window.palmier.preview
+      .thumbnail(marker.startFrame, 36)
+      .then((raw: unknown) => {
+        if (cancelled) return;
+        const result = raw as ThumbnailResult | undefined;
+        if (!result?.success || !result.rgba || !result.width || !result.height) return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        // Copy into a fresh clamped array so ImageData always gets an
+        // ArrayBuffer-backed view (IPC views may be SharedArrayBuffer-backed).
+        const bytes = result.rgba instanceof ArrayBuffer
+          ? new Uint8ClampedArray(result.rgba)
+          : new Uint8ClampedArray(result.rgba as Uint8Array);
+        canvas.width = result.width;
+        canvas.height = result.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.putImageData(new ImageData(bytes, result.width, result.height), 0, 0);
+        setLoaded(true);
+      })
+      .catch(() => {
+        // A failed thumbnail leaves the color plate; never blocks the row.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [marker.startFrame, revision]);
+
+  return (
+    <div
+      className="relative shrink-0 overflow-hidden rounded-sm border border-white/10 bg-black"
+      style={{ width: thumb.width, height: thumb.height }}
+      title={`Frame ${frameToTimecode(marker.startFrame, fps)}`}
+      data-marker-thumb={marker.id}
+    >
+      <div
+        className="absolute inset-0 flex items-center justify-center"
+        style={{ backgroundColor: `${marker.color}18` }}
+      >
+        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: marker.color }} />
+      </div>
+      <canvas
+        ref={canvasRef}
+        className="relative h-full w-full"
+        style={{ opacity: loaded ? 1 : 0 }}
+        aria-hidden="true"
+      />
     </div>
   );
 }
