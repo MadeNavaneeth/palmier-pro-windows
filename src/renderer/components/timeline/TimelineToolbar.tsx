@@ -1,6 +1,7 @@
 ﻿import React from 'react';
 import {
   CircleX,
+  Copy,
   Flag,
   Keyboard,
   Magnet,
@@ -60,6 +61,7 @@ export function TimelineToolbar() {
   const rippleMarkers = useTimelineStore((state) => state.rippleMarkers);
   const setRippleMarkers = useTimelineStore((state) => state.setRippleMarkers);
   const loadRippleMarkers = useTimelineStore((state) => state.loadRippleMarkers);
+  const duplicateSelected = useTimelineStore((state) => state.duplicateSelected);
   const openPalette = useUiStore((state) => state.openCommandPalette);
   const deselectAll = useTimelineStore((state) => state.deselectAll);
   const fitToViewport = useTimelineStore((state) => state.fitToViewport);
@@ -143,6 +145,13 @@ export function TimelineToolbar() {
         onClick={() => addTitleAtPlayhead()}
       >
         <Type size={14} />
+      </ToolButton>
+      <ToolButton
+        label={withChord('Duplicate selected clips', 'duplicateSelected')}
+        onClick={duplicateSelected}
+        disabled={selectedClipIds.size === 0}
+      >
+        <Copy size={14} />
       </ToolButton>
       <ToolButton
         label={withChord('Delete selected clips', 'deleteSelected')}
