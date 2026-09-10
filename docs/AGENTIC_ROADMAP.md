@@ -67,17 +67,25 @@ pure audit cannot know: whether each library file is still on disk), and an
 agent-prompt rule to run it after destructive batches. `executor.verify.test.ts`
 pins that the tool is read-only: no project change, no undo entry.
 
-### L3 — Plan tool
+### L3 — Plan tool (shipped)
 
 Mechanism: Codex `update_plan` / Claude Code todo pattern. Stateless
 `update_plan` tool replaces the structured plan (≤ one `in_progress`),
 surfaced in the chat panel. Plan state is UI-only and never enters the project
 model.
 
-Acceptance:
-- Tool + renderer checklist rendered from the same payload.
-- Eval scenario: a multi-step request produces a plan whose final state has
-  no `in_progress` step and matches the calls actually made.
+Shipped: `shared/editor/plan.ts` (pure `normalizePlan` / `planSummary`,
+unit-tested — trimming, caps, one-active-step enforcement), `update_plan` in
+`main/ai/tools.ts` + `executor.ts` via an `onPlanUpdate` dep, `ai:plan` over
+IPC, session `plan` state in `renderer/store/ai.ts` (cleared with the
+transcript, narrowed again on receipt), and the `PlanChecklist` in
+`ChatPanel.tsx` (height-capped internal scroll so 12 steps cannot push the
+composer off screen; shape-differentiated statuses). `executor.plan.test.ts`
+pins that the tool never mutates the project or opens an undo entry.
+
+Not yet covered: a model-backed eval that drives a real turn and asserts the
+final plan matches the calls actually made — that needs the trajectory-replay
+harness from L1's next revision, not the model-free scenarios we have today.
 
 ### L4 — Context discipline
 

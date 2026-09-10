@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Check, Send, Settings, Square, Trash2, Wrench, X } from 'lucide-react';
+import { Bot, Check, Circle, Loader2, Send, Settings, Square, Trash2, Wrench, X } from 'lucide-react';
 import { useAiStore, type ChatMessage, type ToolCallMessage } from '../../store/ai';
+import type { PlanStep } from '../../../shared/editor/plan';
 
 export function ChatPanel() {
   const { messages, isStreaming, isConfigured, sendMessage, cancelStream, clearHistory } =
     useAiStore();
+  const plan = useAiStore((s) => s.plan);
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -80,6 +82,8 @@ export function ChatPanel() {
         <div ref={messagesEndRef} />
       </div>
 
+      {plan.length > 0 && <PlanChecklist plan={plan} />}
+
       <div className="border-t border-white/10 p-2">
         <div className="flex items-end gap-1.5 rounded-md border border-white/12 bg-surface-2 p-1.5 focus-within:border-white/30">
           <textarea
@@ -116,6 +120,62 @@ export function ChatPanel() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Working-plan checklist (L3). Session UI state only, rendered between the
+ * transcript and the composer so it stays put while the transcript scrolls.
+ * The list is height-capped with its own scrollbar so a full 12-step plan
+ * cannot push the composer or the panel header off screen.
+ */
+function PlanChecklist({ plan }: { plan: PlanStep[] }) {
+  const done = plan.filter((entry) => entry.status === 'completed').length;
+  return (
+    <div className="border-t border-white/10 bg-surface-1/60 px-2.5 py-2">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-2xs font-medium uppercase tracking-wide text-text-muted">
+          Working plan
+        </span>
+        <span className="font-mono text-2xs text-text-muted">
+          {done}/{plan.length}
+        </span>
+      </div>
+      <ol className="max-h-28 space-y-0.5 overflow-y-auto pr-0.5">
+        {plan.map((entry, index) => (
+          <PlanStepRow key={index} entry={entry} />
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function PlanStepRow({ entry }: { entry: PlanStep }) {
+  if (entry.status === 'completed') {
+    return (
+      <li className="flex items-start gap-1.5 py-0.5">
+        <Check size={11} strokeWidth={2} className="mt-0.5 shrink-0 text-text-muted" />
+        <span className="min-w-0 truncate text-2xs leading-4 text-text-muted">{entry.step}</span>
+      </li>
+    );
+  }
+
+  if (entry.status === 'in_progress') {
+    return (
+      <li className="flex items-start gap-1.5 py-0.5" aria-current="step">
+        <Loader2 size={11} strokeWidth={2} className="mt-0.5 shrink-0 animate-spin text-accent" />
+        <span className="min-w-0 truncate text-2xs font-medium leading-4 text-text-primary">
+          {entry.step}
+        </span>
+      </li>
+    );
+  }
+
+  return (
+    <li className="flex items-start gap-1.5 py-0.5">
+      <Circle size={11} strokeWidth={2} className="mt-0.5 shrink-0 text-text-muted" />
+      <span className="min-w-0 truncate text-2xs leading-4 text-text-muted">{entry.step}</span>
+    </li>
   );
 }
 
