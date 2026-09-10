@@ -84,7 +84,8 @@ export type ShortcutId =
   | 'openProject'
   | 'saveProject'
   | 'exportProject'
-  | 'showShortcuts';
+  | 'showShortcuts'
+  | 'showCommandPalette';
 
 export const SHORTCUTS: readonly ShortcutDefinition[] = [
   // ── Playback ───────────────────────────────────────────────────────────────
@@ -222,6 +223,12 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
     label: 'Show keyboard shortcuts',
     category: 'View',
     bindings: [{ key: '?', shift: true }, { key: '?' }, { key: 'F1' }],
+  },
+  {
+    id: 'showCommandPalette',
+    label: 'Command palette',
+    category: 'View',
+    bindings: [{ key: 'k', ctrl: true }, { key: 'p', ctrl: true, shift: true }],
   },
 ] as const;
 

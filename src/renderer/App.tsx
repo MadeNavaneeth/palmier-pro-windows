@@ -8,6 +8,7 @@ import { ChatPanel, SettingsPanel } from './components/ai';
 import { Inspector } from './components/Inspector';
 import { ExportPanel } from './components/ExportDialog';
 import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
+import { CommandPalette } from './components/CommandPalette';
 import { useProjectStore } from './store/project';
 import { useUiStore, SPLITS_DEFAULTS, type PanelVisibility } from './store/ui';
 import type { LayoutPreset } from '../shared/ui/workspace-layout';
@@ -114,6 +115,7 @@ export function App() {
 
       <SettingsPanel />
       <ShortcutHelpDialog isOpen={shortcutHelpOpen} onClose={closeShortcutHelp} />
+      <CommandPalette />
     </div>
   );
 }

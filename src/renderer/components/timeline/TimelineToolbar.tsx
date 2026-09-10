@@ -4,6 +4,7 @@ import {
   Flag,
   Keyboard,
   Magnet,
+  Search,
   ListCollapse,
   Maximize2,
   Minimize2,
@@ -59,6 +60,7 @@ export function TimelineToolbar() {
   const rippleMarkers = useTimelineStore((state) => state.rippleMarkers);
   const setRippleMarkers = useTimelineStore((state) => state.setRippleMarkers);
   const loadRippleMarkers = useTimelineStore((state) => state.loadRippleMarkers);
+  const openPalette = useUiStore((state) => state.openCommandPalette);
   const deselectAll = useTimelineStore((state) => state.deselectAll);
   const fitToViewport = useTimelineStore((state) => state.fitToViewport);
   const openShortcutHelp = useUiStore((state) => state.openShortcutHelp);
@@ -207,6 +209,9 @@ export function TimelineToolbar() {
           onClick={openShortcutHelp}
         >
           <Keyboard size={14} />
+        </ToolButton>
+        <ToolButton label={withChord('Command palette', 'showCommandPalette')} onClick={openPalette}>
+          <Search size={14} />
         </ToolButton>
       </div>
     </div>

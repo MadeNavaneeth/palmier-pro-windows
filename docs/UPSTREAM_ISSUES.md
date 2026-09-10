@@ -23,9 +23,9 @@ this file is the exhaustive per-issue record.
 
 | Disposition | Count |
 |---|---|
-| Implemented | 22 |
+| Implemented | 23 |
 | Partial | 6 |
-| Planned | 17 |
+| Planned | 16 |
 | N/A platform | 14 |
 | Needs investigation | 2 |
 | **Total** | **61** |
@@ -121,7 +121,7 @@ Ordered by issue number.
 | [#453](https://github.com/palmier-io/palmier-pro/issues/453) | Media import silently drops files, no error shown | Implemented | Closed on this port with both gaps fixed. `main/media/import-expansion.ts` expands a dropped folder recursively â€” depth â‰¤ 8 (matching the relink walk), a 500-file ceiling that appends one truncation notice, symlinks never followed so junction cycles terminate by rule â€” and imports the supported media inside, where before the directory itself was refused as "not a supported media file" because it has no media extension. A folder that cannot be listed reports `Could not read folder X`; unsupported files *inside* an expanded folder are ignored quietly (sidecars like `.srt`/`thumbs.db` are not failures) while top-level unsupported drops keep their named refusal; explicitly picked files import even after a folder hit the ceiling. `shared/media/import-summary.ts` renders the full skip list (first three reasons + `(+N more)`) in both the media panel banner and the timeline drop toast, replacing the old `errors[0]`-only display. `import-expansion.test.ts`, `import-summary.test.ts`. |
 | [#464](https://github.com/palmier-io/palmier-pro/issues/464) | Please support Apple account login | N/A platform | Same family as #173: Sign in with Apple depends on `ASWebAuthenticationSession` and Apple's hosted OAuth endpoints. This port has no account system; API keys are user-supplied. |
 | [#484](https://github.com/palmier-io/palmier-pro/issues/484) | Add Antigravity CLI integration via MCP | Partial | The stdio MCP server (`main/ai/mcp-server.ts`) is client-agnostic standard MCP and `generateMcpConfig` emits a launch config, so a compliant CLI can attach today â€” the same position as the Hermes request (#310). No Antigravity-specific config generation or verified walkthrough exists yet. |
-| [#516](https://github.com/palmier-io/palmier-pro/issues/516) | A more clear way to find the manual editing tools | Planned | Discoverability of manual tools versus the Agent. Applies here in full; the shortcut sheet (F1) covers keyboard discovery but there is no toolbar affordance inventory or guided tour (upstream's answer is the #458 onboarding flow). |
+| [#516](https://github.com/palmier-io/palmier-pro/issues/516) | A more clear way to find the manual editing tools | Implemented | Discoverability of manual tools versus the Agent. A searchable command palette (Ctrl+K / Ctrl+Shift+P) now inventories every editing command from the shortcut catalogue and shares the same dispatcher as the keyboard layer so a palette row does exactly what its chord does (F1 remains for chord reference). Reachable from the timeline toolbar; no guided tour yet (upstream's #458 answer). |
 | [#527](https://github.com/palmier-io/palmier-pro/issues/527) | Not working for macOS Sequoia | N/A platform | A macOS 15 compatibility report against an app whose minimum is macOS 26. The Windows support floor is set by Electron, not by an Apple OS version. |
 | [#532](https://github.com/palmier-io/palmier-pro/issues/532) | Migrate MCP server to the 2026-07-28 stateless protocol | Planned | Relevant: `main/ai/mcp-server.ts` implements stdio MCP and would need the stateless HTTP transport to serve remote/CLI clients without a persistent session. Tracked with the headless-mode gap under #302. |
 | [#536](https://github.com/palmier-io/palmier-pro/issues/536) | v0.7.4 regression of #465: scrub decode blocks on the tokio blocking pool | N/A platform | Scrub audio does not exist on Windows (#418 disposition); playhead scrubbing is visual only, so neither the original defect nor this regression can occur. The transferable rule â€” decode work must stay off the interaction path â€” is already enforced by process separation and `latest-request.ts`. |

@@ -173,6 +173,8 @@ function saveSplits(splits: Record<SplitKey, number>): void {
 interface UiState {
   /** Keyboard shortcut reference (F1 or ?). */
   shortcutHelpOpen: boolean;
+  /** Command palette (Ctrl+K) — searchable inventory of every editing command. */
+  commandPaletteOpen: boolean;
   /**
    * Composition guides drawn over the preview (#167).
    *
@@ -204,6 +206,8 @@ interface UiState {
 
   openShortcutHelp: () => void;  closeShortcutHelp: () => void;
   toggleShortcutHelp: () => void;
+  openCommandPalette: () => void; closeCommandPalette: () => void;
+  toggleCommandPalette: () => void;
   toggleGuide: (kind: GuideKind) => void;
   /** Show or hide both safe-area guides together. */
   setSafeAreaGuides: (visible: boolean) => void;
@@ -220,6 +224,7 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set) => ({
   shortcutHelpOpen: false,
+  commandPaletteOpen: false,
   guides: loadGuides(),
   panels: loadPanels(),
   layout: loadLayout(),
@@ -228,6 +233,10 @@ export const useUiStore = create<UiState>((set) => ({
   openShortcutHelp: () => set({ shortcutHelpOpen: true }),
   closeShortcutHelp: () => set({ shortcutHelpOpen: false }),
   toggleShortcutHelp: () => set((state) => ({ shortcutHelpOpen: !state.shortcutHelpOpen })),
+
+  openCommandPalette: () => set({ commandPaletteOpen: true }),
+  closeCommandPalette: () => set({ commandPaletteOpen: false }),
+  toggleCommandPalette: () => set((state) => ({ commandPaletteOpen: !state.commandPaletteOpen })),
 
   // Replaced rather than mutated, so subscribers actually see the change.
   toggleGuide: (kind) =>
