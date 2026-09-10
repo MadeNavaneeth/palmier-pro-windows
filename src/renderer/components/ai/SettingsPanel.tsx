@@ -315,6 +315,8 @@ export function SettingsPanel() {
 
           <GenerationProvidersSection />
 
+          <McpClientSection />
+
           {save.status === 'error' && (
             <p role="alert" className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[10px] text-red-400">
               {save.message}
@@ -377,6 +379,117 @@ function Field({
 
 function Hint({ children }: { children: React.ReactNode }) {
   return <p className="mt-1 text-[10px] text-text-muted">{children}</p>;
+}
+
+interface McpStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number | null;
+  url: string | null;
+  config: string | null;
+}
+
+/**
+ * Loopback MCP endpoint for external clients.
+ *
+ * The editor hosts a stateless Streamable-HTTP MCP server on 127.0.0.1,
+ * protected by a generated bearer token; clients connect to the running app
+ * rather than spawning a process (Electron on Windows closes a spawned
+ * process's stdin, so stdio cannot work here). Off until the user enables it.
+ */
+function McpClientSection() {
+  const [status, setStatus] = useState<McpStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  const apply = useCallback(async (enabled?: boolean) => {
+    setBusy(true);
+    setError('');
+    try {
+      const res = (enabled === undefined
+        ? await window.palmier.ai.getMcpConfig()
+        : await window.palmier.ai.setMcpEnabled(enabled)) as {
+          success?: boolean;
+          status?: McpStatus;
+          error?: string;
+        };
+      if (!res?.success || !res.status) {
+        setError(res?.error || 'Could not update the MCP endpoint.');
+        return;
+      }
+      setStatus(res.status);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update the MCP endpoint.');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void apply();
+  }, [apply]);
+
+  const config = status?.running ? status.config : null;
+
+  const copy = useCallback(() => {
+    if (!config) return;
+    void navigator.clipboard.writeText(config).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {
+      // Clipboard refusal leaves the textarea for manual selection.
+    });
+  }, [config]);
+
+  return (
+    <div className="border-t border-white/10 pt-3">
+      <label className="mb-1.5 block text-[10px] uppercase tracking-wide text-text-secondary">
+        External agents (MCP)
+      </label>
+      <label className="flex cursor-pointer items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={status?.enabled ?? false}
+          disabled={busy || status === null}
+          onChange={(event) => void apply(event.target.checked)}
+          data-mcp-enabled
+          className="accent-[var(--color-accent)]"
+        />
+        <span className="text-[11px] text-text-secondary">Allow external MCP clients</span>
+      </label>
+      {status?.running ? (
+        <div className="mt-1.5">
+          <Hint>
+            Listening on <span className="font-mono">{status.url}</span> — paste this
+            into Cursor, Claude Code, or any Streamable-HTTP MCP client.
+          </Hint>
+          <textarea
+            readOnly
+            value={config ?? ''}
+            rows={6}
+            data-mcp-config
+            aria-label="MCP client configuration"
+            className="mt-1 w-full resize-none rounded border border-surface-3 bg-surface-1 px-2 py-1 font-mono text-[10px] text-text-primary focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={copy}
+            data-mcp-copy
+            className="mt-1 rounded border border-surface-4 px-2 py-1 text-[10px] text-text-secondary transition hover:bg-surface-3 hover:text-text-primary"
+          >
+            {copied ? 'Copied' : 'Copy config'}
+          </button>
+        </div>
+      ) : (
+        <Hint>
+          {error || (status?.enabled
+            ? 'Starting…'
+            : 'Off. The endpoint listens on 127.0.0.1 with a generated bearer token.')}
+        </Hint>
+      )}
+    </div>
+  );
 }
 
 // ─── Media generation providers (upstream PR #406 family) ───────────────────

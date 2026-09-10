@@ -575,6 +575,33 @@ export const tools = {
     }),
   },
 
+  newProject: {
+    name: 'new_project',
+    description:
+      'Reset the editor to an empty project (optionally named). Used by headless/MCP batch workflows to start clean without a window.',
+    parameters: z.object({
+      name: z.string().max(120).optional().describe('Project name. Default "Untitled Project".'),
+    }),
+  },
+
+  openProject: {
+    name: 'open_project',
+    description:
+      'Open a .vproj project file, replacing the current project. Primarily for headless/MCP batch workflows: open, edit with the normal tools, then save_project.',
+    parameters: z.object({
+      path: z.string().min(1).describe('Absolute path to a .vproj project file.'),
+    }),
+  },
+
+  saveProject: {
+    name: 'save_project',
+    description:
+      'Save the current project to a .vproj path, writing atomically (temp file + rename). Primarily for headless/MCP batch workflows.',
+    parameters: z.object({
+      path: z.string().min(1).describe('Absolute path to write.'),
+    }),
+  },
+
   exportProject: {
     name: 'export_project',
     description: 'Export the project to a video file via FFmpeg.',

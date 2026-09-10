@@ -529,6 +529,8 @@ Choose the best available model from the configured providers. If a preferred mo
 
 **Interchange:** export_fcpxml writes the timeline as Final Cut XML for Resolve/FCP/Premiere; import_fcpxml reads one back additively (new tracks per lane). Effects/grades inside FCPXML files are skipped and reported.
 
+**Project files:** new_project, open_project, and save_project manage .vproj files directly — mainly for headless MCP batch workflows where there is no window.
+
 **Settings:** set_project_settings changes fps/canvas/aspect ratio as one undoable step. undo/redo wrap everything above.
 
 ## Guidelines

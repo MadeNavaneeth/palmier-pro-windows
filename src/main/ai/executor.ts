@@ -53,8 +53,9 @@ import {
   resolutionForAspectRatio,
   resolutionForQuality,
 } from '../../shared/project/aspect-ratio';
+import { createEmptyProject } from '../../shared/types/project';
 import type { ProjectSettings } from '../../shared/types/project';
-import type { EditorController } from '../../shared/editor/controller';
+import { EditorController } from '../../shared/editor/controller';
 
 export interface ToolResult {
   success: boolean;
@@ -1203,6 +1204,70 @@ export class ToolExecutor {
         return redone
           ? { success: true, data: { action: 'redo' } }
           : { success: false, error: 'Nothing to redo.' };
+      }
+
+      case 'new_project': {
+        try {
+          const project = createEmptyProject(
+            typeof args.name === 'string' && args.name.trim().length > 0
+              ? args.name.trim()
+              : 'Untitled Project',
+          );
+          this.editor.adoptProject(project, 'New project');
+          return {
+            success: true,
+            data: { name: project.name, tracks: project.timeline.tracks.length, clips: 0, media: 0 },
+          };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : 'Could not create the project.' };
+        }
+      }
+
+      case 'open_project': {
+        if (typeof args.path !== 'string' || args.path.length === 0) {
+          return { success: false, error: 'A project file path is required.' };
+        }
+        try {
+          const json = await fs.readFile(args.path, 'utf8');
+          const project = EditorController.deserialize(json).getProject();
+          this.editor.adoptProject(project, 'Open project');
+          return {
+            success: true,
+            data: {
+              path: args.path,
+              name: project.name,
+              clips: project.timeline.clips.length,
+              media: project.media.length,
+              tracks: project.timeline.tracks.length,
+            },
+          };
+        } catch (err) {
+          return {
+            success: false,
+            error: `Could not open ${args.path}: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
+
+      case 'save_project': {
+        if (typeof args.path !== 'string' || args.path.length === 0) {
+          return { success: false, error: 'A project file path is required.' };
+        }
+        try {
+          const json = this.editor.serialize();
+          // Temp file + rename, so a crash mid-write cannot truncate an
+          // existing project (the same contract project-writer.ts uses for
+          // the GUI save path).
+          const tmp = `${args.path}.${process.pid}.tmp`;
+          await fs.writeFile(tmp, json, 'utf8');
+          await fs.rename(tmp, args.path);
+          return { success: true, data: { path: args.path, bytes: Buffer.byteLength(json, 'utf8') } };
+        } catch (err) {
+          return {
+            success: false,
+            error: `Could not save ${args.path}: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
       }
 
       case 'export_project':

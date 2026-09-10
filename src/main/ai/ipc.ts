@@ -7,6 +7,7 @@
 import { ipcMain, BrowserWindow, safeStorage } from 'electron';
 import Store from 'electron-store';
 import { PalmierAgent, type StreamCallbacks } from './agent';
+import { applyMcpHttpSettings } from './mcp-http-settings';
 import {
   PROVIDER_PRESETS,
   presetById,
@@ -93,6 +94,29 @@ export function getOpenAiCompatibleRuntime(preferredProviderId?: string): { base
 }
 
 export function registerAiHandlers(getEditor: () => EditorController): void {
+  // Loopback HTTP MCP endpoint (#302/#532): external clients connect to the
+  // running editor over 127.0.0.1 with a bearer token. Reading the config
+  // reconciles the listener with the saved preference, so a saved "enabled"
+  // state starts the socket on first use after launch.
+  const mcpDeps = {
+    getTranscriptionRuntime: async () => getOpenAiCompatibleRuntime(),
+  };
+  ipcMain.handle('mcp:get-config', async () => {
+    const status = await applyMcpHttpSettings(getEditor(), undefined, mcpDeps);
+    return { success: true, status, config: status.config };
+  });
+  ipcMain.handle('mcp:set-enabled', async (_event, enabled: unknown, port?: unknown) => {
+    if (typeof enabled !== 'boolean') {
+      return { success: false, error: 'enabled must be a boolean.' };
+    }
+    const status = await applyMcpHttpSettings(
+      getEditor(),
+      { enabled, ...(typeof port === 'number' ? { port } : {}) },
+      mcpDeps,
+    );
+    return { success: true, status, config: status.config };
+  });
+
   // â”€â”€â”€ Chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('ai:chat', async (event, messages: any[], provider: string) => {
     const win = BrowserWindow.fromWebContents(event.sender);

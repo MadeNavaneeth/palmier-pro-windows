@@ -145,6 +145,12 @@ const api = {
       config: { kind: string; baseUrl?: string; model: string },
     ) => ipcRenderer.invoke('ai:set-provider-config', provider, config),
     getProviders: () => ipcRenderer.invoke('ai:get-providers'),
+    /**
+     * Loopback MCP endpoint for external clients (Claude Desktop, Cursor, …):
+     * read the current status/config, or enable/disable the listener.
+     */
+    getMcpConfig: () => ipcRenderer.invoke('mcp:get-config'),
+    setMcpEnabled: (enabled: boolean) => ipcRenderer.invoke('mcp:set-enabled', enabled),
   },
 
   // â”€â”€ Preview (Phase 3+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
