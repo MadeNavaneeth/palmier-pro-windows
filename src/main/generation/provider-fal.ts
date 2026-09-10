@@ -1,11 +1,10 @@
 /**
  * fal.ai Generation Provider — text-to-image, image-to-video.
  *
- * Supported models:
- * - fal-ai/flux/dev (text-to-image)
- * - fal-ai/flux/schnell (fast text-to-image)
- * - fal-ai/kling-video (image-to-video)
- * - fal-ai/minimax-video (text-to-video)
+ * Supported models (free/open tiers where available):
+ * - fal-ai/flux/dev, schnell, pro (text-to-image)
+ * - fal-ai/ideogram/v2, recraft/v3, stable-diffusion-v3-medium (text-to-image)
+ * - fal-ai/kling-video, minimax-video, luma-dream-machine, wan (video)
  *
  * Uses the fal.ai REST API directly (no SDK dependency).
  */
@@ -38,10 +37,22 @@ export class FalProvider implements GenerationProvider {
 
   getModels(type: GenerationType): string[] {
     if (type === 'image') {
-      return ['fal-ai/flux/dev', 'fal-ai/flux/schnell', 'fal-ai/flux-pro/v1.1'];
+      return [
+        'fal-ai/flux/dev',
+        'fal-ai/flux/schnell',
+        'fal-ai/flux-pro/v1.1',
+        'fal-ai/ideogram/v2',
+        'fal-ai/recraft/v3',
+        'fal-ai/stable-diffusion-v3-medium',
+      ];
     }
     if (type === 'video') {
-      return ['fal-ai/kling-video/v1/standard/text-to-video', 'fal-ai/minimax-video/video-01'];
+      return [
+        'fal-ai/kling-video/v1/standard/text-to-video',
+        'fal-ai/minimax-video/video-01',
+        'fal-ai/luma-dream-machine',
+        'fal-ai/wan/v2.1/text-to-video',
+      ];
     }
     return [];
   }

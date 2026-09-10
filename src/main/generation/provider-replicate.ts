@@ -1,10 +1,10 @@
 /**
  * Replicate Generation Provider — runs open-source models via API.
  *
- * Supported:
- * - stability-ai/sdxl (text-to-image)
- * - stability-ai/stable-video-diffusion (image-to-video)
- * - meta/musicgen (text-to-audio)
+ * Supported (including free-tier open models):
+ * - stability-ai/sdxl, flux-schnell, flux-dev, realvisxl, stable-diffusion-3 (image)
+ * - stability-ai/stable-video-diffusion, minimax, luma (video)
+ * - meta/musicgen, suno/bark (audio)
  *
  * Uses the Replicate HTTP API directly.
  */
@@ -40,12 +40,16 @@ export class ReplicateProvider implements GenerationProvider {
       return [
         'stability-ai/sdxl:latest',
         'black-forest-labs/flux-schnell',
+        'black-forest-labs/flux-dev',
+        'adirik/realvisxl-v3-multi-controlnet-lora',
+        'stability-ai/stable-diffusion-3',
       ];
     }
     if (type === 'video') {
       return [
         'stability-ai/stable-video-diffusion:latest',
         'minimax/video-01',
+        'luma/dream-machine',
       ];
     }
     if (type === 'audio') {
