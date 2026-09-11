@@ -14,10 +14,10 @@ import {
   toFfmpegEq,
 } from './color-grade';
 import type { Clip } from '../types/project';
-import { applyGradeToRgba, exposureGain, gradePixel, vibrancePixel, whiteBalanceGains } from './color-grade';
+import { applyGradeToRgba, exposureGain, gradePixel, highlightsShadowsPixel, blacksWhitesPixel, vibrancePixel, whiteBalanceGains } from './color-grade';
 
 /** Neutral grade for the pixel-math tests below. */
-const IDENTITY = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: false };
+const IDENTITY = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0, invertColors: false };
 
 function clip(fields: Partial<Clip> = {}): Clip {
   return {
@@ -38,7 +38,7 @@ describe('colorGradeOf', () => {
 
   it('returns the grade when any field differs from default', () => {
     const g = colorGradeOf(clip({ brightness: -0.2 }));
-    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: false });
+    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0, invertColors: false });
   });
 });
 
@@ -55,7 +55,7 @@ describe('hasColorGrade', () => {
 
 describe('toCanvasFilter / toFfmpegEq', () => {
   it('produces matching semantics for both consumers', () => {
-    const grade = { brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0, vibrance: 0 };
+    const grade = { brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0 };
     const canvas = toCanvasFilter(grade);
     const ffmpeg = toFfmpegEq(grade);
     // Canvas uses CSS function syntax.
@@ -72,7 +72,7 @@ describe('toCanvasFilter / toFfmpegEq', () => {
 
   it('emits hue rotation and invert as their own filters, in order', () => {
     expect(toFfmpegColorChain({
-      brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: true,
+      brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0, invertColors: true,
     })).toEqual([
       'eq=brightness=-0.150000:contrast=1.300000:saturation=0.600000',
       'hue=h=45.0',
@@ -80,15 +80,15 @@ describe('toCanvasFilter / toFfmpegEq', () => {
     ]);
     // Hue alone is still its own filter, never an eq option.
     expect(toFfmpegColorChain({
-      brightness: 0, contrast: 1, saturation: 1, hueRotation: 90, exposure: 0, temperature: 6500, tint: 0, vibrance: 0,
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 90, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0,
     })).toEqual(['hue=h=90.0']);
     expect(toFfmpegColorChain({
-      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: true,
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0, invertColors: true,
     })).toEqual(['negate']);
   });
 
   it('returns empty strings for default grades', () => {
-    const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0 };
+    const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0 };
     expect(toCanvasFilter(g)).toBe('');
     expect(toFfmpegEq(g)).toBe('');
   });
@@ -149,6 +149,10 @@ describe('grade presets (#157)', () => {
       temperature: 6500,
       tint: 0,
       vibrance: 0,
+      highlights: 0,
+      shadows: 0,
+      blacks: 0,
+      whites: 0,
       invertColors: false,
     });
   });
@@ -374,6 +378,7 @@ describe('whiteBalanceGains (#157)', () => {
     const chain = toFfmpegColorChain({
       brightness: 0, contrast: 1, saturation: 1, hueRotation: 0,
       exposure: 0, temperature: 3200, tint: 10, vibrance: 0,
+      highlights: 0, shadows: 0, blacks: 0, whites: 0,
     });
     expect(chain).toHaveLength(1);
     expect(chain[0]).toBe(
@@ -395,8 +400,7 @@ describe('whiteBalanceGains (#157)', () => {
   });
 });
 
-describe('vibrancePixel (#157)', () => {
-  it('leaves grey untouched at any intensity', () => {
+describe('vibrancePixel (#157)', () => {  it('leaves grey untouched at any intensity', () => {
     // Saturation driver is max-min: grey has none, so the gain cannot move it.
     expect(vibrancePixel(128, 128, 128, 1)).toEqual([128, 128, 128]);
     expect(vibrancePixel(0, 0, 0, -1)).toEqual([0, 0, 0]);
@@ -417,5 +421,51 @@ describe('vibrancePixel (#157)', () => {
 
   it('zero intensity is the identity', () => {
     expect(vibrancePixel(18, 52, 86, 0)).toEqual([18, 52, 86]);
+  });
+});
+
+describe('tonal controls (#157)', () => {
+  it('lifts shadows most at black and highlights most at white', () => {
+    // Black + full shadows: dY = 0.5, so 0 -> 127 (truncates 127.5).
+    expect(highlightsShadowsPixel(0, 0, 0, 0, 1)).toEqual([127, 127, 127]);
+    // Highlights ignore black; shadows ignore white.
+    expect(highlightsShadowsPixel(0, 0, 0, 1, 0)).toEqual([0, 0, 0]);
+    expect(highlightsShadowsPixel(255, 255, 255, 0, 1)).toEqual([255, 255, 255]);
+    // Mid gray moves both ways by the cubic mask.
+    expect(highlightsShadowsPixel(128, 128, 128, 1, 0)).toEqual([144, 144, 144]);
+    expect(highlightsShadowsPixel(128, 128, 128, -1, 0)).toEqual([111, 111, 111]);
+  });
+
+  it('remaps black and white points per channel', () => {
+    // Blacks +1 lifts the floor: (v + 0.4) / 1.4.
+    expect(blacksWhitesPixel(128, 128, 128, 1, 0)).toEqual([164, 164, 164]);
+    // Blacks -1 crushes it: (v - 0.4) / 0.6.
+    expect(blacksWhitesPixel(128, 128, 128, -1, 0)).toEqual([43, 43, 43]);
+    // Whites +1 brightens toward clipping: v / 0.6.
+    expect(blacksWhitesPixel(128, 128, 128, 0, 1)).toEqual([213, 213, 213]);
+    // Whites -1 recovers the ceiling: v / 1.4.
+    expect(blacksWhitesPixel(128, 128, 128, 0, -1)).toEqual([91, 91, 91]);
+  });
+
+  it('emits the tonal geq segments between vibrance and eq', () => {
+    const hs = toFfmpegColorChain({ ...IDENTITY, highlights: 0.5, shadows: -0.25 });
+    expect(hs).toHaveLength(1);
+    expect(hs[0]).toContain('pow(');
+    expect(hs[0]).toContain(":a='a(X,Y)'");
+    const bw = toFfmpegColorChain({ ...IDENTITY, blacks: 1 });
+    expect(bw).toEqual([
+      "geq=r='min(max((r(X,Y)+102)/1.4,0),255)':g='min(max((g(X,Y)+102)/1.4,0),255)':b='min(max((b(X,Y)+102)/1.4,0),255)':a='a(X,Y)'",
+    ]);
+    // Full order: gain, vibrance, highlights/shadows, blacks/whites, eq.
+    const full = toFfmpegColorChain({ ...IDENTITY, exposure: 1, vibrance: 0.5, highlights: 0.5, blacks: 0.5, contrast: 1.2 });
+    expect(full.map((segment) => segment.slice(0, 4))).toEqual(['geq=', 'vibr', 'geq=', 'geq=', 'eq=c']);
+  });
+
+  it('sanitizes tonal fields to -1..+1, dropping the absurd', () => {
+    expect(sanitizeColorGrade({ highlights: 0.5, shadows: -0.5, blacks: 0.5, whites: -0.5 })).toEqual({
+      highlights: 0.5, shadows: -0.5, blacks: 0.5, whites: -0.5,
+    });
+    expect(sanitizeColorGrade({ highlights: 2 })).toEqual({});
+    expect(sanitizeColorGrade({ whites: Number.NaN })).toEqual({});
   });
 });

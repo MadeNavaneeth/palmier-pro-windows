@@ -22,10 +22,14 @@ export interface ColorGrade {
   temperature: number;
   tint: number;
   vibrance: number;
+  highlights: number;
+  shadows: number;
+  blacks: number;
+  whites: number;
   invertColors?: boolean;
 }
 
-const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: false };
+const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0, invertColors: false };
 
 /** Neutral values, exported so UI and agent both reset to the same place. */
 export const DEFAULT_COLOR_GRADE: ColorGrade = { ...DEFAULTS };
@@ -46,6 +50,10 @@ export const COLOR_GRADE_LIMITS = {
   temperature: { min: 2000, max: 11000 },
   tint: { min: -100, max: 100 },
   vibrance: { min: -1, max: 1 },
+  highlights: { min: -1, max: 1 },
+  shadows: { min: -1, max: 1 },
+  blacks: { min: -1, max: 1 },
+  whites: { min: -1, max: 1 },
 } as const;
 
 export type ColorGradeField = keyof typeof COLOR_GRADE_LIMITS;
@@ -143,13 +151,17 @@ export function colorGradeOf(clip: Clip): ColorGrade | null {
     temperature: clip.temperature ?? DEFAULTS.temperature,
     tint: clip.tint ?? DEFAULTS.tint,
     vibrance: clip.vibrance ?? DEFAULTS.vibrance,
+    highlights: clip.highlights ?? DEFAULTS.highlights,
+    shadows: clip.shadows ?? DEFAULTS.shadows,
+    blacks: clip.blacks ?? DEFAULTS.blacks,
+    whites: clip.whites ?? DEFAULTS.whites,
     invertColors: clip.invertColors ?? DEFAULTS.invertColors,
   };
   return isDefaultGrade(grade) ? null : grade;
 }
 
 function isDefaultGrade(g: ColorGrade): boolean {
-  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && g.exposure === 0 && g.temperature === 6500 && g.tint === 0 && g.vibrance === 0 && !g.invertColors;
+  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && g.exposure === 0 && g.temperature === 6500 && g.tint === 0 && g.vibrance === 0 && g.highlights === 0 && g.shadows === 0 && g.blacks === 0 && g.whites === 0 && !g.invertColors;
 }
 
 /**
@@ -188,6 +200,15 @@ export function toFfmpegEq(grade: ColorGrade): string {
  * and CSS apply, so no backend disagrees about which transform sees which
  * pixels. Each entry is one FFmpeg filter; the caller joins them with ','.
  */
+/**
+ * Compact number formatting for filter expressions: six decimals of
+ * precision without float dust (`0.30000000000000004` would still parse, but
+ * the chains are reviewed by humans too).
+ */
+function formatFilterNumber(value: number): string {
+  return String(Math.round(value * 1e6) / 1e6);
+}
+
 export function toFfmpegColorChain(grade: ColorGrade): string[] {
   const chain: string[] = [];
   // Truthy field checks, not !== default: callers pass partial grades, and
@@ -207,6 +228,27 @@ export function toFfmpegColorChain(grade: ColorGrade): string[] {
     chain.push(
       `vibrance=${grade.vibrance}:rlum=${VIBRANCE_LUMA_R}:glum=${VIBRANCE_LUMA_G}:blum=${VIBRANCE_LUMA_B}`,
     );
+  }
+  // Tonal controls, one geq per upstream effect so each stays reviewable:
+  // highlights/shadows add a luma-masked delta, blacks/whites remap the
+  // range. Both clamp explicitly (geq wraps without it) and preserve alpha.
+  if (grade.highlights || grade.shadows) {
+    const luma = '(0.2126*r(X,Y)+0.7152*g(X,Y)+0.0722*b(X,Y))/255';
+    const delta = `(((${formatFilterNumber(grade.highlights ?? 0)}*pow(${luma},3)+${formatFilterNumber(grade.shadows ?? 0)}*pow(1-(${luma}),3))*0.5)*255)`;
+    const channel = (c: 'r' | 'g' | 'b'): string =>
+      `min(max(${c}(X,Y)+${delta},0),255)`;
+    chain.push(`geq=r='${channel('r')}':g='${channel('g')}':b='${channel('b')}':a='a(X,Y)'`);
+  }
+  if (grade.blacks || grade.whites) {
+    const blackPoint = -(grade.blacks ?? 0) * 0.4;
+    const whitePoint = 1.0 - (grade.whites ?? 0) * 0.4;
+    const range = Math.max(0.05, whitePoint - blackPoint);
+    // Addition form so the common lift case reads `(r+102)/1.4` rather than
+    // a double negative; both parse identically in av_expr.
+    const offset = -blackPoint * 255;
+    const channel = (c: 'r' | 'g' | 'b'): string =>
+      `min(max((${c}(X,Y)${offset < 0 ? '' : '+'}${formatFilterNumber(offset)})/${formatFilterNumber(range)},0),255)`;
+    chain.push(`geq=r='${channel('r')}':g='${channel('g')}':b='${channel('b')}':a='a(X,Y)'`);
   }
   const eq = toFfmpegEq(grade);
   if (eq) chain.push(eq);
@@ -257,6 +299,54 @@ export function vibrancePixel(r: number, g: number, b: number, intensity: number
     return Math.trunc(Math.min(255, Math.max(0, v * 255)));
   };
   return [out(rn), out(gn), out(bn)];
+}
+
+/**
+ * Highlights and shadows on one RGB pixel (integers in, integers out).
+ *
+ * Upstream's HighlightsShadows kernel, ported exactly: Rec.709 luma masks a
+ * luminance delta added to every channel — highlights peak at white (y^3),
+ * shadows at black ((1-y)^3) — then saturate. Alpha untouched. Inputs arrive
+ * as truncated integers from the previous stage, matching per-filter store
+ * truncation on the export side.
+ */
+export function highlightsShadowsPixel(
+  r: number,
+  g: number,
+  b: number,
+  highlights: number,
+  shadows: number,
+): [number, number, number] {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const y = 0.2126 * rn + 0.7152 * gn + 0.0722 * bn;
+  const delta = (highlights * y * y * y + shadows * (1 - y) * (1 - y) * (1 - y)) * 0.5;
+  const out = (c: number): number => Math.trunc(Math.min(255, Math.max(0, (c + delta) * 255)));
+  return [out(rn), out(gn), out(bn)];
+}
+
+/**
+ * Black/white-point remap on one RGB pixel (integers in, integers out).
+ *
+ * Upstream's Levels kernel, ported exactly: independent per-channel linear
+ * stretch. Blacks below zero crush the floor, above zero lift it; whites
+ * above zero brighten toward clipping, below zero recover the ceiling. The
+ * 0.05 floor keeps the range non-degenerate.
+ */
+export function blacksWhitesPixel(
+  r: number,
+  g: number,
+  b: number,
+  blacks: number,
+  whites: number,
+): [number, number, number] {
+  const blackPoint = -blacks * 0.4;
+  const whitePoint = 1.0 - whites * 0.4;
+  const range = Math.max(0.05, whitePoint - blackPoint);
+  const out = (c: number): number =>
+    Math.trunc(Math.min(255, Math.max(0, ((c / 255 - blackPoint) / range) * 255)));
+  return [out(r), out(g), out(b)];
 }
 
 /**
@@ -346,7 +436,7 @@ export function gradePixel(
   r: number,
   g: number,
   b: number,
-  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'vibrance' | 'invertColors'>,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'vibrance' | 'highlights' | 'shadows' | 'blacks' | 'whites' | 'invertColors'>,
 ): [number, number, number] {
   // Gain stage first, mirroring the export chain (geq ahead of eq): the
   // combined exposure and white-balance gains on the raw channels, clamped
@@ -364,10 +454,22 @@ export function gradePixel(
   if (grade.vibrance) {
     [vr, vg, vb] = vibrancePixel(er, eg, eb, grade.vibrance);
   }
+  // Tonal controls after vibrance, mirroring the export chain order
+  // (upstream lists exposure, contrast, highlights/shadows, then
+  // blacks/whites): the same functions on the same truncated integers.
+  let tr = vr;
+  let tg = vg;
+  let tb = vb;
+  if (grade.highlights || grade.shadows) {
+    [tr, tg, tb] = highlightsShadowsPixel(vr, vg, vb, grade.highlights ?? 0, grade.shadows ?? 0);
+  }
+  if (grade.blacks || grade.whites) {
+    [tr, tg, tb] = blacksWhitesPixel(tr, tg, tb, grade.blacks ?? 0, grade.whites ?? 0);
+  }
   // RGB -> YUV601 full range.
-  let y = KR * vr + KG * vg + KB * vb;
-  let u = -0.168736 * vr - 0.331264 * vg + 0.5 * vb + CENTER;
-  let v = 0.5 * vr - 0.418688 * vg - 0.081312 * vb + CENTER;
+  let y = KR * tr + KG * tg + KB * tb;
+  let u = -0.168736 * tr - 0.331264 * tg + 0.5 * tb + CENTER;
+  let v = 0.5 * tr - 0.418688 * tg - 0.081312 * tb + CENTER;
 
   // eq luma: contrast about center, then the brightness offset (FFmpeg folds
   // brightness into an additive term applied AFTER contrast scaling).
@@ -410,7 +512,7 @@ export function gradePixel(
  */
 export function applyGradeToRgba(
   data: Uint8Array | Uint8ClampedArray,
-  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'vibrance' | 'invertColors'>,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'vibrance' | 'highlights' | 'shadows' | 'blacks' | 'whites' | 'invertColors'>,
 ): void {
   for (let i = 0; i + 4 <= data.length; i += 4) {
     const [r, g, b] = gradePixel(data[i], data[i + 1], data[i + 2], grade);
@@ -426,5 +528,7 @@ export function hasColorGrade(clip: Clip): boolean {
     || clip.saturation !== undefined || clip.hueRotation !== undefined
     || clip.exposure !== undefined || clip.temperature !== undefined
     || clip.tint !== undefined || clip.vibrance !== undefined
+    || clip.highlights !== undefined || clip.shadows !== undefined
+    || clip.blacks !== undefined || clip.whites !== undefined
     || clip.invertColors !== undefined;
 }

@@ -838,7 +838,7 @@ Read the project state first, then make edits using the tools below.
 
 **Speed:** set_clip_speed changes constant playback speed (0.25x–4x) while keeping timeline duration fixed.
 
-**Color grade:** set_clip_color_grade adjusts brightness (-1..1), contrast and saturation (0..3), hue rotation (-180..180), exposure (-5..5 EV, applied first), white balance (temperature 2000..11000K, tint -100..100), vibrance (-1..1) and invert. Omitted fields stay; a field passed its default clears it; clear: true resets the grade. Preview and export apply identical values.
+**Color grade:** set_clip_color_grade adjusts brightness (-1..1), contrast and saturation (0..3), hue rotation (-180..180), exposure (-5..5 EV, applied first), white balance (temperature 2000..11000K, tint -100..100), vibrance (-1..1), tonal levels (highlights, shadows, blacks, whites, each -1..1) and invert. Omitted fields stay; a field passed its default clears it; clear: true resets the grade. Preview and export apply identical values.
 
 **Audio:** normalize_audio analyzes peak level and adjusts volume to reach a target (-3 dBFS default). set_clip_pan sets stereo balance (-1 left … +1 right). set_clip_eq applies a three-band EQ (low 100 Hz shelf, mid 1 kHz bell, high 3 kHz shelf, ±15 dB; omitted bands stay, 0 clears a band, clear resets). set_clip_compressor applies threshold/ratio/attack/release/makeup (ratio 1 or clear removes it). Audio fades use clip fadeIn/fadeOutFrames. remove_silence detects and ripples out silent gaps — pass clipIds to scope it, omit for the whole timeline; settings mirror the user's saved controls unless overridden per call.
 

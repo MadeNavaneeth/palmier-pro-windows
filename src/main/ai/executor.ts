@@ -1746,6 +1746,10 @@ export class ToolExecutor {
           ...(args.temperature !== undefined ? { temperature: args.temperature } : {}),
           ...(args.tint !== undefined ? { tint: args.tint } : {}),
           ...(args.vibrance !== undefined ? { vibrance: args.vibrance } : {}),
+          ...(args.highlights !== undefined ? { highlights: args.highlights } : {}),
+          ...(args.shadows !== undefined ? { shadows: args.shadows } : {}),
+          ...(args.blacks !== undefined ? { blacks: args.blacks } : {}),
+          ...(args.whites !== undefined ? { whites: args.whites } : {}),
           ...(args.invertColors !== undefined ? { invertColors: args.invertColors } : {}),
         });
         const receipt = this.editor.applyClipProperties(
@@ -1761,13 +1765,17 @@ export class ToolExecutor {
               delete draft.temperature;
               delete draft.tint;
               delete draft.vibrance;
+              delete draft.highlights;
+              delete draft.shadows;
+              delete draft.blacks;
+              delete draft.whites;
               delete draft.invertColors;
               return true;
             }
             // A field passed at its default clears it, so a graded clip can
             // return to ungraded without a separate clear call.
-            const defaults = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0 } as const;
-            for (const field of ['brightness', 'contrast', 'saturation', 'hueRotation', 'exposure', 'temperature', 'tint', 'vibrance'] as const) {
+            const defaults = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, highlights: 0, shadows: 0, blacks: 0, whites: 0 } as const;
+            for (const field of ['brightness', 'contrast', 'saturation', 'hueRotation', 'exposure', 'temperature', 'tint', 'vibrance', 'highlights', 'shadows', 'blacks', 'whites'] as const) {
               if (args[field] === undefined) continue;
               const value = sanitized[field];
               if (value === undefined) continue;
@@ -1793,6 +1801,10 @@ export class ToolExecutor {
             temperature: updated?.temperature ?? 6500,
             tint: updated?.tint ?? 0,
             vibrance: updated?.vibrance ?? 0,
+            highlights: updated?.highlights ?? 0,
+            shadows: updated?.shadows ?? 0,
+            blacks: updated?.blacks ?? 0,
+            whites: updated?.whites ?? 0,
             invertColors: updated?.invertColors ?? false,
             cleared: !updated || !hasColorGrade(updated),
           },

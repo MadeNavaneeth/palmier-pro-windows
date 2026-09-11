@@ -1769,6 +1769,10 @@ export class EditorController {  private project: Project;
                       temperature: source.temperature,
                       tint: source.tint,
                       vibrance: source.vibrance,
+                      highlights: source.highlights,
+                      shadows: source.shadows,
+                      blacks: source.blacks,
+                      whites: source.whites,
                       invertColors: source.invertColors,
                     }
                   : {}),
@@ -1806,6 +1810,10 @@ export class EditorController {  private project: Project;
         || (a.temperature ?? null) !== (b.temperature ?? null)
         || (a.tint ?? null) !== (b.tint ?? null)
         || (a.vibrance ?? null) !== (b.vibrance ?? null)
+        || (a.highlights ?? null) !== (b.highlights ?? null)
+        || (a.shadows ?? null) !== (b.shadows ?? null)
+        || (a.blacks ?? null) !== (b.blacks ?? null)
+        || (a.whites ?? null) !== (b.whites ?? null)
         || (a.invertColors ?? null) !== (b.invertColors ?? null)
       );
     };

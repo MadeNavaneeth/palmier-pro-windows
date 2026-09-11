@@ -35,6 +35,10 @@ interface GradeData {
   temperature?: number;
   tint?: number;
   vibrance?: number;
+  highlights?: number;
+  shadows?: number;
+  blacks?: number;
+  whites?: number;
   invertColors?: boolean;
   cleared?: boolean;
 }
@@ -209,5 +213,41 @@ describe('set_clip_color_grade (#157)', () => {
     const result = await executor.execute('set_clip_color_grade', { clipId, vibrance: 2 });
     expect(result.success).toBe(false);
     expect(editor.getClips()[0].vibrance).toBeUndefined();
+  });
+
+  it('sets tonal levels and reports them, clearing on the defaults', async () => {
+    const { editor, executor, clipId } = harness();
+
+    const result = await executor.execute('set_clip_color_grade', {
+      clipId, highlights: 0.5, shadows: -0.5, blacks: 0.5, whites: -0.5,
+    });
+    expect(result.success).toBe(true);
+    const data = result.data as GradeData;
+    expect(data.highlights).toBe(0.5);
+    expect(data.shadows).toBe(-0.5);
+    expect(data.blacks).toBe(0.5);
+    expect(data.whites).toBe(-0.5);
+    expect(editor.getClips()[0]).toMatchObject({
+      highlights: 0.5, shadows: -0.5, blacks: 0.5, whites: -0.5,
+    });
+
+    const cleared = await executor.execute('set_clip_color_grade', {
+      clipId, highlights: 0, shadows: 0, blacks: 0, whites: 0,
+    });
+    expect(cleared.success).toBe(true);
+    const clip = editor.getClips()[0];
+    expect(clip.highlights).toBeUndefined();
+    expect(clip.shadows).toBeUndefined();
+    expect(clip.blacks).toBeUndefined();
+    expect(clip.whites).toBeUndefined();
+  });
+
+  it('refuses out-of-range tonal levels without touching the clip', async () => {
+    const { editor, executor, clipId } = harness();
+
+    expect((await executor.execute('set_clip_color_grade', { clipId, highlights: 2 })).success).toBe(false);
+    expect((await executor.execute('set_clip_color_grade', { clipId, whites: -2 })).success).toBe(false);
+    expect(editor.getClips()[0].highlights).toBeUndefined();
+    expect(editor.getClips()[0].whites).toBeUndefined();
   });
 });

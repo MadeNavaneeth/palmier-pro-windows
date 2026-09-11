@@ -258,6 +258,26 @@ export interface Clip {
    */
   vibrance?: number;
   /**
+   * Highlights gain, -1 to +1 (upstream #157 Tone). Luma-masked lift of
+   * bright tones, peaking at white. Default 0.
+   */
+  highlights?: number;
+  /**
+   * Shadows gain, -1 to +1 (upstream #157 Tone). Luma-masked lift of dark
+   * tones, peaking at black. Default 0.
+   */
+  shadows?: number;
+  /**
+   * Black-point shift, -1 to +1 (upstream #157 Tone). Negative crushes the
+   * floor, positive lifts it. Default 0.
+   */
+  blacks?: number;
+  /**
+   * White-point shift, -1 to +1 (upstream #157 Tone). Positive brightens and
+   * clips the ceiling, negative recovers it. Default 0.
+   */
+  whites?: number;
+  /**
    * Invert colors effect (upstream PR #408). Complements RGB channels while
    * preserving alpha, producing a flash/negative look. Default false.
    */

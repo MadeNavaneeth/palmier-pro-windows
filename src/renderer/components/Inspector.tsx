@@ -412,8 +412,8 @@ function applyGradePresetTo(
 /**
  * Color grade + named presets (upstream #157).
  *
- * The grade fields (exposure/temperature/tint/vibrance/brightness/contrast/
- * saturation/hue) were rendered by both preview and export since R4 but had no way to be set
+ * The grade fields (exposure/temperature/tint/vibrance/highlights/shadows/
+ * blacks/whites/brightness/contrast/saturation/hue) were rendered by both preview and export since R4 but had no way to be set
  * from the UI —
  * only the model knew them. Each slider writes one field through `applyClipProperties`
  * as one undo step and removes the field at its default, so a neutral clip
@@ -447,6 +447,10 @@ function ColorGradeControls({
     temperature: clip.temperature ?? DEFAULT_COLOR_GRADE.temperature,
     tint: clip.tint ?? DEFAULT_COLOR_GRADE.tint,
     vibrance: clip.vibrance ?? DEFAULT_COLOR_GRADE.vibrance,
+    highlights: clip.highlights ?? DEFAULT_COLOR_GRADE.highlights,
+    shadows: clip.shadows ?? DEFAULT_COLOR_GRADE.shadows,
+    blacks: clip.blacks ?? DEFAULT_COLOR_GRADE.blacks,
+    whites: clip.whites ?? DEFAULT_COLOR_GRADE.whites,
   };
   const graded =
     clip.brightness !== undefined
@@ -456,7 +460,11 @@ function ColorGradeControls({
     || clip.exposure !== undefined
     || clip.temperature !== undefined
     || clip.tint !== undefined
-    || clip.vibrance !== undefined;
+    || clip.vibrance !== undefined
+    || clip.highlights !== undefined
+    || clip.shadows !== undefined
+    || clip.blacks !== undefined
+    || clip.whites !== undefined;
 
   const setField = (field: keyof typeof COLOR_GRADE_LIMITS, value: number) => {
     const sanitized = sanitizeColorGrade({ [field]: value });
@@ -499,6 +507,10 @@ function ColorGradeControls({
       delete draft.temperature;
       delete draft.tint;
       delete draft.vibrance;
+      delete draft.highlights;
+      delete draft.shadows;
+      delete draft.blacks;
+      delete draft.whites;
       return true;
     });
   };
@@ -636,6 +648,42 @@ function ColorGradeControls({
         step={0.05}
         format={(value) => (value === 0 ? '0' : `${value > 0 ? '+' : ''}${value.toFixed(2)}`)}
         onChange={(value) => setField('vibrance', value)}
+      />
+      <GradeSlider
+        label="Highlights"
+        value={current.highlights}
+        min={COLOR_GRADE_LIMITS.highlights.min}
+        max={COLOR_GRADE_LIMITS.highlights.max}
+        step={0.05}
+        format={(value) => (value === 0 ? '0' : `${value > 0 ? '+' : ''}${value.toFixed(2)}`)}
+        onChange={(value) => setField('highlights', value)}
+      />
+      <GradeSlider
+        label="Shadows"
+        value={current.shadows}
+        min={COLOR_GRADE_LIMITS.shadows.min}
+        max={COLOR_GRADE_LIMITS.shadows.max}
+        step={0.05}
+        format={(value) => (value === 0 ? '0' : `${value > 0 ? '+' : ''}${value.toFixed(2)}`)}
+        onChange={(value) => setField('shadows', value)}
+      />
+      <GradeSlider
+        label="Blacks"
+        value={current.blacks}
+        min={COLOR_GRADE_LIMITS.blacks.min}
+        max={COLOR_GRADE_LIMITS.blacks.max}
+        step={0.05}
+        format={(value) => (value === 0 ? '0' : `${value > 0 ? '+' : ''}${value.toFixed(2)}`)}
+        onChange={(value) => setField('blacks', value)}
+      />
+      <GradeSlider
+        label="Whites"
+        value={current.whites}
+        min={COLOR_GRADE_LIMITS.whites.min}
+        max={COLOR_GRADE_LIMITS.whites.max}
+        step={0.05}
+        format={(value) => (value === 0 ? '0' : `${value > 0 ? '+' : ''}${value.toFixed(2)}`)}
+        onChange={(value) => setField('whites', value)}
       />
       <GradeSlider
         label="Brightness"

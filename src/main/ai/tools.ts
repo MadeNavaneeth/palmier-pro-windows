@@ -753,7 +753,7 @@ export const tools = {
     name: 'set_clip_color_grade',
     description:
       'Grade a video/image clip\'s color (upstream #157\'s effect stack) — preview and export apply the exact same values. '
-      + 'Omitted fields stay untouched; passing a field its default (0, 1, 1, 0, 0, 6500, 0, 0) clears just that field, '
+      + 'Omitted fields stay untouched; passing a field its default (0, 1, 1, 0, 0, 6500, 0, 0, 0, 0, 0, 0) clears just that field, '
       + 'and clear: true resets the whole grade back to neutral.',
     parameters: z.object({
       clipId: z.string().describe('The video or image clip to grade.'),
@@ -773,14 +773,24 @@ export const tools = {
         .describe('White-balance tint -100 (green) to +100 (magenta). 0 = unchanged.'),
       vibrance: z.number().finite().min(-1).max(1).optional()
         .describe('Vibrance -1 to +1: selective saturation that boosts muted tones more than saturated ones. 0 = unchanged.'),
+      highlights: z.number().finite().min(-1).max(1).optional()
+        .describe('Highlights -1 to +1: luma-masked lift of bright tones, peaking at white. 0 = unchanged.'),
+      shadows: z.number().finite().min(-1).max(1).optional()
+        .describe('Shadows -1 to +1: luma-masked lift of dark tones, peaking at black. 0 = unchanged.'),
+      blacks: z.number().finite().min(-1).max(1).optional()
+        .describe('Blacks -1 to +1: negative crushes the floor, positive lifts it. 0 = unchanged.'),
+      whites: z.number().finite().min(-1).max(1).optional()
+        .describe('Whites -1 to +1: positive brightens toward clipping, negative recovers the ceiling. 0 = unchanged.'),
       invertColors: z.boolean().optional()
         .describe('Invert RGB channels while preserving alpha (the negative look).'),
       clear: z.boolean().optional()
-        .describe('Reset the whole grade — brightness, contrast, saturation, hue, exposure, temperature, tint, vibrance, and invert — to neutral.'),
+        .describe('Reset the whole grade — brightness, contrast, saturation, hue, exposure, temperature, tint, vibrance, highlights, shadows, blacks, whites, and invert — to neutral.'),
     }).refine(
       (op) => op.clear === true || op.brightness !== undefined || op.contrast !== undefined
         || op.saturation !== undefined || op.hueRotation !== undefined || op.exposure !== undefined
         || op.temperature !== undefined || op.tint !== undefined || op.vibrance !== undefined
+        || op.highlights !== undefined || op.shadows !== undefined
+        || op.blacks !== undefined || op.whites !== undefined
         || op.invertColors !== undefined,
       { message: 'Pass at least one grade field, or clear: true.' },
     ),
