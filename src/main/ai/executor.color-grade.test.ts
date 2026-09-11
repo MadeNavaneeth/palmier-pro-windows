@@ -31,6 +31,7 @@ interface GradeData {
   contrast?: number;
   saturation?: number;
   hueRotation?: number;
+  exposure?: number;
   invertColors?: boolean;
   cleared?: boolean;
 }
@@ -139,5 +140,26 @@ describe('set_clip_color_grade (#157)', () => {
     const clip = editor.getClips()[0];
     expect(clip.brightness).toBeUndefined();
     expect(clip.saturation).toBeUndefined();
+  });
+
+  it('sets exposure and reports it, clearing on the default', async () => {
+    const { editor, executor, clipId } = harness();
+
+    const result = await executor.execute('set_clip_color_grade', { clipId, exposure: 1.5 });
+    expect(result.success).toBe(true);
+    expect((result.data as GradeData).exposure).toBe(1.5);
+    expect(editor.getClips()[0].exposure).toBe(1.5);
+
+    const cleared = await executor.execute('set_clip_color_grade', { clipId, exposure: 0 });
+    expect(cleared.success).toBe(true);
+    expect(editor.getClips()[0].exposure).toBeUndefined();
+  });
+
+  it('refuses out-of-range exposure without touching the clip', async () => {
+    const { editor, executor, clipId } = harness();
+
+    const result = await executor.execute('set_clip_color_grade', { clipId, exposure: 99 });
+    expect(result.success).toBe(false);
+    expect(editor.getClips()[0].exposure).toBeUndefined();
   });
 });

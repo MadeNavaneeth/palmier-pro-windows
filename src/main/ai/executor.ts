@@ -1742,6 +1742,7 @@ export class ToolExecutor {
           ...(args.contrast !== undefined ? { contrast: args.contrast } : {}),
           ...(args.saturation !== undefined ? { saturation: args.saturation } : {}),
           ...(args.hueRotation !== undefined ? { hueRotation: args.hueRotation } : {}),
+          ...(args.exposure !== undefined ? { exposure: args.exposure } : {}),
           ...(args.invertColors !== undefined ? { invertColors: args.invertColors } : {}),
         });
         const receipt = this.editor.applyClipProperties(
@@ -1753,13 +1754,14 @@ export class ToolExecutor {
               delete draft.contrast;
               delete draft.saturation;
               delete draft.hueRotation;
+              delete draft.exposure;
               delete draft.invertColors;
               return true;
             }
             // A field passed at its default clears it, so a graded clip can
             // return to ungraded without a separate clear call.
-            const defaults = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0 } as const;
-            for (const field of ['brightness', 'contrast', 'saturation', 'hueRotation'] as const) {
+            const defaults = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0 } as const;
+            for (const field of ['brightness', 'contrast', 'saturation', 'hueRotation', 'exposure'] as const) {
               if (args[field] === undefined) continue;
               const value = sanitized[field];
               if (value === undefined) continue;
@@ -1781,6 +1783,7 @@ export class ToolExecutor {
             contrast: updated?.contrast ?? 1,
             saturation: updated?.saturation ?? 1,
             hueRotation: updated?.hueRotation ?? 0,
+            exposure: updated?.exposure ?? 0,
             invertColors: updated?.invertColors ?? false,
             cleared: !updated || !hasColorGrade(updated),
           },

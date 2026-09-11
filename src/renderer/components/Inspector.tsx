@@ -412,9 +412,9 @@ function applyGradePresetTo(
 /**
  * Color grade + named presets (upstream #157).
  *
- * The grade fields (brightness/contrast/saturation/hue) were rendered by both
- * preview and export since R4 but had no way to be set from the UI — only the
- * model knew them. Each slider writes one field through `applyClipProperties`
+ * The grade fields (exposure/brightness/contrast/saturation/hue) were rendered
+ * by both preview and export since R4 but had no way to be set from the UI —
+ * only the model knew them. Each slider writes one field through `applyClipProperties`
  * as one undo step and removes the field at its default, so a neutral clip
  * still reads as ungraded everywhere (`hasColorGrade`). Presets apply the
  * whole grade at once; the built-in list and the user's own saved looks share
@@ -442,12 +442,14 @@ function ColorGradeControls({
     contrast: clip.contrast ?? DEFAULT_COLOR_GRADE.contrast,
     saturation: clip.saturation ?? DEFAULT_COLOR_GRADE.saturation,
     hueRotation: clip.hueRotation ?? DEFAULT_COLOR_GRADE.hueRotation,
+    exposure: clip.exposure ?? DEFAULT_COLOR_GRADE.exposure,
   };
   const graded =
     clip.brightness !== undefined
     || clip.contrast !== undefined
     || clip.saturation !== undefined
-    || clip.hueRotation !== undefined;
+    || clip.hueRotation !== undefined
+    || clip.exposure !== undefined;
 
   const setField = (field: keyof typeof COLOR_GRADE_LIMITS, value: number) => {
     const sanitized = sanitizeColorGrade({ [field]: value });
@@ -486,6 +488,7 @@ function ColorGradeControls({
       delete draft.contrast;
       delete draft.saturation;
       delete draft.hueRotation;
+      delete draft.exposure;
       return true;
     });
   };
@@ -588,6 +591,15 @@ function ColorGradeControls({
       )}
       {saveError && <p className="text-[9px] text-red-400">{saveError}</p>}
 
+      <GradeSlider
+        label="Exposure"
+        value={current.exposure}
+        min={COLOR_GRADE_LIMITS.exposure.min}
+        max={COLOR_GRADE_LIMITS.exposure.max}
+        step={0.1}
+        format={(value) => `${value > 0 ? '+' : ''}${value.toFixed(1)} EV`}
+        onChange={(value) => setField('exposure', value)}
+      />
       <GradeSlider
         label="Brightness"
         value={current.brightness}

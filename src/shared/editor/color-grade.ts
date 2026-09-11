@@ -1,9 +1,9 @@
 /**
  * Color grading helpers (roadmap R4).
  *
- * Brightness, contrast, saturation, and hue rotation are stored per clip
- * and applied identically by the canvas preview (ctx.filter) and the FFmpeg
- * export chain (eq filter). These helpers produce the values for each
+ * Brightness, contrast, saturation, hue rotation and exposure are stored per
+ * clip and applied identically by the canvas preview (ctx.filter) and the
+ * FFmpeg export chain (eq filter). These helpers produce the values for each
  * consumer from the same clip fields so they can never disagree.
  *
  * The live preview paints raw composited pixels (putImageData ignores
@@ -18,25 +18,28 @@ export interface ColorGrade {
   contrast: number;
   saturation: number;
   hueRotation: number;
+  exposure: number;
   invertColors?: boolean;
 }
 
-const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, invertColors: false };
+const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, invertColors: false };
 
 /** Neutral values, exported so UI and agent both reset to the same place. */
 export const DEFAULT_COLOR_GRADE: ColorGrade = { ...DEFAULTS };
 
 /**
- * Accepted ranges for the four graded fields (upstream #157's effect stack,
+ * Accepted ranges for the five graded fields (upstream #157's effect stack,
  * exposed to the Inspector). CSS/FFmpeg accept wider values, but past these
  * the picture is destroyed rather than graded — contrast and saturation are
- * multipliers, brightness is an offset added to the normalized signal.
+ * multipliers, brightness is an offset added to the normalized signal, and
+ * exposure is EV stops of multiplicative gain.
  */
 export const COLOR_GRADE_LIMITS = {
   brightness: { min: -1, max: 1 },
   contrast: { min: 0, max: 3 },
   saturation: { min: 0, max: 3 },
   hueRotation: { min: -180, max: 180 },
+  exposure: { min: -5, max: 5 },
 } as const;
 
 export type ColorGradeField = keyof typeof COLOR_GRADE_LIMITS;
@@ -130,13 +133,14 @@ export function colorGradeOf(clip: Clip): ColorGrade | null {
     contrast: clip.contrast ?? DEFAULTS.contrast,
     saturation: clip.saturation ?? DEFAULTS.saturation,
     hueRotation: clip.hueRotation ?? DEFAULTS.hueRotation,
+    exposure: clip.exposure ?? DEFAULTS.exposure,
     invertColors: clip.invertColors ?? DEFAULTS.invertColors,
   };
   return isDefaultGrade(grade) ? null : grade;
 }
 
 function isDefaultGrade(g: ColorGrade): boolean {
-  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && !g.invertColors;
+  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && g.exposure === 0 && !g.invertColors;
 }
 
 /**
@@ -170,17 +174,37 @@ export function toFfmpegEq(grade: ColorGrade): string {
 }
 
 /**
- * The export color chain for a clip, in application order: eq, then hue
- * rotation, then invert — the same order the preview pass and CSS apply, so
- * no backend disagrees about which transform sees which pixels.
+ * The export color chain for a clip, in application order: exposure gain,
+ * then eq, then hue rotation, then invert — the same order the preview pass
+ * and CSS apply, so no backend disagrees about which transform sees which
+ * pixels. Each entry is one FFmpeg filter; the caller joins them with ','.
  */
 export function toFfmpegColorChain(grade: ColorGrade): string[] {
   const chain: string[] = [];
+  // Truthy, not !== 0: callers pass partial grades, and an absent exposure
+  // is unset rather than zero — both must skip the segment.
+  if (grade.exposure) {
+    const gain = exposureGain(grade.exposure).toFixed(6);
+    // geq neither clips nor preserves alpha on its own: clamp explicitly
+    // (unclamped gains wrap past ~170) and carry alpha through untouched.
+    const channel = (c: 'r' | 'g' | 'b'): string =>
+      `min(max(${c}(X,Y)*${gain},0),255)`;
+    chain.push(`geq=r='${channel('r')}':g='${channel('g')}':b='${channel('b')}':a='a(X,Y)'`);
+  }
   const eq = toFfmpegEq(grade);
   if (eq) chain.push(eq);
   if (grade.hueRotation !== 0) chain.push(`hue=h=${grade.hueRotation.toFixed(1)}`);
   if (grade.invertColors) chain.push('negate');
   return chain;
+}
+
+/**
+ * Multiplicative gain for an exposure value in EV stops: +1 doubles the
+ * signal, -1 halves it. Shared by the preview pixel pass and the export
+ * geq expression so the two can never disagree on the amount.
+ */
+export function exposureGain(evStops: number): number {
+  return 2 ** evStops;
 }
 
 /**
@@ -220,12 +244,19 @@ export function gradePixel(
   r: number,
   g: number,
   b: number,
-  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'invertColors'>,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'invertColors'>,
 ): [number, number, number] {
+  // Exposure first, mirroring the export chain (geq ahead of eq): gain on
+  // the raw channels, clamped and truncated exactly like the geq expression
+  // (C-cast truncation, not rounding). Absent counts as unset, like the chain.
+  const gain = grade.exposure ? exposureGain(grade.exposure) : 1;
+  const er = Math.trunc(Math.min(255, Math.max(0, r * gain)));
+  const eg = Math.trunc(Math.min(255, Math.max(0, g * gain)));
+  const eb = Math.trunc(Math.min(255, Math.max(0, b * gain)));
   // RGB -> YUV601 full range.
-  let y = KR * r + KG * g + KB * b;
-  let u = -0.168736 * r - 0.331264 * g + 0.5 * b + CENTER;
-  let v = 0.5 * r - 0.418688 * g - 0.081312 * b + CENTER;
+  let y = KR * er + KG * eg + KB * eb;
+  let u = -0.168736 * er - 0.331264 * eg + 0.5 * eb + CENTER;
+  let v = 0.5 * er - 0.418688 * eg - 0.081312 * eb + CENTER;
 
   // eq luma: contrast about center, then the brightness offset (FFmpeg folds
   // brightness into an additive term applied AFTER contrast scaling).
@@ -268,7 +299,7 @@ export function gradePixel(
  */
 export function applyGradeToRgba(
   data: Uint8Array | Uint8ClampedArray,
-  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'invertColors'>,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'invertColors'>,
 ): void {
   for (let i = 0; i + 4 <= data.length; i += 4) {
     const [r, g, b] = gradePixel(data[i], data[i + 1], data[i + 2], grade);
@@ -282,5 +313,5 @@ export function applyGradeToRgba(
 export function hasColorGrade(clip: Clip): boolean {
   return clip.brightness !== undefined || clip.contrast !== undefined
     || clip.saturation !== undefined || clip.hueRotation !== undefined
-    || clip.invertColors !== undefined;
+    || clip.exposure !== undefined || clip.invertColors !== undefined;
 }

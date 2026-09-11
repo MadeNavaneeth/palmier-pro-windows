@@ -238,6 +238,11 @@ export interface Clip {
   /** Hue rotation in degrees, -180 to 180. Default 0. */
   hueRotation?: number;
   /**
+   * Exposure in EV stops, -5 to +5 (upstream #157 Tone). Multiplicative gain
+   * of 2^ev applied before every other grade operation. Default 0.
+   */
+  exposure?: number;
+  /**
    * Invert colors effect (upstream PR #408). Complements RGB channels while
    * preserving alpha, producing a flash/negative look. Default false.
    */

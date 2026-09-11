@@ -753,7 +753,7 @@ export const tools = {
     name: 'set_clip_color_grade',
     description:
       'Grade a video/image clip\'s color (upstream #157\'s effect stack) — preview and export apply the exact same values. '
-      + 'Omitted fields stay untouched; passing a field its default (0, 1, 1, 0) clears just that field, '
+      + 'Omitted fields stay untouched; passing a field its default (0, 1, 1, 0, 0) clears just that field, '
       + 'and clear: true resets the whole grade back to neutral.',
     parameters: z.object({
       clipId: z.string().describe('The video or image clip to grade.'),
@@ -765,13 +765,16 @@ export const tools = {
         .describe('Saturation multiplier 0 to 3. 1 = unchanged, 0 = greyscale.'),
       hueRotation: z.number().finite().min(-180).max(180).optional()
         .describe('Hue rotation in degrees -180 to 180. 0 = unchanged.'),
+      exposure: z.number().finite().min(-5).max(5).optional()
+        .describe('Exposure in EV stops -5 to 5, applied before every other grade operation. 0 = unchanged.'),
       invertColors: z.boolean().optional()
         .describe('Invert RGB channels while preserving alpha (the negative look).'),
       clear: z.boolean().optional()
-        .describe('Reset the whole grade — brightness, contrast, saturation, hue, and invert — to neutral.'),
+        .describe('Reset the whole grade — brightness, contrast, saturation, hue, exposure, and invert — to neutral.'),
     }).refine(
       (op) => op.clear === true || op.brightness !== undefined || op.contrast !== undefined
-        || op.saturation !== undefined || op.hueRotation !== undefined || op.invertColors !== undefined,
+        || op.saturation !== undefined || op.hueRotation !== undefined || op.exposure !== undefined
+        || op.invertColors !== undefined,
       { message: 'Pass at least one grade field, or clear: true.' },
     ),
   },

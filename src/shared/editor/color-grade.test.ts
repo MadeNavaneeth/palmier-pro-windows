@@ -14,10 +14,10 @@ import {
   toFfmpegEq,
 } from './color-grade';
 import type { Clip } from '../types/project';
-import { applyGradeToRgba, gradePixel } from './color-grade';
+import { applyGradeToRgba, exposureGain, gradePixel } from './color-grade';
 
 /** Neutral grade for the pixel-math tests below. */
-const IDENTITY = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, invertColors: false };
+const IDENTITY = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, invertColors: false };
 
 function clip(fields: Partial<Clip> = {}): Clip {
   return {
@@ -38,7 +38,7 @@ describe('colorGradeOf', () => {
 
   it('returns the grade when any field differs from default', () => {
     const g = colorGradeOf(clip({ brightness: -0.2 }));
-    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, invertColors: false });
+    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, invertColors: false });
   });
 });
 
@@ -55,7 +55,7 @@ describe('hasColorGrade', () => {
 
 describe('toCanvasFilter / toFfmpegEq', () => {
   it('produces matching semantics for both consumers', () => {
-    const grade = { brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45 };
+    const grade = { brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0 };
     const canvas = toCanvasFilter(grade);
     const ffmpeg = toFfmpegEq(grade);
     // Canvas uses CSS function syntax.
@@ -72,7 +72,7 @@ describe('toCanvasFilter / toFfmpegEq', () => {
 
   it('emits hue rotation and invert as their own filters, in order', () => {
     expect(toFfmpegColorChain({
-      brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, invertColors: true,
+      brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, invertColors: true,
     })).toEqual([
       'eq=brightness=-0.150000:contrast=1.300000:saturation=0.600000',
       'hue=h=45.0',
@@ -80,15 +80,15 @@ describe('toCanvasFilter / toFfmpegEq', () => {
     ]);
     // Hue alone is still its own filter, never an eq option.
     expect(toFfmpegColorChain({
-      brightness: 0, contrast: 1, saturation: 1, hueRotation: 90,
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 90, exposure: 0,
     })).toEqual(['hue=h=90.0']);
     expect(toFfmpegColorChain({
-      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, invertColors: true,
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, invertColors: true,
     })).toEqual(['negate']);
   });
 
   it('returns empty strings for default grades', () => {
-    const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0 };
+    const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0 };
     expect(toCanvasFilter(g)).toBe('');
     expect(toFfmpegEq(g)).toBe('');
   });
@@ -145,6 +145,7 @@ describe('grade presets (#157)', () => {
       contrast: 1,
       saturation: 1,
       hueRotation: 0,
+      exposure: 0,
       invertColors: false,
     });
   });
@@ -262,5 +263,50 @@ describe('applyGradeToRgba (#157)', () => {
     const before = [...data];
     applyGradeToRgba(data, IDENTITY);
     expect([...data]).toEqual(before);
+  });
+});
+
+describe('exposure (#157)', () => {
+  it('maps EV stops to gain: +1 doubles, -1 halves, 0 is identity', () => {
+    expect(exposureGain(0)).toBe(1);
+    expect(exposureGain(1)).toBe(2);
+    expect(exposureGain(-1)).toBe(0.5);
+    expect(exposureGain(2)).toBe(4);
+  });
+
+  it('applies gain before every other grade operation', () => {
+    // Achromatic gray isolates the gain: (100,100,100) at +1 EV is exactly
+    // (200,200,200), since gain precedes the YUV pipeline.
+    expect(gradePixel(100, 100, 100, { ...IDENTITY, exposure: 1 })).toEqual([200, 200, 200]);
+    expect(gradePixel(100, 100, 100, { ...IDENTITY, exposure: -1 })).toEqual([50, 50, 50]);
+  });
+
+  it('clamps and truncates like the export geq expression, never wrapping', () => {
+    // Gain 32x on white would wrap a plain byte array to dark garbage.
+    const data = new Uint8Array([200, 200, 200, 255]);
+    applyGradeToRgba(data, { ...IDENTITY, exposure: 5 });
+    expect([...data]).toEqual([255, 255, 255, 255]);
+    // A fractional gain truncates toward zero, mirroring the C cast.
+    expect(gradePixel(100, 100, 100, { ...IDENTITY, exposure: 0.5 })).toEqual([141, 141, 141]);
+  });
+
+  it('emits the gain as a clamped geq segment ahead of eq', () => {
+    expect(toFfmpegColorChain({ ...IDENTITY, exposure: 1 })).toEqual([
+      "geq=r='min(max(r(X,Y)*2.000000,0),255)':g='min(max(g(X,Y)*2.000000,0),255)':b='min(max(b(X,Y)*2.000000,0),255)':a='a(X,Y)'",
+    ]);
+    // Order with the rest of the chain: exposure first, then eq, hue, negate.
+    expect(toFfmpegColorChain({ ...IDENTITY, exposure: -1, contrast: 1.2, invertColors: true })[0]).toContain('geq=');
+    expect(toFfmpegColorChain({ ...IDENTITY, exposure: -1, contrast: 1.2, invertColors: true })).toEqual([
+      "geq=r='min(max(r(X,Y)*0.500000,0),255)':g='min(max(g(X,Y)*0.500000,0),255)':b='min(max(b(X,Y)*0.500000,0),255)':a='a(X,Y)'",
+      'eq=contrast=1.200000',
+      'negate',
+    ]);
+  });
+
+  it('sanitizes exposure to -5..+5 EV, dropping the absurd', () => {
+    expect(sanitizeColorGrade({ exposure: 2 })).toEqual({ exposure: 2 });
+    expect(sanitizeColorGrade({ exposure: -5 })).toEqual({ exposure: -5 });
+    expect(sanitizeColorGrade({ exposure: 99 })).toEqual({});
+    expect(sanitizeColorGrade({ exposure: Number.NaN })).toEqual({});
   });
 });
