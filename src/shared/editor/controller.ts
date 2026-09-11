@@ -1768,6 +1768,7 @@ export class EditorController {  private project: Project;
                       exposure: source.exposure,
                       temperature: source.temperature,
                       tint: source.tint,
+                      vibrance: source.vibrance,
                       invertColors: source.invertColors,
                     }
                   : {}),
@@ -1804,6 +1805,7 @@ export class EditorController {  private project: Project;
         || (a.exposure ?? null) !== (b.exposure ?? null)
         || (a.temperature ?? null) !== (b.temperature ?? null)
         || (a.tint ?? null) !== (b.tint ?? null)
+        || (a.vibrance ?? null) !== (b.vibrance ?? null)
         || (a.invertColors ?? null) !== (b.invertColors ?? null)
       );
     };

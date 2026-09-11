@@ -21,10 +21,11 @@ export interface ColorGrade {
   exposure: number;
   temperature: number;
   tint: number;
+  vibrance: number;
   invertColors?: boolean;
 }
 
-const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, invertColors: false };
+const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: false };
 
 /** Neutral values, exported so UI and agent both reset to the same place. */
 export const DEFAULT_COLOR_GRADE: ColorGrade = { ...DEFAULTS };
@@ -44,6 +45,7 @@ export const COLOR_GRADE_LIMITS = {
   exposure: { min: -5, max: 5 },
   temperature: { min: 2000, max: 11000 },
   tint: { min: -100, max: 100 },
+  vibrance: { min: -1, max: 1 },
 } as const;
 
 export type ColorGradeField = keyof typeof COLOR_GRADE_LIMITS;
@@ -140,13 +142,14 @@ export function colorGradeOf(clip: Clip): ColorGrade | null {
     exposure: clip.exposure ?? DEFAULTS.exposure,
     temperature: clip.temperature ?? DEFAULTS.temperature,
     tint: clip.tint ?? DEFAULTS.tint,
+    vibrance: clip.vibrance ?? DEFAULTS.vibrance,
     invertColors: clip.invertColors ?? DEFAULTS.invertColors,
   };
   return isDefaultGrade(grade) ? null : grade;
 }
 
 function isDefaultGrade(g: ColorGrade): boolean {
-  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && g.exposure === 0 && g.temperature === 6500 && g.tint === 0 && !g.invertColors;
+  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && g.exposure === 0 && g.temperature === 6500 && g.tint === 0 && g.vibrance === 0 && !g.invertColors;
 }
 
 /**
@@ -198,6 +201,13 @@ export function toFfmpegColorChain(grade: ColorGrade): string[] {
       `min(max(${c}(X,Y)*${gain(v)},0),255)`;
     chain.push(`geq=r='${channel('r', gr)}':g='${channel('g', gg)}':b='${channel('b', gb)}':a='a(X,Y)'`);
   }
+  // Truthy like the gain gate: absent counts as unset. Luma weights ride
+  // explicitly because several shipped FFmpeg releases carry them swapped.
+  if (grade.vibrance) {
+    chain.push(
+      `vibrance=${grade.vibrance}:rlum=${VIBRANCE_LUMA_R}:glum=${VIBRANCE_LUMA_G}:blum=${VIBRANCE_LUMA_B}`,
+    );
+  }
   const eq = toFfmpegEq(grade);
   if (eq) chain.push(eq);
   if (grade.hueRotation !== 0) chain.push(`hue=h=${grade.hueRotation.toFixed(1)}`);
@@ -212,6 +222,41 @@ export function toFfmpegColorChain(grade: ColorGrade): string[] {
  */
 export function exposureGain(evStops: number): number {
   return 2 ** evStops;
+}
+
+/**
+ * Luma weights for the vibrance operation (upstream #157 Presence).
+ *
+ * These exact constants ride the export filter explicitly
+ * (`vibrance=…:rlum=0.212656:glum=0.715158:blum=0.072186`) because several
+ * shipped FFmpeg releases carry them swapped (rlum/blum transposed, fixed
+ * upstream only in 2025) — relying on each build's defaults would render the
+ * same project differently per machine. The preview uses the same constants
+ * below, so both sides agree regardless of the local FFmpeg.
+ */
+export const VIBRANCE_LUMA_R = 0.212656;
+export const VIBRANCE_LUMA_G = 0.715158;
+export const VIBRANCE_LUMA_B = 0.072186;
+
+/**
+ * Vibrance on one RGB pixel (integers in, integers out): selective
+ * saturation from the chroma range, lerped about Rec.709 luma, truncated and
+ * clipped exactly like the filter's store path.
+ */
+export function vibrancePixel(r: number, g: number, b: number, intensity: number): [number, number, number] {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const saturation = Math.max(rn, gn, bn) - Math.min(rn, gn, bn);
+  const luma = gn * VIBRANCE_LUMA_G + rn * VIBRANCE_LUMA_R + bn * VIBRANCE_LUMA_B;
+  // alternate=0, default balances: the sign term is -sign(intensity).
+  const sign = intensity === 0 ? 0 : -Math.sign(intensity);
+  const gain = 1 + intensity * (1 - sign * saturation);
+  const out = (c: number): number => {
+    const v = luma + (c - luma) * gain;
+    return Math.trunc(Math.min(255, Math.max(0, v * 255)));
+  };
+  return [out(rn), out(gn), out(bn)];
 }
 
 /**
@@ -301,7 +346,7 @@ export function gradePixel(
   r: number,
   g: number,
   b: number,
-  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'invertColors'>,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'vibrance' | 'invertColors'>,
 ): [number, number, number] {
   // Gain stage first, mirroring the export chain (geq ahead of eq): the
   // combined exposure and white-balance gains on the raw channels, clamped
@@ -311,10 +356,18 @@ export function gradePixel(
   const er = Math.trunc(Math.min(255, Math.max(0, r * gainR)));
   const eg = Math.trunc(Math.min(255, Math.max(0, g * gainG)));
   const eb = Math.trunc(Math.min(255, Math.max(0, b * gainB)));
+  // Vibrance right after the gain stage, mirroring the export chain (geq,
+  // vibrance, eq): the same function on the same truncated integers.
+  let vr = er;
+  let vg = eg;
+  let vb = eb;
+  if (grade.vibrance) {
+    [vr, vg, vb] = vibrancePixel(er, eg, eb, grade.vibrance);
+  }
   // RGB -> YUV601 full range.
-  let y = KR * er + KG * eg + KB * eb;
-  let u = -0.168736 * er - 0.331264 * eg + 0.5 * eb + CENTER;
-  let v = 0.5 * er - 0.418688 * eg - 0.081312 * eb + CENTER;
+  let y = KR * vr + KG * vg + KB * vb;
+  let u = -0.168736 * vr - 0.331264 * vg + 0.5 * vb + CENTER;
+  let v = 0.5 * vr - 0.418688 * vg - 0.081312 * vb + CENTER;
 
   // eq luma: contrast about center, then the brightness offset (FFmpeg folds
   // brightness into an additive term applied AFTER contrast scaling).
@@ -357,7 +410,7 @@ export function gradePixel(
  */
 export function applyGradeToRgba(
   data: Uint8Array | Uint8ClampedArray,
-  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'invertColors'>,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'vibrance' | 'invertColors'>,
 ): void {
   for (let i = 0; i + 4 <= data.length; i += 4) {
     const [r, g, b] = gradePixel(data[i], data[i + 1], data[i + 2], grade);
@@ -372,5 +425,6 @@ export function hasColorGrade(clip: Clip): boolean {
   return clip.brightness !== undefined || clip.contrast !== undefined
     || clip.saturation !== undefined || clip.hueRotation !== undefined
     || clip.exposure !== undefined || clip.temperature !== undefined
-    || clip.tint !== undefined || clip.invertColors !== undefined;
+    || clip.tint !== undefined || clip.vibrance !== undefined
+    || clip.invertColors !== undefined;
 }

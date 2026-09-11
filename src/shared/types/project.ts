@@ -252,6 +252,12 @@ export interface Clip {
    */
   tint?: number;
   /**
+   * Vibrance (selective saturation), -1 to +1 (upstream #157 Presence).
+   * Boosts muted tones more than already-saturated ones; negative values
+   * desaturate toward grey. Default 0.
+   */
+  vibrance?: number;
+  /**
    * Invert colors effect (upstream PR #408). Complements RGB channels while
    * preserving alpha, producing a flash/negative look. Default false.
    */

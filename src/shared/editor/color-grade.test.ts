@@ -14,10 +14,10 @@ import {
   toFfmpegEq,
 } from './color-grade';
 import type { Clip } from '../types/project';
-import { applyGradeToRgba, exposureGain, gradePixel, whiteBalanceGains } from './color-grade';
+import { applyGradeToRgba, exposureGain, gradePixel, vibrancePixel, whiteBalanceGains } from './color-grade';
 
 /** Neutral grade for the pixel-math tests below. */
-const IDENTITY = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, invertColors: false };
+const IDENTITY = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: false };
 
 function clip(fields: Partial<Clip> = {}): Clip {
   return {
@@ -38,7 +38,7 @@ describe('colorGradeOf', () => {
 
   it('returns the grade when any field differs from default', () => {
     const g = colorGradeOf(clip({ brightness: -0.2 }));
-    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, invertColors: false });
+    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: false });
   });
 });
 
@@ -55,7 +55,7 @@ describe('hasColorGrade', () => {
 
 describe('toCanvasFilter / toFfmpegEq', () => {
   it('produces matching semantics for both consumers', () => {
-    const grade = { brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0 };
+    const grade = { brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0, vibrance: 0 };
     const canvas = toCanvasFilter(grade);
     const ffmpeg = toFfmpegEq(grade);
     // Canvas uses CSS function syntax.
@@ -72,7 +72,7 @@ describe('toCanvasFilter / toFfmpegEq', () => {
 
   it('emits hue rotation and invert as their own filters, in order', () => {
     expect(toFfmpegColorChain({
-      brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0, invertColors: true,
+      brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: true,
     })).toEqual([
       'eq=brightness=-0.150000:contrast=1.300000:saturation=0.600000',
       'hue=h=45.0',
@@ -80,15 +80,15 @@ describe('toCanvasFilter / toFfmpegEq', () => {
     ]);
     // Hue alone is still its own filter, never an eq option.
     expect(toFfmpegColorChain({
-      brightness: 0, contrast: 1, saturation: 1, hueRotation: 90, exposure: 0, temperature: 6500, tint: 0,
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 90, exposure: 0, temperature: 6500, tint: 0, vibrance: 0,
     })).toEqual(['hue=h=90.0']);
     expect(toFfmpegColorChain({
-      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, invertColors: true,
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0, invertColors: true,
     })).toEqual(['negate']);
   });
 
   it('returns empty strings for default grades', () => {
-    const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0 };
+    const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, vibrance: 0 };
     expect(toCanvasFilter(g)).toBe('');
     expect(toFfmpegEq(g)).toBe('');
   });
@@ -148,6 +148,7 @@ describe('grade presets (#157)', () => {
       exposure: 0,
       temperature: 6500,
       tint: 0,
+      vibrance: 0,
       invertColors: false,
     });
   });
@@ -292,6 +293,21 @@ describe('exposure (#157)', () => {
     expect(gradePixel(100, 100, 100, { ...IDENTITY, exposure: 0.5 })).toEqual([141, 141, 141]);
   });
 
+  it('emits vibrance with explicit luma weights, ahead of eq', () => {
+    // The weights ride the filter because several shipped FFmpeg releases
+    // carry them swapped; relying on per-build defaults would render the same
+    // project differently per machine.
+    expect(toFfmpegColorChain({ ...IDENTITY, vibrance: 0.5 })).toEqual([
+      'vibrance=0.5:rlum=0.212656:glum=0.715158:blum=0.072186',
+    ]);
+    // Position in the chain: after the gain geq, before eq.
+    expect(toFfmpegColorChain({ ...IDENTITY, exposure: 1, vibrance: 0.5, contrast: 1.2 })).toEqual([
+      expect.stringContaining('geq='),
+      expect.stringContaining('vibrance=0.5:'),
+      expect.stringContaining('eq=contrast=1.200000'),
+    ]);
+  });
+
   it('emits the gain as a clamped geq segment ahead of eq', () => {
     expect(toFfmpegColorChain({ ...IDENTITY, exposure: 1 })).toEqual([
       "geq=r='min(max(r(X,Y)*2.000000,0),255)':g='min(max(g(X,Y)*2.000000,0),255)':b='min(max(b(X,Y)*2.000000,0),255)':a='a(X,Y)'",
@@ -316,6 +332,13 @@ describe('exposure (#157)', () => {
     expect(sanitizeColorGrade({ temperature: 3200, tint: 10 })).toEqual({ temperature: 3200, tint: 10 });
     expect(sanitizeColorGrade({ temperature: 100 })).toEqual({});
     expect(sanitizeColorGrade({ tint: 200 })).toEqual({});
+  });
+
+  it('sanitizes vibrance to -1..+1, dropping the absurd', () => {
+    expect(sanitizeColorGrade({ vibrance: 0.5 })).toEqual({ vibrance: 0.5 });
+    expect(sanitizeColorGrade({ vibrance: -1 })).toEqual({ vibrance: -1 });
+    expect(sanitizeColorGrade({ vibrance: 2 })).toEqual({});
+    expect(sanitizeColorGrade({ vibrance: Number.NaN })).toEqual({});
   });
 });
 
@@ -350,7 +373,7 @@ describe('whiteBalanceGains (#157)', () => {
     const [wr, wg, wb] = whiteBalanceGains(3200, 10);
     const chain = toFfmpegColorChain({
       brightness: 0, contrast: 1, saturation: 1, hueRotation: 0,
-      exposure: 0, temperature: 3200, tint: 10,
+      exposure: 0, temperature: 3200, tint: 10, vibrance: 0,
     });
     expect(chain).toHaveLength(1);
     expect(chain[0]).toBe(
@@ -369,5 +392,30 @@ describe('whiteBalanceGains (#157)', () => {
     expect(Math.abs(r - g)).toBeLessThan(8);
     expect(Math.abs(g - b)).toBeLessThan(8);
     expect(Math.min(r, g, b)).toBeGreaterThan(240);
+  });
+});
+
+describe('vibrancePixel (#157)', () => {
+  it('leaves grey untouched at any intensity', () => {
+    // Saturation driver is max-min: grey has none, so the gain cannot move it.
+    expect(vibrancePixel(128, 128, 128, 1)).toEqual([128, 128, 128]);
+    expect(vibrancePixel(0, 0, 0, -1)).toEqual([0, 0, 0]);
+    expect(vibrancePixel(255, 255, 255, 1)).toEqual([255, 255, 255]);
+  });
+
+  it('boosts muted tones and clips the overflow', () => {
+    // (200,100,50) at +0.5: hand-computed against the filter formula above.
+    expect(vibrancePixel(200, 100, 50, 0.5)).toEqual([255, 85, 0]);
+  });
+
+  it('desaturates toward luma on negative intensity', () => {
+    const [r, g, b] = vibrancePixel(200, 100, 50, -0.5);
+    expect([r, g, b]).toEqual([183, 103, 63]);
+    // Pulled toward their luma (~118): spread shrinks both ways.
+    expect(r - b).toBeLessThan(200 - 50);
+  });
+
+  it('zero intensity is the identity', () => {
+    expect(vibrancePixel(18, 52, 86, 0)).toEqual([18, 52, 86]);
   });
 });

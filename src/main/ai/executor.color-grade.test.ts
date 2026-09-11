@@ -34,6 +34,7 @@ interface GradeData {
   exposure?: number;
   temperature?: number;
   tint?: number;
+  vibrance?: number;
   invertColors?: boolean;
   cleared?: boolean;
 }
@@ -187,5 +188,26 @@ describe('set_clip_color_grade (#157)', () => {
     expect((await executor.execute('set_clip_color_grade', { clipId, tint: 200 })).success).toBe(false);
     expect(editor.getClips()[0].temperature).toBeUndefined();
     expect(editor.getClips()[0].tint).toBeUndefined();
+  });
+
+  it('sets vibrance and reports it, clearing on the default', async () => {
+    const { editor, executor, clipId } = harness();
+
+    const result = await executor.execute('set_clip_color_grade', { clipId, vibrance: 0.5 });
+    expect(result.success).toBe(true);
+    expect((result.data as GradeData).vibrance).toBe(0.5);
+    expect(editor.getClips()[0].vibrance).toBe(0.5);
+
+    const cleared = await executor.execute('set_clip_color_grade', { clipId, vibrance: 0 });
+    expect(cleared.success).toBe(true);
+    expect(editor.getClips()[0].vibrance).toBeUndefined();
+  });
+
+  it('refuses out-of-range vibrance without touching the clip', async () => {
+    const { editor, executor, clipId } = harness();
+
+    const result = await executor.execute('set_clip_color_grade', { clipId, vibrance: 2 });
+    expect(result.success).toBe(false);
+    expect(editor.getClips()[0].vibrance).toBeUndefined();
   });
 });

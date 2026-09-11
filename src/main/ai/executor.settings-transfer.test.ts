@@ -222,6 +222,21 @@ describe('copy_clip_settings tool (#515)', () => {
     expect(target?.tint).toBe(10);
   });
 
+  it('carries vibrance with the color grade', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.vibrance = 0.5;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [t1],
+    });
+
+    expect(editor.getClips().find((c) => c.id === t1)?.vibrance).toBe(0.5);
+  });
+
   it('refuses cross-kind targets with the domain message', async () => {
     const { editor, executor } = executorWithClips();
     editor.addMedia({

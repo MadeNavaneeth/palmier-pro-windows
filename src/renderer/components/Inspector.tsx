@@ -412,8 +412,8 @@ function applyGradePresetTo(
 /**
  * Color grade + named presets (upstream #157).
  *
- * The grade fields (exposure/temperature/tint/brightness/contrast/saturation/hue)
- * were rendered by both preview and export since R4 but had no way to be set
+ * The grade fields (exposure/temperature/tint/vibrance/brightness/contrast/
+ * saturation/hue) were rendered by both preview and export since R4 but had no way to be set
  * from the UI —
  * only the model knew them. Each slider writes one field through `applyClipProperties`
  * as one undo step and removes the field at its default, so a neutral clip
@@ -446,6 +446,7 @@ function ColorGradeControls({
     exposure: clip.exposure ?? DEFAULT_COLOR_GRADE.exposure,
     temperature: clip.temperature ?? DEFAULT_COLOR_GRADE.temperature,
     tint: clip.tint ?? DEFAULT_COLOR_GRADE.tint,
+    vibrance: clip.vibrance ?? DEFAULT_COLOR_GRADE.vibrance,
   };
   const graded =
     clip.brightness !== undefined
@@ -454,7 +455,8 @@ function ColorGradeControls({
     || clip.hueRotation !== undefined
     || clip.exposure !== undefined
     || clip.temperature !== undefined
-    || clip.tint !== undefined;
+    || clip.tint !== undefined
+    || clip.vibrance !== undefined;
 
   const setField = (field: keyof typeof COLOR_GRADE_LIMITS, value: number) => {
     const sanitized = sanitizeColorGrade({ [field]: value });
@@ -496,6 +498,7 @@ function ColorGradeControls({
       delete draft.exposure;
       delete draft.temperature;
       delete draft.tint;
+      delete draft.vibrance;
       return true;
     });
   };
@@ -624,6 +627,15 @@ function ColorGradeControls({
         step={1}
         format={(value) => `${value > 0 ? '+' : ''}${value}`}
         onChange={(value) => setField('tint', value)}
+      />
+      <GradeSlider
+        label="Vibrance"
+        value={current.vibrance}
+        min={COLOR_GRADE_LIMITS.vibrance.min}
+        max={COLOR_GRADE_LIMITS.vibrance.max}
+        step={0.05}
+        format={(value) => (value === 0 ? '0' : `${value > 0 ? '+' : ''}${value.toFixed(2)}`)}
+        onChange={(value) => setField('vibrance', value)}
       />
       <GradeSlider
         label="Brightness"
