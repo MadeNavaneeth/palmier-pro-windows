@@ -31,6 +31,7 @@ import { downscaleRgba, thumbnailSize } from '../../shared/media/thumbnail';
 import { isCropped, cropRect } from '../../shared/media/source-crop';
 import { evaluateMotion } from '../../shared/media/motion';
 import { chromaKeyOf, applyChromaKey } from '../../shared/editor/chroma-key';
+import { applyGradeToRgba, colorGradeOf } from '../../shared/editor/color-grade';
 
 //  Types 
 
@@ -272,6 +273,16 @@ export class PreviewCompositor {
         // so copy before mutating in place.
         if (frameBuffer === decoded.data) frameBuffer = Buffer.from(frameBuffer);
         applyChromaKey(frameBuffer, chromaKey);
+      }
+
+      // Color grade (#157): the same YUV math the export filters perform, run
+      // here so the live preview shows the graded result instead of only the
+      // exported file. After chroma (which decides alpha) and before the
+      // native compositor's rotation/blend, like the export chain order.
+      const grade = colorGradeOf(clip);
+      if (grade) {
+        if (frameBuffer === decoded.data) frameBuffer = Buffer.from(frameBuffer);
+        applyGradeToRgba(frameBuffer, grade);
       }
 
       const wipe = wipeParamsFor(clip, frameIndex);

@@ -21,7 +21,7 @@ import {
 } from '../../shared/media/source-time';
 import { selectExportClips } from '../../shared/media/export-eligibility';
 import { escapeDrawtext, drawtextStyleParams, applyTitleFontCase } from '../../shared/editor/title';
-import { colorGradeOf, toFfmpegEq } from '../../shared/editor/color-grade';
+import { colorGradeOf, toFfmpegColorChain } from '../../shared/editor/color-grade';
 import { ffmpegPanFilter, clampPan } from '../../shared/audio/pan';
 import { isCropped, cropRect } from '../../shared/media/source-crop';
 import { motionExpression } from '../../shared/media/motion';
@@ -534,12 +534,13 @@ function buildFilterGraph(
     // `overlay` runs on the base input's timebase, so a 60 fps source dropped
     // onto a 30 fps canvas otherwise queues two source frames per output frame
     // and the encode crawls or stalls on long 4K clips (#68).
-      // Color grading (R4): eq filter after scale, before fades.
+      // Color grading (R4): eq, then hue rotation, then invert — separate
+      // filters, because FFmpeg rejects unknown eq options.
       const grade = colorGradeOf(clip);
       let colorChain = '';
       if (grade) {
-        const eq = toFfmpegEq(grade);
-        if (eq) colorChain = `,${eq}`;
+        const chain = toFfmpegColorChain(grade);
+        if (chain.length > 0) colorChain = `,${chain.join(',')}`;
       }
 
       // Edge rounding and softness (#369): geq filter on the alpha channel,

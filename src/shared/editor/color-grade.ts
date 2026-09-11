@@ -5,6 +5,10 @@
  * and applied identically by the canvas preview (ctx.filter) and the FFmpeg
  * export chain (eq filter). These helpers produce the values for each
  * consumer from the same clip fields so they can never disagree.
+ *
+ * The live preview paints raw composited pixels (putImageData ignores
+ * ctx.filter, and the canvas-filter path is dead code), so preview grades
+ * ride a per-pixel pass below using the same YUV math, not CSS filters.
  */
 
 import type { Clip } from '../types/project';
@@ -152,18 +156,129 @@ export function toCanvasFilter(grade: ColorGrade): string {
 /**
  * FFmpeg `eq` filter value, e.g.
  * `eq=brightness=0.100000:contrast=1.200000:saturation=0.500000`.
+ *
+ * Hue rotation and invert ride separate filters (`hue`, `negate`), because
+ * FFmpeg rejects unknown `eq` options — embedding `hue=h=` in the eq string
+ * fails the whole export. See toFfmpegColorChain for the assembled order.
  */
 export function toFfmpegEq(grade: ColorGrade): string {
   const parts: string[] = [];
   if (grade.brightness !== 0) parts.push(`brightness=${grade.brightness.toFixed(6)}`);
   if (grade.contrast !== 1) parts.push(`contrast=${grade.contrast.toFixed(6)}`);
   if (grade.saturation !== 1) parts.push(`saturation=${grade.saturation.toFixed(6)}`);
-  if (grade.hueRotation !== 0) {
-    // FFmpeg eq has no hue param; use hue modifier for rotation.
-    parts.push(`hue=h=${grade.hueRotation.toFixed(1)}`);
-  }
   return parts.length > 0 ? `eq=${parts.join(':')}` : '';
-}  /** True when any field differs from default — used to skip no-op work. */
+}
+
+/**
+ * The export color chain for a clip, in application order: eq, then hue
+ * rotation, then invert — the same order the preview pass and CSS apply, so
+ * no backend disagrees about which transform sees which pixels.
+ */
+export function toFfmpegColorChain(grade: ColorGrade): string[] {
+  const chain: string[] = [];
+  const eq = toFfmpegEq(grade);
+  if (eq) chain.push(eq);
+  if (grade.hueRotation !== 0) chain.push(`hue=h=${grade.hueRotation.toFixed(1)}`);
+  if (grade.invertColors) chain.push('negate');
+  return chain;
+}
+
+/**
+ * Per-pixel grade math for the live preview (upstream #157).
+ *
+ * The preview paints raw composited pixels, so grades ride an explicit pass
+ * (see applyGradeToRgba) using the same YUV math the export filters perform —
+ * full-range BT.601, eq gains about center 128, hue rotation in the UV plane,
+ * per-plane negate — rather than CSS filters, which cannot express it.
+ */
+
+/** BT.601 full-range forward coefficients. */
+const KR = 0.299;
+const KG = 0.587;
+const KB = 0.114;
+
+/** Chroma offsets for the centered representation FFmpeg uses. */
+const CENTER = 128;
+
+function clampByte(value: number): number {
+  // Explicit clamp: plain Uint8Array/Buffer assignment wraps modulo 256
+  // instead of clamping, so an unclamped bright pixel would come back black.
+  if (!Number.isFinite(value)) return 0;
+  if (value <= 0) return 0;
+  if (value >= 255) return 255;
+  return Math.round(value);
+}
+
+/**
+ * Grade one RGB pixel through the YUV pipeline, returning [r, g, b].
+ *
+ * Exported for tests: the parity proof is hand-computed values from the
+ * documented formulas, not agreement between two implementations of the same
+ * code.
+ */
+export function gradePixel(
+  r: number,
+  g: number,
+  b: number,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'invertColors'>,
+): [number, number, number] {
+  // RGB -> YUV601 full range.
+  let y = KR * r + KG * g + KB * b;
+  let u = -0.168736 * r - 0.331264 * g + 0.5 * b + CENTER;
+  let v = 0.5 * r - 0.418688 * g - 0.081312 * b + CENTER;
+
+  // eq luma: contrast about center, then the brightness offset (FFmpeg folds
+  // brightness into an additive term applied AFTER contrast scaling).
+  y = grade.contrast * (y - CENTER) + CENTER + grade.brightness * 255;
+  // eq chroma: saturation gain about center, no brightness term.
+  u = CENTER + grade.saturation * (u - CENTER);
+  v = CENTER + grade.saturation * (v - CENTER);
+
+  // hue filter: counter-clockwise rotation in the centered UV plane.
+  if (grade.hueRotation !== 0) {
+    const rad = (grade.hueRotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const uc = u - CENTER;
+    const vc = v - CENTER;
+    u = cos * uc - sin * vc + CENTER;
+    v = sin * uc + cos * vc + CENTER;
+  }
+
+  // negate: straight per-plane flip, alpha untouched (there is no alpha here).
+  if (grade.invertColors) {
+    y = 255 - y;
+    u = 255 - u;
+    v = 255 - v;
+  }
+
+  // YUV601 full range back to RGB.
+  const rr = y + 1.402 * (v - CENTER);
+  const gg = y - 0.344136 * (u - CENTER) - 0.714136 * (v - CENTER);
+  const bb = y + 1.772 * (u - CENTER);
+  return [clampByte(rr), clampByte(gg), clampByte(bb)];
+}
+
+/**
+ * Apply a grade to an RGBA buffer in place, skipping alpha.
+ *
+ * Accepts any byte array because call sites hold Buffers (main) while tests
+ * hold Uint8ClampedArrays; both index and assign the same way once values
+ * are pre-clamped (see clampByte).
+ */
+export function applyGradeToRgba(
+  data: Uint8Array | Uint8ClampedArray,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'invertColors'>,
+): void {
+  for (let i = 0; i + 4 <= data.length; i += 4) {
+    const [r, g, b] = gradePixel(data[i], data[i + 1], data[i + 2], grade);
+    data[i] = r;
+    data[i + 1] = g;
+    data[i + 2] = b;
+  }
+}
+
+/** True when any field differs from default — used to skip no-op work. */
 export function hasColorGrade(clip: Clip): boolean {
   return clip.brightness !== undefined || clip.contrast !== undefined
     || clip.saturation !== undefined || clip.hueRotation !== undefined

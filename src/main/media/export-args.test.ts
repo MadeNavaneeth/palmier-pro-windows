@@ -105,7 +105,9 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
       ],
     );
     const graded = build(project).find((arg) => arg.includes('trim='))!;
-    expect(graded).toContain('eq=brightness=-0.150000:contrast=1.300000:saturation=0.600000:hue=h=45.0');
+    // eq carries only eq options; hue rotation and invert ride their own
+    // filters, because FFmpeg rejects unknown eq options outright.
+    expect(graded).toContain('eq=brightness=-0.150000:contrast=1.300000:saturation=0.600000,hue=h=45.0');
 
     const plain = projectWithMedia(
       [{ id: 'v', path: 'C:/media/v.mp4', type: 'video', duration: 900 }],
