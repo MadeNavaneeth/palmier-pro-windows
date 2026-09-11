@@ -32,6 +32,8 @@ interface GradeData {
   saturation?: number;
   hueRotation?: number;
   exposure?: number;
+  temperature?: number;
+  tint?: number;
   invertColors?: boolean;
   cleared?: boolean;
 }
@@ -161,5 +163,29 @@ describe('set_clip_color_grade (#157)', () => {
     const result = await executor.execute('set_clip_color_grade', { clipId, exposure: 99 });
     expect(result.success).toBe(false);
     expect(editor.getClips()[0].exposure).toBeUndefined();
+  });
+
+  it('sets white balance and reports it, clearing on the defaults', async () => {
+    const { editor, executor, clipId } = harness();
+
+    const result = await executor.execute('set_clip_color_grade', { clipId, temperature: 3200, tint: 10 });
+    expect(result.success).toBe(true);
+    expect((result.data as GradeData).temperature).toBe(3200);
+    expect((result.data as GradeData).tint).toBe(10);
+    expect(editor.getClips()[0]).toMatchObject({ temperature: 3200, tint: 10 });
+
+    const cleared = await executor.execute('set_clip_color_grade', { clipId, temperature: 6500, tint: 0 });
+    expect(cleared.success).toBe(true);
+    expect(editor.getClips()[0].temperature).toBeUndefined();
+    expect(editor.getClips()[0].tint).toBeUndefined();
+  });
+
+  it('refuses out-of-range white balance without touching the clip', async () => {
+    const { editor, executor, clipId } = harness();
+
+    expect((await executor.execute('set_clip_color_grade', { clipId, temperature: 100 })).success).toBe(false);
+    expect((await executor.execute('set_clip_color_grade', { clipId, tint: 200 })).success).toBe(false);
+    expect(editor.getClips()[0].temperature).toBeUndefined();
+    expect(editor.getClips()[0].tint).toBeUndefined();
   });
 });

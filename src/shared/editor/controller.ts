@@ -1766,6 +1766,8 @@ export class EditorController {  private project: Project;
                       saturation: source.saturation,
                       hueRotation: source.hueRotation,
                       exposure: source.exposure,
+                      temperature: source.temperature,
+                      tint: source.tint,
                       invertColors: source.invertColors,
                     }
                   : {}),
@@ -1800,6 +1802,8 @@ export class EditorController {  private project: Project;
         || (a.saturation ?? null) !== (b.saturation ?? null)
         || (a.hueRotation ?? null) !== (b.hueRotation ?? null)
         || (a.exposure ?? null) !== (b.exposure ?? null)
+        || (a.temperature ?? null) !== (b.temperature ?? null)
+        || (a.tint ?? null) !== (b.tint ?? null)
         || (a.invertColors ?? null) !== (b.invertColors ?? null)
       );
     };

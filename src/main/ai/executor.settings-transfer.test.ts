@@ -204,6 +204,24 @@ describe('copy_clip_settings tool (#515)', () => {
     expect(editor.getClips().find((c) => c.id === t1)?.exposure).toBe(1.5);
   });
 
+  it('carries white balance with the color grade', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.temperature = 3200;
+      d.tint = 10;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [t1],
+    });
+
+    const target = editor.getClips().find((c) => c.id === t1);
+    expect(target?.temperature).toBe(3200);
+    expect(target?.tint).toBe(10);
+  });
+
   it('refuses cross-kind targets with the domain message', async () => {
     const { editor, executor } = executorWithClips();
     editor.addMedia({

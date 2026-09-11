@@ -19,10 +19,12 @@ export interface ColorGrade {
   saturation: number;
   hueRotation: number;
   exposure: number;
+  temperature: number;
+  tint: number;
   invertColors?: boolean;
 }
 
-const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, invertColors: false };
+const DEFAULTS: ColorGrade = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, invertColors: false };
 
 /** Neutral values, exported so UI and agent both reset to the same place. */
 export const DEFAULT_COLOR_GRADE: ColorGrade = { ...DEFAULTS };
@@ -40,6 +42,8 @@ export const COLOR_GRADE_LIMITS = {
   saturation: { min: 0, max: 3 },
   hueRotation: { min: -180, max: 180 },
   exposure: { min: -5, max: 5 },
+  temperature: { min: 2000, max: 11000 },
+  tint: { min: -100, max: 100 },
 } as const;
 
 export type ColorGradeField = keyof typeof COLOR_GRADE_LIMITS;
@@ -134,13 +138,15 @@ export function colorGradeOf(clip: Clip): ColorGrade | null {
     saturation: clip.saturation ?? DEFAULTS.saturation,
     hueRotation: clip.hueRotation ?? DEFAULTS.hueRotation,
     exposure: clip.exposure ?? DEFAULTS.exposure,
+    temperature: clip.temperature ?? DEFAULTS.temperature,
+    tint: clip.tint ?? DEFAULTS.tint,
     invertColors: clip.invertColors ?? DEFAULTS.invertColors,
   };
   return isDefaultGrade(grade) ? null : grade;
 }
 
 function isDefaultGrade(g: ColorGrade): boolean {
-  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && g.exposure === 0 && !g.invertColors;
+  return g.brightness === 0 && g.contrast === 1 && g.saturation === 1 && g.hueRotation === 0 && g.exposure === 0 && g.temperature === 6500 && g.tint === 0 && !g.invertColors;
 }
 
 /**
@@ -181,15 +187,16 @@ export function toFfmpegEq(grade: ColorGrade): string {
  */
 export function toFfmpegColorChain(grade: ColorGrade): string[] {
   const chain: string[] = [];
-  // Truthy, not !== 0: callers pass partial grades, and an absent exposure
-  // is unset rather than zero — both must skip the segment.
-  if (grade.exposure) {
-    const gain = exposureGain(grade.exposure).toFixed(6);
+  // Truthy field checks, not !== default: callers pass partial grades, and
+  // an absent field is unset rather than default — both skip the segment.
+  const [gr, gg, gb] = channelGains(grade);
+  if (gr !== 1 || gg !== 1 || gb !== 1) {
+    const gain = (v: number): string => v.toFixed(6);
     // geq neither clips nor preserves alpha on its own: clamp explicitly
     // (unclamped gains wrap past ~170) and carry alpha through untouched.
-    const channel = (c: 'r' | 'g' | 'b'): string =>
-      `min(max(${c}(X,Y)*${gain},0),255)`;
-    chain.push(`geq=r='${channel('r')}':g='${channel('g')}':b='${channel('b')}':a='a(X,Y)'`);
+    const channel = (c: 'r' | 'g' | 'b', v: number): string =>
+      `min(max(${c}(X,Y)*${gain(v)},0),255)`;
+    chain.push(`geq=r='${channel('r', gr)}':g='${channel('g', gg)}':b='${channel('b', gb)}':a='a(X,Y)'`);
   }
   const eq = toFfmpegEq(grade);
   if (eq) chain.push(eq);
@@ -205,6 +212,56 @@ export function toFfmpegColorChain(grade: ColorGrade): string[] {
  */
 export function exposureGain(evStops: number): number {
   return 2 ** evStops;
+}
+
+/**
+ * White-balance channel gains for a Kelvin temperature and green-magenta
+ * tint (upstream #157 Tone: 2000-11000K, default 6500; tint -100..+100).
+ *
+ * Temperature follows the standard Tanner Helland Kelvin-to-RGB
+ * approximation, normalized so 6500K is exactly identity; tint pushes
+ * magenta (+) by lifting red/blue against green, or green (−) the reverse.
+ * The tint coefficient is this port's mapping (Apple's CI filter is closed),
+ * documented here rather than hidden: preview and export share this one
+ * function, so whatever look it defines, both render identically.
+ */
+export function whiteBalanceGains(temperatureKelvin: number, tint: number): [number, number, number] {
+  const toRgb = (kelvin: number): [number, number, number] => {
+    const temp = Math.min(11000, Math.max(2000, kelvin)) / 100;
+    const r = temp <= 66 ? 255 : 329.698727446 * Math.pow(temp - 60, -0.1332047592);
+    const g = temp <= 66
+      ? 99.4708025861 * Math.log(temp) - 161.1195681661
+      : 288.1221695283 * Math.pow(temp - 60, -0.0755148492);
+    const b = temp >= 66 ? 255 : temp <= 19 ? 0 : 138.5177312231 * Math.log(temp - 10) - 305.0447927307;
+    const clamp = (v: number): number => Math.min(255, Math.max(0, v));
+    return [clamp(r), clamp(g), clamp(b)];
+  };
+  const [neutralR, neutralG, neutralB] = toRgb(6500);
+  const [r, g, b] = toRgb(temperatureKelvin);
+  const tintFactor = tint / 100;
+  return [
+    (neutralR / r) * (1 + tintFactor * 0.25),
+    (neutralG / g) * (1 - tintFactor * 0.25),
+    (neutralB / b) * (1 + tintFactor * 0.25),
+  ];
+}
+
+/**
+ * Combined per-channel gains: exposure times white balance. One triple feeds
+ * both the preview pixel pass and the export geq expression.
+ */
+export function channelGains(
+  grade: Pick<ColorGrade, 'exposure' | 'temperature' | 'tint'>,
+): [number, number, number] {
+  // Absent counts as default: callers pass partial grades, and NaN gains
+  // would poison both the pixel pass and the export expression.
+  const ev = grade.exposure ? exposureGain(grade.exposure) : 1;
+  const temperature = grade.temperature ?? 6500;
+  const tint = grade.tint ?? 0;
+  const [wr, wg, wb] = temperature === 6500 && tint === 0
+    ? [1, 1, 1]
+    : whiteBalanceGains(temperature, tint);
+  return [ev * wr, ev * wg, ev * wb];
 }
 
 /**
@@ -244,15 +301,16 @@ export function gradePixel(
   r: number,
   g: number,
   b: number,
-  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'invertColors'>,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'invertColors'>,
 ): [number, number, number] {
-  // Exposure first, mirroring the export chain (geq ahead of eq): gain on
-  // the raw channels, clamped and truncated exactly like the geq expression
-  // (C-cast truncation, not rounding). Absent counts as unset, like the chain.
-  const gain = grade.exposure ? exposureGain(grade.exposure) : 1;
-  const er = Math.trunc(Math.min(255, Math.max(0, r * gain)));
-  const eg = Math.trunc(Math.min(255, Math.max(0, g * gain)));
-  const eb = Math.trunc(Math.min(255, Math.max(0, b * gain)));
+  // Gain stage first, mirroring the export chain (geq ahead of eq): the
+  // combined exposure and white-balance gains on the raw channels, clamped
+  // and truncated exactly like the geq expression (C-cast truncation, not
+  // rounding).
+  const [gainR, gainG, gainB] = channelGains(grade);
+  const er = Math.trunc(Math.min(255, Math.max(0, r * gainR)));
+  const eg = Math.trunc(Math.min(255, Math.max(0, g * gainG)));
+  const eb = Math.trunc(Math.min(255, Math.max(0, b * gainB)));
   // RGB -> YUV601 full range.
   let y = KR * er + KG * eg + KB * eb;
   let u = -0.168736 * er - 0.331264 * eg + 0.5 * eb + CENTER;
@@ -299,7 +357,7 @@ export function gradePixel(
  */
 export function applyGradeToRgba(
   data: Uint8Array | Uint8ClampedArray,
-  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'invertColors'>,
+  grade: Pick<ColorGrade, 'brightness' | 'contrast' | 'saturation' | 'hueRotation' | 'exposure' | 'temperature' | 'tint' | 'invertColors'>,
 ): void {
   for (let i = 0; i + 4 <= data.length; i += 4) {
     const [r, g, b] = gradePixel(data[i], data[i + 1], data[i + 2], grade);
@@ -313,5 +371,6 @@ export function applyGradeToRgba(
 export function hasColorGrade(clip: Clip): boolean {
   return clip.brightness !== undefined || clip.contrast !== undefined
     || clip.saturation !== undefined || clip.hueRotation !== undefined
-    || clip.exposure !== undefined || clip.invertColors !== undefined;
+    || clip.exposure !== undefined || clip.temperature !== undefined
+    || clip.tint !== undefined || clip.invertColors !== undefined;
 }

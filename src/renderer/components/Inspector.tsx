@@ -412,8 +412,9 @@ function applyGradePresetTo(
 /**
  * Color grade + named presets (upstream #157).
  *
- * The grade fields (exposure/brightness/contrast/saturation/hue) were rendered
- * by both preview and export since R4 but had no way to be set from the UI —
+ * The grade fields (exposure/temperature/tint/brightness/contrast/saturation/hue)
+ * were rendered by both preview and export since R4 but had no way to be set
+ * from the UI —
  * only the model knew them. Each slider writes one field through `applyClipProperties`
  * as one undo step and removes the field at its default, so a neutral clip
  * still reads as ungraded everywhere (`hasColorGrade`). Presets apply the
@@ -443,13 +444,17 @@ function ColorGradeControls({
     saturation: clip.saturation ?? DEFAULT_COLOR_GRADE.saturation,
     hueRotation: clip.hueRotation ?? DEFAULT_COLOR_GRADE.hueRotation,
     exposure: clip.exposure ?? DEFAULT_COLOR_GRADE.exposure,
+    temperature: clip.temperature ?? DEFAULT_COLOR_GRADE.temperature,
+    tint: clip.tint ?? DEFAULT_COLOR_GRADE.tint,
   };
   const graded =
     clip.brightness !== undefined
     || clip.contrast !== undefined
     || clip.saturation !== undefined
     || clip.hueRotation !== undefined
-    || clip.exposure !== undefined;
+    || clip.exposure !== undefined
+    || clip.temperature !== undefined
+    || clip.tint !== undefined;
 
   const setField = (field: keyof typeof COLOR_GRADE_LIMITS, value: number) => {
     const sanitized = sanitizeColorGrade({ [field]: value });
@@ -489,6 +494,8 @@ function ColorGradeControls({
       delete draft.saturation;
       delete draft.hueRotation;
       delete draft.exposure;
+      delete draft.temperature;
+      delete draft.tint;
       return true;
     });
   };
@@ -599,6 +606,24 @@ function ColorGradeControls({
         step={0.1}
         format={(value) => `${value > 0 ? '+' : ''}${value.toFixed(1)} EV`}
         onChange={(value) => setField('exposure', value)}
+      />
+      <GradeSlider
+        label="Temperature"
+        value={current.temperature}
+        min={COLOR_GRADE_LIMITS.temperature.min}
+        max={COLOR_GRADE_LIMITS.temperature.max}
+        step={50}
+        format={(value) => `${Math.round(value)} K`}
+        onChange={(value) => setField('temperature', value)}
+      />
+      <GradeSlider
+        label="Tint"
+        value={current.tint}
+        min={COLOR_GRADE_LIMITS.tint.min}
+        max={COLOR_GRADE_LIMITS.tint.max}
+        step={1}
+        format={(value) => `${value > 0 ? '+' : ''}${value}`}
+        onChange={(value) => setField('tint', value)}
       />
       <GradeSlider
         label="Brightness"

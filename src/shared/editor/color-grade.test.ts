@@ -14,10 +14,10 @@ import {
   toFfmpegEq,
 } from './color-grade';
 import type { Clip } from '../types/project';
-import { applyGradeToRgba, exposureGain, gradePixel } from './color-grade';
+import { applyGradeToRgba, exposureGain, gradePixel, whiteBalanceGains } from './color-grade';
 
 /** Neutral grade for the pixel-math tests below. */
-const IDENTITY = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, invertColors: false };
+const IDENTITY = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, invertColors: false };
 
 function clip(fields: Partial<Clip> = {}): Clip {
   return {
@@ -38,7 +38,7 @@ describe('colorGradeOf', () => {
 
   it('returns the grade when any field differs from default', () => {
     const g = colorGradeOf(clip({ brightness: -0.2 }));
-    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, invertColors: false });
+    expect(g).toEqual({ brightness: -0.2, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, invertColors: false });
   });
 });
 
@@ -55,7 +55,7 @@ describe('hasColorGrade', () => {
 
 describe('toCanvasFilter / toFfmpegEq', () => {
   it('produces matching semantics for both consumers', () => {
-    const grade = { brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0 };
+    const grade = { brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0 };
     const canvas = toCanvasFilter(grade);
     const ffmpeg = toFfmpegEq(grade);
     // Canvas uses CSS function syntax.
@@ -72,7 +72,7 @@ describe('toCanvasFilter / toFfmpegEq', () => {
 
   it('emits hue rotation and invert as their own filters, in order', () => {
     expect(toFfmpegColorChain({
-      brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, invertColors: true,
+      brightness: -0.15, contrast: 1.3, saturation: 0.6, hueRotation: 45, exposure: 0, temperature: 6500, tint: 0, invertColors: true,
     })).toEqual([
       'eq=brightness=-0.150000:contrast=1.300000:saturation=0.600000',
       'hue=h=45.0',
@@ -80,15 +80,15 @@ describe('toCanvasFilter / toFfmpegEq', () => {
     ]);
     // Hue alone is still its own filter, never an eq option.
     expect(toFfmpegColorChain({
-      brightness: 0, contrast: 1, saturation: 1, hueRotation: 90, exposure: 0,
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 90, exposure: 0, temperature: 6500, tint: 0,
     })).toEqual(['hue=h=90.0']);
     expect(toFfmpegColorChain({
-      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, invertColors: true,
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0, invertColors: true,
     })).toEqual(['negate']);
   });
 
   it('returns empty strings for default grades', () => {
-    const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0 };
+    const g = { brightness: 0, contrast: 1, saturation: 1, hueRotation: 0, exposure: 0, temperature: 6500, tint: 0 };
     expect(toCanvasFilter(g)).toBe('');
     expect(toFfmpegEq(g)).toBe('');
   });
@@ -146,6 +146,8 @@ describe('grade presets (#157)', () => {
       saturation: 1,
       hueRotation: 0,
       exposure: 0,
+      temperature: 6500,
+      tint: 0,
       invertColors: false,
     });
   });
@@ -308,5 +310,64 @@ describe('exposure (#157)', () => {
     expect(sanitizeColorGrade({ exposure: -5 })).toEqual({ exposure: -5 });
     expect(sanitizeColorGrade({ exposure: 99 })).toEqual({});
     expect(sanitizeColorGrade({ exposure: Number.NaN })).toEqual({});
+  });
+
+  it('sanitizes white balance to Kelvin/tint ranges, dropping the absurd', () => {
+    expect(sanitizeColorGrade({ temperature: 3200, tint: 10 })).toEqual({ temperature: 3200, tint: 10 });
+    expect(sanitizeColorGrade({ temperature: 100 })).toEqual({});
+    expect(sanitizeColorGrade({ tint: 200 })).toEqual({});
+  });
+});
+
+describe('whiteBalanceGains (#157)', () => {
+  it('is identity at D65 with no tint', () => {
+    expect(whiteBalanceGains(6500, 0)).toEqual([1, 1, 1]);
+  });
+
+  it('cools warm footage and warms cool footage', () => {
+    // 3200K light is warm (red-heavy), so the correction cools: blue gain
+    // above red gain. 8000K is the reverse.
+    const warm = whiteBalanceGains(3200, 0);
+    expect(warm[0]).toBeLessThan(warm[2]);
+    const cool = whiteBalanceGains(8000, 0);
+    expect(cool[0]).toBeGreaterThan(cool[2]);
+    for (const gains of [warm, cool]) {
+      for (const gain of gains) {
+        expect(gain).toBeGreaterThan(0);
+        expect(Number.isFinite(gain)).toBe(true);
+      }
+    }
+  });
+
+  it('pushes magenta and green on the tint axis', () => {
+    // Positive tint lifts red/blue against green (magenta); the formula is
+    // this port's mapping, so the test pins direction, not a standard.
+    expect(whiteBalanceGains(6500, 100)).toEqual([1.25, 0.75, 1.25]);
+    expect(whiteBalanceGains(6500, -100)).toEqual([0.75, 1.25, 0.75]);
+  });
+
+  it('rides the same clamped geq segment as exposure, ahead of eq', () => {
+    const [wr, wg, wb] = whiteBalanceGains(3200, 10);
+    const chain = toFfmpegColorChain({
+      brightness: 0, contrast: 1, saturation: 1, hueRotation: 0,
+      exposure: 0, temperature: 3200, tint: 10,
+    });
+    expect(chain).toHaveLength(1);
+    expect(chain[0]).toBe(
+      `geq=r='min(max(r(X,Y)*${wr.toFixed(6)},0),255)'`
+      + `:g='min(max(g(X,Y)*${wg.toFixed(6)},0),255)'`
+      + `:b='min(max(b(X,Y)*${wb.toFixed(6)},0),255)':a='a(X,Y)'`,
+    );
+  });
+
+  it('folds white balance into preview pixels like export', () => {
+    // Tungsten-white (3200K light, standard approximation) must land near
+    // D65-white: that is what "correct for 3200K" means. A neutral gray does
+    // NOT stay put — white balance is global, so setting 3200K on neutral
+    // footage cools it, by design.
+    const [r, g, b] = gradePixel(255, 184, 123, { ...IDENTITY, temperature: 3200, tint: 0 });
+    expect(Math.abs(r - g)).toBeLessThan(8);
+    expect(Math.abs(g - b)).toBeLessThan(8);
+    expect(Math.min(r, g, b)).toBeGreaterThan(240);
   });
 });

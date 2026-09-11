@@ -243,6 +243,15 @@ export interface Clip {
    */
   exposure?: number;
   /**
+   * White-balance temperature in Kelvin, 2000 to 11000 (upstream #157 Tone).
+   * 6500 is neutral daylight; lower warms, higher cools. Default 6500.
+   */
+  temperature?: number;
+  /**
+   * White-balance tint, -100 (green) to +100 (magenta). Default 0.
+   */
+  tint?: number;
+  /**
    * Invert colors effect (upstream PR #408). Complements RGB channels while
    * preserving alpha, producing a flash/negative look. Default false.
    */
