@@ -810,7 +810,13 @@ function textOf(content: unknown): string {
 
 // ─── System Prompt ───────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are an AI video editing assistant inside Palmier Pro for Windows.
+/**
+ * The static contract every turn carries (L4 digest appended per turn).
+ *
+ * Exported so the fan-out eval (L6 gate) measures the same request the agent
+ * sends rather than an approximation that could disagree with it.
+ */
+export const SYSTEM_PROMPT = `You are an AI video editing assistant inside Palmier Pro for Windows.
 You have direct access to the video editor's timeline through tool calls.
 Read the project state first, then make edits using the tools below.
 

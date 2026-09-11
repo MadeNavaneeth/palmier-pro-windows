@@ -195,6 +195,19 @@ Acceptance:
 - A kill-switch setting; the feature is off by default until evals show a
   win over the single-agent baseline.
 
+Gating evidence (`main/ai/evals/fanout.test.ts`, model-free, real
+ToolExecutor in both arms, six read-only audits): correctness parity holds —
+isolated workers on deep-cloned projects give byte-identical answers to the
+sequential baseline and to domain ground truth, and no arm mutates the
+project. Measured costs (estimateTokens over system + schemas + prompts +
+observations): baseline 54080, busiest worker 9420, merge orchestrator 8690,
+fan-out total 1.16x baseline — per-worker context stays bounded while the
+baseline accumulates, and the total is an order of magnitude below the ~15x
+blowups parallel coding agents are warned about. What this does NOT measure:
+latency (these tools resolve synchronously in-process, so timing would be
+theater) — that half of the gate needs a live trial, which is why L6 stays
+unbuilt and off by default.
+
 ### L7 — Skills (reusable editor expertise)
 
 Mechanism: Agent Skills spec (name + description loaded; body on trigger).
