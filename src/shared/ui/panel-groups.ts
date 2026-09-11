@@ -126,6 +126,22 @@ export function visibleMembers(group: PanelGroup, panels: PanelVisibility): Pane
 }
 
 /**
+ * Members that render in the main workspace: visible and not detached.
+ *
+ * A detached panel lives in its own OS window, so it must drop out of its
+ * region without mutating the group itself — the membership stays intact so
+ * the model keeps working while members come and go across the detach
+ * boundary.
+ */
+export function dockedMembers(
+  group: PanelGroup,
+  panels: PanelVisibility,
+  detached: readonly PanelKey[],
+): PanelKey[] {
+  return visibleMembers(group, panels).filter((panel) => !detached.includes(panel));
+}
+
+/**
  * Remove a panel from wherever it is and append it to the group that owns
  * `anchor`. Passing the panel as its own anchor makes it standalone. Removing a
  * panel from a group leaves the remaining members in their own group, which is

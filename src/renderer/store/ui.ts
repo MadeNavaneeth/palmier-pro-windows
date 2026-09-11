@@ -13,6 +13,10 @@
 import { create } from 'zustand';
 import { asGuideKind, type GuideKind } from '../../shared/preview/guides';
 import {
+  isDetachablePanel,
+  type DetachablePanel,
+} from '../../shared/ui/detached-panels';
+import {
   DEFAULT_PANEL_GROUPS,
   PANEL_KEYS,
   assignPanelToGroup,
@@ -112,6 +116,11 @@ function savePanelGroups(groups: readonly PanelGroup[]): void {
   } catch {
     // A full or unavailable storage quota must not break regrouping.
   }
+}
+
+/** Order-sensitive equality, so a redundant broadcast does not repaint. */
+function sameDetachables(a: readonly DetachablePanel[], b: readonly DetachablePanel[]): boolean {
+  return a.length === b.length && a.every((panel, index) => panel === b[index]);
 }
 
 /**
@@ -232,6 +241,17 @@ interface UiState {
    */
   groups: PanelGroup[];
   /**
+   * Panels currently living in their own OS window (upstream #286).
+   *
+   * Never persisted: windows die with the process, so a stored set would
+   * suppress a panel that is actually docked. The main process is the source
+   * of truth; this mirrors `panels:list-detached` on boot and every
+   * `panels:detached-changed` broadcast. A detached panel is suppressed in the
+   * main workspace — moved, never rendered twice. The Agent can never appear
+   * here (see `setDetachedPanels`), so the chat is unaffected.
+   */
+  detached: DetachablePanel[];
+  /**
    * How the workspace is arranged (upstream PR #430).
    *
    * Orthogonal to `panels`: the preset decides where things sit, the toggles
@@ -257,6 +277,8 @@ interface UiState {
   resetPanels: () => void;
   /** Put `panel` in the same region as `anchor`; anchoring it to itself ungroups. */
   assignPanel: (panel: PanelKey, anchor: PanelKey) => void;
+  /** Mirror an announced detached set, narrowed; re-attached panels go standalone. */
+  setDetachedPanels: (value: unknown) => void;
   setLayout: (preset: LayoutPreset) => void;
   /** Move one divider; the value is clamped into range and persisted. */
   setSplit: (key: SplitKey, value: number) => void;
@@ -270,6 +292,7 @@ export const useUiStore = create<UiState>((set) => ({
   guides: loadGuides(),
   panels: loadPanels(),
   groups: loadPanelGroups(),
+  detached: [],
   layout: loadLayout(),
   splits: loadSplits(),
 
@@ -332,6 +355,30 @@ export const useUiStore = create<UiState>((set) => ({
       if (samePanelGroups(next, state.groups)) return {};
       savePanelGroups(next);
       return { groups: next };
+    }),
+
+  setDetachedPanels: (value) =>
+    set((state) => {
+      // The main process narrows too, but an IPC payload is untrusted input:
+      // unknown keys are dropped, duplicates collapse, and 'agent' can never
+      // detach (its transcript is per-window renderer state). Garbage
+      // degrades to nothing-detached, which restores panels rather than
+      // hiding them.
+      const next = Array.isArray(value)
+        ? [...new Set(value.filter(isDetachablePanel))]
+        : [];
+      if (sameDetachables(next, state.detached)) return {};
+      // A panel coming back renders standalone instead of rejoining the group
+      // it left: that group may not exist any more, and guessing is how a
+      // panel silently lands somewhere the user never put it.
+      let groups = state.groups;
+      for (const panel of state.detached) {
+        if (!next.includes(panel)) groups = assignPanelToGroup(groups, panel, panel);
+      }
+      return {
+        detached: next,
+        groups: samePanelGroups(groups, state.groups) ? state.groups : groups,
+      };
     }),
 
   setLayout: (preset) =>

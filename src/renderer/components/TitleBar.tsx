@@ -12,6 +12,10 @@ import {
 import { useProjectStore } from '../store/project';
 import { useUiStore } from '../store/ui';
 import {
+  isDetachablePanel,
+  type DetachablePanel,
+} from '../../shared/ui/detached-panels';
+import {
   PANEL_KEYS,
   PANEL_LABELS,
   othersInRegion,
@@ -191,6 +195,7 @@ function PanelArrangementMenu() {
   const groups = useUiStore((s) => s.groups);
   const panels = useUiStore((s) => s.panels);
   const assignPanel = useUiStore((s) => s.assignPanel);
+  const detached = useUiStore((s) => s.detached);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -202,6 +207,15 @@ function PanelArrangementMenu() {
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open]);
+
+  // The main window follows the broadcast, so the result needs no local
+  // handling here: a rejected call simply leaves the panel where it is.
+  const detachPanel = (panel: DetachablePanel) => {
+    void window.palmier.panels.detach(panel).catch(() => {});
+  };
+  const attachPanel = (panel: DetachablePanel) => {
+    void window.palmier.panels.attach(panel).catch(() => {});
+  };
 
   return (
     <div ref={rootRef} className="relative">
@@ -241,34 +255,70 @@ function PanelArrangementMenu() {
           {PANEL_KEYS.map((panel) => {
             const others = othersInRegion(groups, panel);
             const value = others[0] ?? 'standalone';
+            const isDetached = isDetachablePanel(panel) && detached.includes(panel);
             return (
-              <label
-                key={panel}
-                className={`flex items-center justify-between gap-2 rounded px-2 py-1 ${
-                  panels[panel] ? '' : 'opacity-50'
-                }`}
-              >
-                <span className="flex items-center gap-1.5 text-[11px] text-text-secondary">
-                  <PanelMenuIcon panel={panel} />
-                  {PANEL_LABELS[panel]}
-                </span>
-                <select
-                  value={value}
-                  onChange={(event) => {
-                    const next = event.target.value;
-                    assignPanel(panel, next === 'standalone' ? panel : (next as PanelKey));
-                  }}
-                  aria-label={`${PANEL_LABELS[panel]} region`}
-                  className="cursor-pointer rounded border border-white/12 bg-surface-0 px-1 py-0.5 text-[10px] text-text-secondary outline-none hover:border-white/25"
-                >
-                  <option value="standalone">Standalone</option>
-                  {PANEL_KEYS.filter((other) => other !== panel).map((other) => (
-                    <option key={other} value={other}>
-                      With {PANEL_LABELS[other]}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div key={panel}>
+                {/* A detached panel has no region to pick: it lives in its own
+                    window, so the row shows that state instead of the tab
+                    picker. The Agent never detaches, so its row is unchanged. */}
+                {isDetached ? (
+                  <div className="flex items-center justify-between gap-2 rounded px-2 py-1">
+                    <span className="flex items-center gap-1.5 text-[11px] text-text-secondary">
+                      <PanelMenuIcon panel={panel} />
+                      {PANEL_LABELS[panel]}
+                    </span>
+                    <span className="text-[10px] text-text-muted">In its own window</span>
+                  </div>
+                ) : (
+                  <label
+                    className={`flex items-center justify-between gap-2 rounded px-2 py-1 ${
+                      panels[panel] ? '' : 'opacity-50'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1.5 text-[11px] text-text-secondary">
+                      <PanelMenuIcon panel={panel} />
+                      {PANEL_LABELS[panel]}
+                    </span>
+                    <select
+                      value={value}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        assignPanel(panel, next === 'standalone' ? panel : (next as PanelKey));
+                      }}
+                      aria-label={`${PANEL_LABELS[panel]} region`}
+                      className="cursor-pointer rounded border border-white/12 bg-surface-0 px-1 py-0.5 text-[10px] text-text-secondary outline-none hover:border-white/25"
+                    >
+                      <option value="standalone">Standalone</option>
+                      {PANEL_KEYS.filter((other) => other !== panel).map((other) => (
+                        <option key={other} value={other}>
+                          With {PANEL_LABELS[other]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {isDetachablePanel(panel) && (
+                  <div className="px-2 pb-1">
+                    {isDetached ? (
+                      <button
+                        type="button"
+                        onClick={() => attachPanel(panel)}
+                        className="text-[10px] text-text-secondary underline decoration-white/25 underline-offset-2 hover:text-text-primary"
+                      >
+                        Move back to workspace
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => detachPanel(panel)}
+                        className="text-[10px] text-text-muted hover:text-text-secondary"
+                      >
+                        Open in new window
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>

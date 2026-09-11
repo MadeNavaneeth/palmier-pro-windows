@@ -13,13 +13,121 @@ import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { useProjectStore } from './store/project';
 import { useUiStore, SPLITS_DEFAULTS, type PanelVisibility } from './store/ui';
-import { PANEL_LABELS, type PanelGroup, type PanelKey } from '../shared/ui/panel-groups';
+import {
+  PANEL_LABELS,
+  dockedMembers,
+  type PanelGroup,
+  type PanelKey,
+} from '../shared/ui/panel-groups';
+import {
+  parseDetachedPanel,
+  type DetachablePanel,
+} from '../shared/ui/detached-panels';
 import type { LayoutPreset } from '../shared/ui/workspace-layout';
 import { initAiListeners } from './store/ai';
 import { useAutosave } from './hooks/useAutosave';
+import { useDetachedPanels, useDetachedProject } from './hooks/useDetachedPanels';
 import { useEditorSync } from './hooks/useEditorSync';
 
+/**
+ * Which panel this window renders, when it is a detached panel window.
+ *
+ * The main layer loads the same renderer bundle with `?panel=<key>`; anything
+ * else — including `?panel=agent` — renders the normal workspace.
+ */
+function readDetachedPanel(): DetachablePanel | null {
+  try {
+    return parseDetachedPanel(window.location.search);
+  } catch {
+    return null;
+  }
+}
+
+const DETACHED_PANEL = readDetachedPanel();
+
 export function App() {
+  // One window, one panel: a detached window renders only its own panel, never
+  // the workspace. Each branch is its own component so hooks stay
+  // unconditional.
+  if (DETACHED_PANEL !== null) {
+    return <DetachedPanelWindow panel={DETACHED_PANEL} />;
+  }
+  return <MainWorkspace />;
+}
+
+/**
+ * A single panel in its own OS window (upstream #286).
+ *
+ * Media, Inspector and Export read project state from the stores, so besides
+ * the panel itself this window only needs the mirrored project plus the
+ * editor-sync mirror — without them a detached bin would show a stale project.
+ * No title bar, timeline, preview, or sibling panels: the panel is moved here,
+ * not copied.
+ */
+function DetachedPanelWindow({ panel }: { panel: DetachablePanel }) {
+  const status = useDetachedProject();
+
+  const moveBack = () => {
+    void window.palmier.panels.attach(panel).catch(() => {
+      // The main window restores the panel from the broadcast, so a rejected
+      // call only leaves this window open; nothing else to repair here.
+    });
+  };
+
+  return (
+    <div className="flex h-screen w-screen flex-col bg-surface-0">
+      <header
+        data-detached-frame
+        className="flex h-11 shrink-0 items-center gap-2 border-b border-white/10 bg-surface-1 px-3"
+      >
+        <span className="text-[11px] font-medium text-text-secondary">{PANEL_LABELS[panel]}</span>
+        <button
+          onClick={moveBack}
+          className="ml-auto flex h-7 items-center rounded-md px-2 text-[11px] font-medium text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
+          title="Move back to workspace"
+          aria-label="Move back to workspace"
+        >
+          Move back to workspace
+        </button>
+      </header>
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface-1"
+        data-detached-panel={panel}
+      >
+        {status === 'live' ? (
+          <SyncedPanelBody panel={panel} onMoveBack={moveBack} />
+        ) : (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center">
+            <p className="max-w-[240px] text-[11px] leading-4 text-text-muted">
+              Open a project in the main window
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The detached panel body with its editor-sync mirror running.
+ *
+ * Mounted only after the main project has been adopted, so the sync's initial
+ * push carries adopted state instead of overwriting the main-process mirror
+ * with this window's empty default project.
+ */
+function SyncedPanelBody({
+  panel,
+  onMoveBack,
+}: {
+  panel: DetachablePanel;
+  onMoveBack: () => void;
+}) {
+  // Keep the main-process controller mirrored so the panel reads live state.
+  useEditorSync();
+  return <PanelBody panel={panel} onCloseExport={onMoveBack} />;
+}
+
+function MainWorkspace() {
   const { isLoaded } = useProjectStore();
   const [systemReady, setSystemReady] = useState(false);
 
@@ -29,6 +137,7 @@ export function App() {
   const togglePanel = useUiStore((s) => s.togglePanel);
   const groups = useUiStore((s) => s.groups);
   const layout = useUiStore((s) => s.layout);
+  const detached = useUiStore((s) => s.detached);
 
   // Overlay visibility is shared with the keyboard layer (#164), which sits
   // outside this component and needs the same switches.
@@ -39,6 +148,9 @@ export function App() {
   useAutosave();
   // Keep the main-process controller mirrored so agent/MCP edits show live.
   useEditorSync();
+  // Mirror which panels live in their own window so the workspace suppresses
+  // them; main-process truth, narrowed on arrival in the store.
+  useDetachedPanels();
 
   useEffect(() => {
     // Check system readiness on mount
@@ -91,10 +203,10 @@ export function App() {
   return (
     <div className="flex h-screen w-screen flex-col bg-surface-0">
       <TitleBar
-        mediaVisible={panels.media}
-        inspectorVisible={panels.inspector}
+        mediaVisible={panels.media && !detached.includes('media')}
+        inspectorVisible={panels.inspector && !detached.includes('inspector')}
         agentVisible={panels.agent}
-        exportVisible={panels.export}
+        exportVisible={panels.export && !detached.includes('export')}
         onToggleMedia={() => togglePanel('media')}
         onToggleInspector={() => togglePanel('inspector')}
         onToggleAgent={() => togglePanel('agent')}
@@ -104,11 +216,13 @@ export function App() {
         {/* The Agent region is always mounted (hidden when empty) and always the
             anchor of its own group, so regrouping never relocates ChatPanel's
             React parent. An in-progress chat therefore survives any tab change.
-            This is the #286 constraint upstream called out; see PanelRegion. */}
+            This is the #286 constraint upstream called out; see PanelRegion.
+            Detaching can never touch it either: the Agent is not detachable. */}
         <PanelRegion
           anchor="agent"
           groups={groups}
           panels={panels}
+          detached={detached}
           alwaysMounted
           className={`${PANEL_FRAME} min-h-0 w-[300px] min-w-[240px] shrink-0`}
           onCloseExport={() => togglePanel('export')}
@@ -117,6 +231,7 @@ export function App() {
           layout={layout}
           groups={groups}
           panels={panels}
+          detached={detached}
           onCloseExport={() => togglePanel('export')}
         />
         {/* Export docks on the right (#166): settings stay reachable while a
@@ -125,6 +240,7 @@ export function App() {
           anchor="export"
           groups={groups}
           panels={panels}
+          detached={detached}
           className={`${PANEL_FRAME} min-h-0 w-[340px] min-w-[260px] shrink-0`}
           onCloseExport={() => togglePanel('export')}
         />
@@ -284,6 +400,7 @@ function PanelRegion({
   anchor,
   groups,
   panels,
+  detached,
   className,
   style,
   alwaysMounted = false,
@@ -292,13 +409,15 @@ function PanelRegion({
   anchor: PanelKey;
   groups: readonly PanelGroup[];
   panels: PanelVisibility;
+  /** Panels living in their own window: suppressed here, membership untouched. */
+  detached: readonly DetachablePanel[];
   className: string;
   style?: React.CSSProperties;
   alwaysMounted?: boolean;
   onCloseExport: () => void;
 }) {
   const group = groups.find((entry) => entry[0] === anchor);
-  const visible = group ? group.filter((panel) => panels[panel]) : [];
+  const visible = group ? dockedMembers(group, panels, detached) : [];
   const [active, setActive] = useState<PanelKey>(anchor);
   // A hidden active tab falls back to the first still-visible member.
   const activeMember = visible.includes(active) ? active : visible[0];
@@ -487,18 +606,20 @@ function WorkspacePresetLayout({
   layout,
   groups,
   panels,
+  detached,
   onCloseExport,
 }: {
   layout: LayoutPreset;
   groups: readonly PanelGroup[];
   panels: PanelVisibility;
+  detached: readonly DetachablePanel[];
   onCloseExport: () => void;
 }) {
   const splits = useUiStore((state) => state.splits);
 
   const regionHasVisible = (anchor: PanelKey) => {
     const group = groups.find((entry) => entry[0] === anchor);
-    return group ? group.some((panel) => panels[panel]) : false;
+    return group ? dockedMembers(group, panels, detached).length > 0 : false;
   };
   const hasMedia = regionHasVisible('media');
   const hasInspector = regionHasVisible('inspector');
@@ -508,6 +629,7 @@ function WorkspacePresetLayout({
       anchor="media"
       groups={groups}
       panels={panels}
+      detached={detached}
       className={PANEL_FLOOR}
       style={{ width: splits.mediaWidth }}
       onCloseExport={onCloseExport}
@@ -519,6 +641,7 @@ function WorkspacePresetLayout({
       anchor="inspector"
       groups={groups}
       panels={panels}
+      detached={detached}
       className={PANEL_FLOOR}
       style={{ width: splits.inspectorWidth }}
       onCloseExport={onCloseExport}

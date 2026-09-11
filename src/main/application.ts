@@ -17,6 +17,9 @@ import { registerMarkerSettingsHandlers } from './markers/marker-settings';
 import { registerProxyHandlers } from './media/proxies';
 import { registerAiHandlers } from './ai/ipc';
 import { registerGenerationHandlers } from './generation';
+import { registerDetachedPanelsHandlers } from './ipc/detached-panels';
+import { DetachedPanelsManager } from './windows/detached-panels';
+import { DETACHED_WINDOW_CONFIG, type DetachablePanel } from '../shared/ui/detached-panels';
 import { initAutoUpdater } from './updater';
 import { EditorController } from '../shared/editor/controller';
 
@@ -81,6 +84,49 @@ function createMainWindow(): BrowserWindow {
   return win;
 }
 
+/**
+ * A panel in its own window (upstream #286).
+ *
+ * Same sandbox contract as the main window — the detached renderer is the same
+ * bundle, so it gets the same preload, isolation, and navigation lockdown.
+ * State needs no extra plumbing: editor sync already broadcasts to every
+ * window, and per-window streams target the requesting web contents.
+ */
+function createDetachedWindow(panel: DetachablePanel): BrowserWindow {
+  const config = DETACHED_WINDOW_CONFIG[panel];
+  const win = new BrowserWindow({
+    width: config.width,
+    height: config.height,
+    minWidth: config.minWidth,
+    minHeight: config.minHeight,
+    backgroundColor: '#0a0a0b',
+    title: config.title,
+    webPreferences: {
+      preload: path.join(currentDir, '../preload/index.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      autoplayPolicy: 'no-user-gesture-required',
+    },
+    show: false,
+  });
+
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) win.show();
+  });
+
+  if (isDev && process.env['VITE_DEV_SERVER_URL']) {
+    const url = new URL(process.env['VITE_DEV_SERVER_URL']);
+    url.searchParams.set('panel', panel);
+    void win.loadURL(url.toString());
+  } else {
+    void win.loadFile(path.join(currentDir, '../renderer/index.html'), { query: { panel } });
+  }
+
+  return win;
+}
+
 export function startApplication(): void {
   const previewCompositor = getPreviewCompositor();
 
@@ -101,6 +147,16 @@ export function startApplication(): void {
   registerProxyHandlers(editorController);
   registerAiHandlers(() => editorController);
   registerGenerationHandlers();
+
+  const detachedPanels = new DetachedPanelsManager({
+    createWindow: (panel) => createDetachedWindow(panel),
+    broadcast: (panels) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send('panels:detached-changed', panels);
+      }
+    },
+  });
+  registerDetachedPanelsHandlers(detachedPanels);
 
   app.on('web-contents-created', (_event, contents) => {
     contents.on('will-navigate', (event) => {

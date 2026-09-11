@@ -210,6 +210,19 @@ const api = {
     cancel: (requestId: string) => ipcRenderer.invoke('generation:cancel', requestId),
   },
 
+  // Detached panels (upstream #286): the narrowed channels above are invoked,
+  // the changed event below is subscribed through `on`.
+  panels: {
+    /** Open the panel in its own window; focuses it when already open. */
+    detach: (panel: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('panels:detach', panel),
+    /** Close the panel's window, returning it to the workspace. */
+    attach: (panel: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('panels:attach', panel),
+    /** Panels currently living in their own window. */
+    listDetached: (): Promise<string[]> => ipcRenderer.invoke('panels:list-detached'),
+  },
+
   // â”€â”€ Event subscriptions (main â†’ renderer) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   on: (channel: string, callback: (...args: unknown[]) => void) => {
     const allowed = [
@@ -228,6 +241,7 @@ const api = {
       'ai:plan',
       'generation:progress',
       'generation:complete',
+      'panels:detached-changed',
     ];
     if (!allowed.includes(channel)) {
       console.warn(`[preload] Blocked subscription to unknown channel: ${channel}`);
