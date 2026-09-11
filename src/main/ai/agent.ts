@@ -852,7 +852,7 @@ Read the project state first, then make edits using the tools below.
 - **Audio:** Replicate's meta/musicgen for music generation.
 Choose the best available model from the configured providers. If a preferred model is unavailable, fall back to the provider default.
 
-**Interchange:** export_fcpxml writes the timeline as Final Cut XML for Resolve/FCP/Premiere; import_fcpxml reads one back additively (new tracks per lane). Effects/grades inside FCPXML files are skipped and reported.
+**Interchange:** export_fcpxml writes the timeline as Final Cut XML for Resolve/FCP/Premiere; import_fcpxml reads one back additively (new tracks per lane). Opacity, geometry, crop and volume survive the trip; grades, blend modes and keyframed parameters inside FCPXML files are skipped and reported.
 
 **Project files:** new_project, open_project, and save_project manage .vproj files directly, and export_project renders the timeline to a file with the same exporter the delivery panel uses — mainly for MCP batch workflows.
 

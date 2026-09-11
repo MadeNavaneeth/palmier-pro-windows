@@ -1,5 +1,5 @@
 ﻿/**
- * FCPXML import (#154) â€” parse Final Cut Pro XML into a structured plan.
+ * FCPXML import (#154) — parse Final Cut Pro XML into a structured plan.
  *
  * Phase 2a: pure parser, no Electron, no editor mutation. Callers (executor /
  * future dialog) receive assets by absolute path plus clips keyed to lane
@@ -7,10 +7,13 @@
  *
  * Supported: <format> timing, <asset> resources, spine asset-clips and
  * connected asset-clips (lane attr), titles with inline text-style refs,
- * decimal ("1.5s") and rational ("45/30s") times. Gaps are implicit —
- * absolute clip offsets already encode spacing. Everything else — effects,
- * groups, references — lands in `unsupported` as readable notes so
- * nothing disappears silently.
+ * decimal ("1.5s") and rational ("45/30s") times, opacity (`adjust-blend`),
+ * geometry (`adjust-transform`), crop (`adjust-crop` trim-rect) and volume
+ * (`adjust-volume`) as the exporter writes them — plus the same elements from
+ * third-party files, narrowed on read. Gaps are implicit —
+ * absolute clip offsets already encode spacing. Everything else — grades,
+ * blend modes, keyframed parameters, groups, references — lands in
+ * `unsupported` as readable notes so nothing disappears silently.
  */
 
 import { secondsToTimecode } from '../media/timecode';
@@ -32,13 +35,23 @@ export interface ImportedAsset {
 
 export interface ImportedVideoClip {
   kind: 'video';
-  /** Lane 0 = spine, â‰¥1 = connected above in ascending order. */
+  /** Lane 0 = spine, ≥1 = connected above in ascending order. */
   lane: number;
   startFrame: number;
   durationFrames: number;
   sourceInFrame: number;
   assetPath: string;
   label: string;
+  /** Linear 0-1 opacity from <adjust-blend>; absent means opaque. */
+  opacity?: number;
+  /** Linear gain from <adjust-volume>; absent means unity. */
+  volume?: number;
+  /** Silence has no per-clip flag in FCPXML; ≤-90dB arrives muted. */
+  muted?: boolean;
+  /** Source fractions from <adjust-crop> trim-rect (see geometry). */
+  cropTrim?: { left: number; top: number; right: number; bottom: number };
+  /** FCPXML-native geometry (see geometry.placementFromTransform). */
+  transform?: { positionX: number; positionY: number; scaleX: number; scaleY: number; rotation: number };
 }
 
 export interface ImportedAudioClip {
@@ -50,6 +63,10 @@ export interface ImportedAudioClip {
   sourceInFrame: number;
   assetPath: string;
   label: string;
+  /** Linear gain from <adjust-volume>; absent means unity. */
+  volume?: number;
+  /** Silence has no per-clip flag in FCPXML; ≤-90dB arrives muted. */
+  muted?: boolean;
 }
 
 export interface ImportedTitle {
@@ -113,6 +130,78 @@ function fileUrlToPath(src: string): string {
     decoded = decodeURIComponent(src);
   } catch { /* keep raw */ }
   return decoded.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '/');
+}
+
+/** "sx sy" pair, e.g. adjust-transform scale/position. */
+function parsePair(value: string | null): [number, number] | null {
+  if (value === null) return null;
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 2) return null;
+  const first = Number(parts[0]);
+  const second = Number(parts[1]);
+  return Number.isFinite(first) && Number.isFinite(second) ? [first, second] : null;
+}
+
+/** "−6.0206dB" (suffix optional) to decibels. */
+function parseDbAmount(value: string | null): number | null {
+  if (value === null) return null;
+  const match = value.trim().match(/^(-?\d+(?:\.\d+)?)(dB)?$/);
+  if (!match) return null;
+  const db = Number(match[1]);
+  return Number.isFinite(db) ? db : null;
+}
+
+/** Linear 0-1 opacity from <adjust-blend>; undefined when absent/unusable. */
+function blendOf(tag: string): number | undefined {
+  const match = tag.match(/<adjust-blend\b[^>]*amount="([^"]*)"/);
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return undefined;
+  return Math.min(1, Math.max(0, value));
+}
+
+function transformOf(tag: string): ImportedVideoClip['transform'] {
+  const match = tag.match(/<adjust-transform\b[^>]*>/);
+  if (!match) return undefined;
+  const scale = parsePair(attr(match[0], 'scale')) ?? [1, 1];
+  const rotation = numAttr(match[0], 'rotation') ?? 0;
+  const position = parsePair(attr(match[0], 'position')) ?? [0, 0];
+  if (scale[0] === 1 && scale[1] === 1 && rotation === 0 && position[0] === 0 && position[1] === 0) {
+    return undefined;
+  }
+  return {
+    positionX: position[0],
+    positionY: position[1],
+    scaleX: scale[0],
+    scaleY: scale[1],
+    rotation,
+  };
+}
+
+function cropTrimOf(tag: string): ImportedVideoClip['cropTrim'] {
+  const match = tag.match(/<adjust-crop\b[^>]*>[\s\S]*?<trim-rect\b[^>]*>/);
+  if (!match) return undefined;
+  const rect = match[0].slice(match[0].indexOf('<trim-rect'));
+  const read = (name: string): number => numAttr(rect, name) ?? 0;
+  const trim = { left: read('left'), top: read('top'), right: read('right'), bottom: read('bottom') };
+  if (!(trim.left > 0 || trim.right > 0 || trim.top > 0 || trim.bottom > 0)) return undefined;
+  return trim;
+}
+
+/**
+ * Volume from <adjust-volume>: decibels to linear gain. At or below −90dB the
+ * clip arrives muted — FCPXML has no per-clip mute flag, and that floor is
+ * inaudible either way. Unity gain carries nothing, keeping plans clean.
+ */
+function volumeOf(tag: string): { volume: number; muted: boolean } | undefined {
+  const match = tag.match(/<adjust-volume\b[^>]*amount="([^"]*)"/);
+  if (!match) return undefined;
+  const db = parseDbAmount(match[1]);
+  if (db === null) return undefined;
+  if (db <= -90) return { volume: 0, muted: true };
+  const linear = Math.pow(10, db / 20);
+  if (Math.abs(linear - 1) <= 0.0005) return undefined;
+  return { volume: Math.min(1, Math.max(0, linear)), muted: false };
 }
 
 function extractTagBlock(xml: string, tagName: string): string[] {
@@ -200,14 +289,24 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   // Skip the outer spine's own opening tag so it is not mistaken for nested.
   const innerXml = spineXml.slice(spineXml.indexOf('>') + 1);
   const openRe = /<(asset-clip|title|gap|spine)\b([^>]*?)(\/?)>/g;
-  for (const match of innerXml.matchAll(openRe)) {
+  // Explicit exec loop, not matchAll: matchAll clones the regex, so reading
+  // lastIndex inside the loop would always see 0 and every non-self-closed
+  // element after the first would consume from the document start instead of
+  // from its own opening tag.
+  let match: RegExpExecArray | null;
+  while ((match = openRe.exec(innerXml)) !== null) {
     const kind = match[1];
     const selfClosed = match[3] === '/';
     let tag = match[0];
     if (!selfClosed) {
       const closeTag = `</${kind}>`;
       const closeIdx = innerXml.indexOf(closeTag, openRe.lastIndex);
-      if (closeIdx !== -1) tag = innerXml.slice(match.index, closeIdx + closeTag.length);
+      if (closeIdx !== -1) {
+        tag = innerXml.slice(match.index, closeIdx + closeTag.length);
+        // Continue after the consumed element so a nested lookalike cannot
+        // resync the scan into the middle of this element's children.
+        openRe.lastIndex = closeIdx + closeTag.length;
+      }
     }
 
     if (kind === 'gap') continue; // absolute clip offsets already encode spacing
@@ -234,9 +333,24 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
         sourceInFrame: Math.round(startSec * fpsForFrames),
       };
       if (asset.hasAudio && !asset.hasVideo) {
-        clips.push({ kind: 'audio', ...base, assetPath: asset.path, label });
+        clips.push({ kind: 'audio', ...base, assetPath: asset.path, label, ...volumeOf(tag) });
       } else {
-        clips.push({ kind: 'video', ...base, assetPath: asset.path, label });
+        const opacity = blendOf(tag);
+        const cropTrim = cropTrimOf(tag);
+        const transform = transformOf(tag);
+        clips.push({
+          kind: 'video',
+          ...base,
+          assetPath: asset.path,
+          label,
+          ...(opacity !== undefined ? { opacity } : {}),
+          ...volumeOf(tag),
+          ...(cropTrim ? { cropTrim } : {}),
+          ...(transform ? { transform } : {}),
+        });
+      }
+      if (tag.includes('<keyframeAnimation')) {
+        unsupported.push(`Asset-clip "${label}" animates a parameter; the base value is kept, keyframes are not.`);
       }
       continue;
     }
@@ -262,7 +376,9 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   }
 
   // Nested <role>, <marker>, effect refs etc. anywhere in the doc.
-  for (const construct of ['<effect-ref', '<filter-video', '<filter-audio', '<note>', '<chapter-marker']) {
+  // <effect> children (color effects, third-party filters) have no
+  // representation here; grades and blend modes land here too.
+  for (const construct of ['<effect-ref', '<effect ', '<filter-video', '<filter-audio', '<note>', '<chapter-marker']) {
     if (xml.includes(construct)) {
       unsupported.push(`${construct.replace(/[<>=]/g, '')} elements are skipped.`);
     }

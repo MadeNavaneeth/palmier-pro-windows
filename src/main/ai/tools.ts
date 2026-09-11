@@ -876,7 +876,7 @@ export const tools = {
   importFcpxml: {
     name: 'import_fcpxml',
     description:
-      'Import a Final Cut Pro XML (.fcpxml) file: media assets are probed into the library, tracks are created for the lanes, and picture/audio/title clips are placed on them. Effects and grades inside the file are skipped and reported. Additive — existing timeline content is untouched.',
+      'Import a Final Cut Pro XML (.fcpxml) file: media assets are probed into the library, tracks are created for the lanes, and picture/audio/title clips are placed on them. Opacity, geometry, crop and volume survive the trip; grades, blend modes and keyframed parameters are skipped and reported. Additive — existing timeline content is untouched.',
     parameters: z.object({
       path: z.string().min(1).describe('Absolute path to the .fcpxml file.'),
     }),
@@ -885,7 +885,7 @@ export const tools = {
   exportFcpxml: {
     name: 'export_fcpxml',
     description:
-      'Write the current timeline as Final Cut Pro XML 1.11 for Resolve / FCP / Premiere: picture + audio clips on lanes, title text with styling. Effects and grades are not represented.',
+      'Write the current timeline as Final Cut Pro XML 1.11 for Resolve / FCP / Premiere: picture + audio clips on lanes, title text with styling, opacity, geometry, crop and volume. Grades, blend modes and keyframed parameters are not represented.',
     parameters: z.object({
       path: z.string().min(1).describe('Absolute destination path for the .fcpxml file.'),
     }),

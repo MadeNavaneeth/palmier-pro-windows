@@ -148,6 +148,7 @@ export function MediaBin() {
 
     // Register probed assets first so the applier can resolve paths→ids.
     const assetIdByPath = new Map<string, string>();
+    const dimsByPath = new Map<string, { width?: number; height?: number }>();
     for (const entry of res.assets ?? []) {
       if (entry.assetId && entry.probe) {
         const id = `fcpxml-${entry.assetId}`;
@@ -157,6 +158,7 @@ export function MediaBin() {
           addedAt: new Date().toISOString(),
         });
         assetIdByPath.set(entry.path, id);
+        dimsByPath.set(entry.path, { width: entry.probe.width, height: entry.probe.height });
       }
     }
 
@@ -164,6 +166,7 @@ export function MediaBin() {
       useTimelineStore.getState().controller,
       res.plan,
       assetIdByPath,
+      dimsByPath,
     );
     useProjectStore.getState().markDirty();
     const skipped = (res.assets ?? []).filter((a) => !a.assetId).length;

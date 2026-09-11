@@ -45,6 +45,7 @@ import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
 import { normalizeCaptionPlanOptions, planCaptions } from '../../shared/captions/planner';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
+import { importedClipPatch } from '../../shared/fcpxml/apply';
 import { createHash } from 'crypto';
 import { inspectFramePath, rgbaToPng } from '../media/frame-png';
 import {
@@ -1383,6 +1384,7 @@ export class ToolExecutor {
         // Assets: probe each unique path into the library; missing files are
         // reported and their clips skipped rather than failing the import.
         const assetIdByPath = new Map<string, string>();
+        const dimsByPath = new Map<string, { width?: number; height?: number }>();
         const offline: string[] = [];
         for (const asset of plan.assets) {
           if (!fsSync.existsSync(asset.path)) {
@@ -1404,6 +1406,7 @@ export class ToolExecutor {
                 : {}),
             });
             assetIdByPath.set(asset.path, id);
+            dimsByPath.set(asset.path, { width: probed.width, height: probed.height });
           } catch {
             offline.push(asset.path);
           }
@@ -1465,6 +1468,16 @@ export class ToolExecutor {
           if (clip.sourceInFrame > 0) {
             this.editor.trimClip(newClipId, sourceIn, sourceIn + durationFrames);
           }
+          // Imported adjustments ride one undoable batch; a clip carrying
+          // none adds no history. Same mapping as the dialog path (apply.ts).
+          const dims = dimsByPath.get(clip.assetPath);
+          const patch = importedClipPatch(clip, {
+            canvasWidth: this.editor.getProject().settings.width,
+            canvasHeight: this.editor.getProject().settings.height,
+            sourceWidth: dims?.width,
+            sourceHeight: dims?.height,
+          });
+          if (patch) this.editor.applyClipProperties([newClipId], 'Import clip adjustments', patch);
           placed += 1;
         }
 
