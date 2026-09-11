@@ -9,6 +9,7 @@ import {
   Save,
   Share2,
 } from 'lucide-react';
+import { useAiStore } from '../store/ai';
 import { useProjectStore } from '../store/project';
 import { useUiStore } from '../store/ui';
 import {
@@ -196,6 +197,10 @@ function PanelArrangementMenu() {
   const panels = useUiStore((s) => s.panels);
   const assignPanel = useUiStore((s) => s.assignPanel);
   const detached = useUiStore((s) => s.detached);
+  // A transcript captured mid-turn would miss the answer it was moving for,
+  // so the agent cannot move while one is streaming (the main process refuses
+  // it too; this is the affordance).
+  const agentBusy = useAiStore((s) => s.isStreaming);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -260,7 +265,7 @@ function PanelArrangementMenu() {
               <div key={panel}>
                 {/* A detached panel has no region to pick: it lives in its own
                     window, so the row shows that state instead of the tab
-                    picker. The Agent never detaches, so its row is unchanged. */}
+                    picker. */}
                 {isDetached ? (
                   <div className="flex items-center justify-between gap-2 rounded px-2 py-1">
                     <span className="flex items-center gap-1.5 text-[11px] text-text-secondary">
@@ -311,7 +316,13 @@ function PanelArrangementMenu() {
                       <button
                         type="button"
                         onClick={() => detachPanel(panel)}
-                        className="text-[10px] text-text-muted hover:text-text-secondary"
+                        disabled={panel === 'agent' && agentBusy}
+                        title={
+                          panel === 'agent' && agentBusy
+                            ? 'A turn is in progress. Stop it before moving the chat.'
+                            : undefined
+                        }
+                        className="text-[10px] text-text-muted hover:text-text-secondary disabled:opacity-40 disabled:hover:text-text-muted"
                       >
                         Open in new window
                       </button>

@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { adoptChatSession } from '../../shared/ai/chat-session';
 import { normalizePlan, type PlanStep } from '../../shared/editor/plan';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -62,6 +63,24 @@ export interface AiState {
   addToolCall: (name: string, args: Record<string, unknown>) => void;
   addToolResult: (name: string, result: unknown, success: boolean) => void;
   setPlan: (plan: PlanStep[]) => void;
+  /**
+   * Replace the transcript with an adopted session (upstream #286).
+   *
+   * A detached chat boots blank and takes over the main-process history; a
+   * returning chat replaces its pre-detach transcript with the snapshot so
+   * turns taken while detached show up. Anything malformed degrades to an
+   * empty chat, never a crash. A session exists only because a provider
+   * answered, so adopting a non-empty transcript implies configuration even
+   * in a window the user never configured.
+   */
+  adoptSession: (history: unknown, plan: unknown) => void;
+  /**
+   * Pull the main-process session and adopt it. True when this window now
+   * holds the session; false when there was nothing usable to adopt
+   * (transport failure) and the caller should offer a retry instead of a
+   * blank chat.
+   */
+  refreshSession: () => Promise<boolean>;
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -188,6 +207,32 @@ export const useAiStore = create<AiState>((set, get) => ({
   },
 
   setPlan: (plan) => set({ plan }),
+
+  adoptSession: (history, plan) => {
+    const adopted = adoptChatSession(history, plan);
+    const timestamp = Date.now();
+    set({
+      messages: adopted.messages.map((message) => ({ ...message, timestamp })),
+      plan: adopted.plan,
+      // Adoption replaces the transcript wholesale; a spinner left over from a
+      // previous window's turn must not survive the hand-off.
+      isStreaming: false,
+      streamingContent: '',
+      isConfigured: get().isConfigured || adopted.messages.length > 0,
+    });
+  },
+
+  refreshSession: () => {
+    return window.palmier.ai
+      .getSession()
+      .then((response: unknown) => {
+        if (typeof response !== 'object' || response === null) return false;
+        const { history, plan } = response as { history?: unknown; plan?: unknown };
+        get().adoptSession(history, plan);
+        return true;
+      })
+      .catch(() => false);
+  },
 }));
 
 // ─── Subscribe to streaming events from main process ─────────────────────────
@@ -204,6 +249,31 @@ export function initAiListeners(): () => void {
   unsubs.push(
     window.palmier.on('ai:stream-end', (reason: unknown) => {
       useAiStore.getState().finishStream(reason === 'cancelled' ? 'cancelled' : undefined);
+    }),
+  );
+
+  unsubs.push(
+    window.palmier.on('ai:tool-call', (payload: unknown) => {
+      // Narrowed like ai:plan below: the renderer is not the only writer of
+      // this state, and a malformed payload must not append a blank receipt.
+      if (typeof payload !== 'object' || payload === null) return;
+      const { name, args } = payload as { name?: unknown; args?: unknown };
+      if (typeof name !== 'string') return;
+      if (typeof args !== 'object' || args === null || Array.isArray(args)) return;
+      useAiStore.getState().addToolCall(name, args as Record<string, unknown>);
+    }),
+  );
+
+  unsubs.push(
+    window.palmier.on('ai:tool-result', (payload: unknown) => {
+      if (typeof payload !== 'object' || payload === null) return;
+      const { name, result } = payload as { name?: unknown; result?: unknown };
+      if (typeof name !== 'string') return;
+      const success =
+        typeof result === 'object' && result !== null && 'success' in result
+          ? (result as { success?: unknown }).success !== false
+          : true;
+      useAiStore.getState().addToolResult(name, result, success);
     }),
   );
 

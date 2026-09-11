@@ -151,12 +151,35 @@ export class PalmierAgent {
   private turn: AbortController | null = null;
   /** Callbacks of the running turn, so tool-driven events can reach the UI. */
   private activeCallbacks: StreamCallbacks | null = null;
+  /**
+   * Latest plan the agent reported (L3), retained for windows that arrive
+   * late: a detached chat adopts the session on boot and must see the same
+   * checklist the docked panel showed, not an empty one until the next update.
+   */
+  private lastPlan: PlanStep[] | null = null;
 
   constructor(editor: EditorController) {
     this.editor = editor;
     this.executor = new ToolExecutor(editor, {
-      onPlanUpdate: (plan) => this.activeCallbacks?.onPlan?.(plan),
+      onPlanUpdate: (plan) => {
+        this.lastPlan = plan;
+        this.activeCallbacks?.onPlan?.(plan);
+      },
     });
+  }
+
+  /**
+   * A deep copy of the session a late window needs to take over the visible
+   * chat: the structured history plus the current plan checklist.
+   *
+   * Copied rather than referenced — the renderer must never hold a live handle
+   * into the object the next tool round keeps appending to.
+   */
+  getSessionSnapshot(): { history: unknown[]; plan: PlanStep[] | null } {
+    return {
+      history: JSON.parse(JSON.stringify(this.conversationHistory)) as unknown[],
+      plan: this.lastPlan === null ? null : (JSON.parse(JSON.stringify(this.lastPlan)) as PlanStep[]),
+    };
   }
 
   /**
@@ -203,6 +226,8 @@ export class PalmierAgent {
     // was just cleared, and its answer would arrive into an empty transcript.
     this.cancel();
     this.conversationHistory = [];
+    // A cleared session must not hand a stale checklist to a late window.
+    this.lastPlan = null;
   }
 
   async chat(userMessage: string, callbacks: StreamCallbacks): Promise<void> {

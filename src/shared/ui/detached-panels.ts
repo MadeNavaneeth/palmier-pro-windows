@@ -6,24 +6,24 @@
  * detached window loads with, and that window's geometry. Pure, so the main
  * process, the renderer, and the tests read the same rules.
  *
- * Only stateless panels detach. The Agent is deliberately excluded: its visible
- * transcript is per-window renderer state, so moving it mid-conversation would
- * show an empty chat even though the main-process agent still holds the
- * history. Detaching the chat needs a transcript hand-off (and a rule refusing
- * detach while a turn is streaming), which is its own piece of work — a detach
- * button that silently drops the conversation is worse than no button.
+ * Only stateless panels detached, until the Agent's transcript hand-off
+ * landed: the Agent's visible transcript is per-window renderer state, so a
+ * detached chat adopts the session (`ai:get-session`) on boot instead of
+ * starting blank — and detach is refused while a turn is streaming, because a
+ * transcript captured mid-turn would be missing the answer it was moving for.
+ * Both rules are enforced, not advised (see the manager guard).
  */
 
 import type { Project } from '../types/project';
 
-export const DETACHABLE_PANELS = ['media', 'inspector', 'export'] as const;
+export const DETACHABLE_PANELS = ['media', 'inspector', 'agent', 'export'] as const;
 
-/** Panels that may live in their own window. The Agent is excluded; see above. */
+/** Panels that may live in their own window. */
 export type DetachablePanel = (typeof DETACHABLE_PANELS)[number];
 
 export function isDetachablePanel(value: unknown): value is DetachablePanel {
   return (
-    value === 'media' || value === 'inspector' || value === 'export'
+    value === 'media' || value === 'inspector' || value === 'agent' || value === 'export'
   );
 }
 
@@ -39,15 +39,16 @@ export interface DetachedWindowConfig {
 export const DETACHED_WINDOW_CONFIG: Record<DetachablePanel, DetachedWindowConfig> = {
   media: { width: 480, height: 860, minWidth: 300, minHeight: 400, title: 'Media - Palmier Pro' },
   inspector: { width: 360, height: 860, minWidth: 280, minHeight: 400, title: 'Inspector - Palmier Pro' },
+  agent: { width: 420, height: 860, minWidth: 300, minHeight: 400, title: 'Agent - Palmier Pro' },
   export: { width: 400, height: 760, minWidth: 300, minHeight: 400, title: 'Export - Palmier Pro' },
 };
 
 /**
  * Read the panel a window should render from its query string.
  *
- * Returns null for anything that is not a detachable panel — including 'agent',
- * an empty query, and garbage — so a hand-edited URL can only ever produce the
- * normal workspace, never an empty or duplicated one.
+ * Returns null for anything that is not a detachable panel — an empty query
+ * and garbage — so a hand-edited URL can only ever produce the normal
+ * workspace, never an empty or duplicated one.
  */
 export function parseDetachedPanel(search: string): DetachablePanel | null {
   let value: string | null = null;

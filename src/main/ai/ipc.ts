@@ -25,6 +25,11 @@ const store = new Store({
 
 let agent: PalmierAgent | null = null;
 
+/** True while the agent has a turn in flight (detach guard, #286). */
+export function isAgentBusy(): boolean {
+  return agent?.isBusy() ?? false;
+}
+
 /** Provider ids are used as store keys, so they must not contain path separators. */
 function isSafeProviderId(id: unknown): id is string {
   return typeof id === 'string' && /^[a-z0-9-]{1,32}$/.test(id);
@@ -193,6 +198,14 @@ export function registerAiHandlers(getEditor: () => EditorController): void {
   // Its own channel rather than a flag on `ai:chat`, because the point is to be
   // answerable while that handler's promise is still pending.
   ipcMain.handle('ai:cancel', () => ({ cancelled: agent?.cancel() ?? false }));
+
+  // Session hand-off (upstream #286): a detached chat adopts the visible
+  // session on boot — the structured history plus the current plan checklist,
+  // deep-copied so the renderer never holds a live handle into the object the
+  // next tool round appends to.
+  ipcMain.handle('ai:get-session', () => (
+    agent?.getSessionSnapshot() ?? { history: [], plan: null }
+  ));
 
   // â”€â”€â”€ Key Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ipcMain.handle('ai:set-key', async (_event, provider: string, key: string) => {

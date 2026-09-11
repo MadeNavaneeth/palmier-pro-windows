@@ -27,6 +27,11 @@ export interface DetachedWindowLike {
 export interface DetachedPanelsDeps {
   createWindow(panel: DetachablePanel, url: string): DetachedWindowLike;
   broadcast(panels: DetachablePanel[]): void;
+  /**
+   * Refuse a detach before any window exists (upstream #286: the Agent may not
+   * move while a turn is streaming). Absent means everything detachable goes.
+   */
+  canDetach?: (panel: DetachablePanel) => { ok: true } | { ok: false; error: string };
 }
 
 /**
@@ -49,14 +54,18 @@ export class DetachedPanelsManager {
 
   /**
    * Open a panel in its own window. Idempotent: detaching twice focuses the
-   * existing window instead of opening a second one.
+   * existing window instead of opening a second one. A refused detach opens
+   * nothing and reports why.
    */
-  detach(panel: DetachablePanel): void {
+  detach(panel: DetachablePanel): { ok: true } | { ok: false; error: string } {
     const existing = this.windows.get(panel);
     if (existing && !existing.isDestroyed()) {
+      // Focusing harms nothing, so the guard only gates opening new windows.
       existing.focus();
-      return;
+      return { ok: true };
     }
+    const allowed = this.deps.canDetach?.(panel);
+    if (allowed && !allowed.ok) return allowed;
     const win = this.deps.createWindow(panel, detachedPanelUrl(panel));
     this.windows.set(panel, win);
     win.on('closed', () => {
@@ -67,6 +76,7 @@ export class DetachedPanelsManager {
       }
     });
     this.deps.broadcast(this.listDetached());
+    return { ok: true };
   }
 
   /** Close the panel's window, if it has one. */

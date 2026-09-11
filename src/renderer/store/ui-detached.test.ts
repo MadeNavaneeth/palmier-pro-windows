@@ -65,11 +65,11 @@ describe('detached panels', () => {
     installStorage();
     const useUiStore = await loadStore();
 
-    // 'agent' can never detach (its transcript is per-window renderer state),
     // 'ghost' is not a panel, 42 is not a string, and the duplicate collapses.
+    // The agent detaches with a transcript hand-off (see ai:get-session).
     useUiStore.getState().setDetachedPanels(['media', 'agent', 'ghost', 42, 'media', 'export']);
 
-    expect(useUiStore.getState().detached).toEqual(['media', 'export']);
+    expect(useUiStore.getState().detached).toEqual(['media', 'agent', 'export']);
   });
 
   it('treats a non-list announcement as nothing detached', async () => {
@@ -143,6 +143,34 @@ describe('detached panels', () => {
     expect(() => useUiStore.getState().setDetachedPanels(['media'])).not.toThrow();
     expect(useUiStore.getState().detached).toEqual(['media']);
   });
+
+  it('detaching a grouped agent splits the group like any other panel', async () => {
+    installStorage();
+    const useUiStore = await loadStore();
+
+    useUiStore.getState().assignPanel('media', 'agent');
+    const groups = useUiStore.getState().groups;
+
+    useUiStore.getState().setDetachedPanels(['agent']);
+
+    // Untouched data; the docked member collapses at render time.
+    expect(useUiStore.getState().groups).toBe(groups);
+    expect(regionAnchorOf(groups, 'media')).toBe('agent');
+  });
+
+  it('restores a re-attached agent to a standalone region', async () => {
+    installStorage();
+    const useUiStore = await loadStore();
+
+    useUiStore.getState().assignPanel('media', 'agent');
+    useUiStore.getState().setDetachedPanels(['agent']);
+    useUiStore.getState().setDetachedPanels([]);
+
+    const groups = useUiStore.getState().groups;
+    expect(othersInRegion(groups, 'agent')).toEqual([]);
+    expect(regionAnchorOf(groups, 'agent')).toBe('agent');
+    expect(othersInRegion(groups, 'media')).toEqual([]);
+  });
 });
 
 describe('dockedMembers', () => {
@@ -163,5 +191,10 @@ describe('dockedMembers', () => {
     expect(dockedMembers(['inspector', 'export'], ALL_VISIBLE, ['inspector', 'export'])).toEqual(
       [],
     );
+  });
+
+  it('suppresses a detached agent like any other member', async () => {
+    expect(dockedMembers(['agent', 'media'], ALL_VISIBLE, ['agent'])).toEqual(['media']);
+    expect(dockedMembers(['agent'], ALL_VISIBLE, ['agent'])).toEqual([]);
   });
 });

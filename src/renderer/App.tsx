@@ -26,7 +26,11 @@ import {
 import type { LayoutPreset } from '../shared/ui/workspace-layout';
 import { initAiListeners } from './store/ai';
 import { useAutosave } from './hooks/useAutosave';
-import { useDetachedPanels, useDetachedProject } from './hooks/useDetachedPanels';
+import {
+  useDetachedChatSession,
+  useDetachedPanels,
+  useDetachedProject,
+} from './hooks/useDetachedPanels';
 import { useEditorSync } from './hooks/useEditorSync';
 
 /**
@@ -50,9 +54,96 @@ export function App() {
   // the workspace. Each branch is its own component so hooks stay
   // unconditional.
   if (DETACHED_PANEL !== null) {
-    return <DetachedPanelWindow panel={DETACHED_PANEL} />;
+    return DETACHED_PANEL === 'agent' ? (
+      <DetachedAgentWindow />
+    ) : (
+      <DetachedPanelWindow panel={DETACHED_PANEL} />
+    );
   }
   return <MainWorkspace />;
+}
+
+/**
+ * The Agent chat in its own OS window (upstream #286).
+ *
+ * Same frame pattern as the other detached panels, but the body is a chat, not
+ * a project panel: it adopts the main-process session on boot (never a blank
+ * chat), keeps streaming through the requesting-window event channels, and
+ * offers the settings dialog the gear button expects.
+ */
+function DetachedAgentWindow() {
+  const { status, retry } = useDetachedChatSession();
+
+  const moveBack = () => {
+    void window.palmier.panels.attach('agent').catch(() => {
+      // The main window restores the panel from the broadcast, so a rejected
+      // call only leaves this window open; nothing else to repair here.
+    });
+  };
+
+  return (
+    <div className="flex h-screen w-screen flex-col bg-surface-0">
+      <header
+        data-detached-frame
+        className="flex h-11 shrink-0 items-center gap-2 border-b border-white/10 bg-surface-1 px-3"
+      >
+        <span className="text-[11px] font-medium text-text-secondary">Agent</span>
+        <button
+          onClick={moveBack}
+          className="ml-auto flex h-7 items-center rounded-md px-2 text-[11px] font-medium text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
+          title="Move back to workspace"
+          aria-label="Move back to workspace"
+        >
+          Move back to workspace
+        </button>
+      </header>
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface-1"
+        data-detached-panel="agent"
+      >
+        {status === 'live' ? (
+          <SyncedChatBody />
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+            {status === 'unavailable' ? (
+              <>
+                <p className="max-w-[240px] text-[11px] leading-4 text-text-muted">
+                  Couldn&apos;t load the conversation.
+                </p>
+                <button
+                  onClick={retry}
+                  className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-medium text-surface-0 hover:bg-accent-hover"
+                >
+                  Try again
+                </button>
+              </>
+            ) : (
+              <p className="max-w-[240px] text-[11px] leading-4 text-text-muted">
+                Loading the conversation…
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+      <SettingsPanel />
+    </div>
+  );
+}
+
+/**
+ * The detached chat body with its mirrors running.
+ *
+ * Mounted only after the session is adopted: the editor-sync mirror's initial
+ * push must carry adopted state (see useDetachedChatSession), and the chat
+ * must never flash blank. Listens for stream events so sending, streaming,
+ * receipts and the plan checklist keep working here; those channels target
+ * the requesting window.
+ */
+function SyncedChatBody() {
+  // Keep the main-process controller mirrored so the panel reads live state.
+  useEditorSync();
+  useEffect(() => initAiListeners(), []);
+  return <ChatPanel />;
 }
 
 /**
@@ -205,7 +296,7 @@ function MainWorkspace() {
       <TitleBar
         mediaVisible={panels.media && !detached.includes('media')}
         inspectorVisible={panels.inspector && !detached.includes('inspector')}
-        agentVisible={panels.agent}
+        agentVisible={panels.agent && !detached.includes('agent')}
         exportVisible={panels.export && !detached.includes('export')}
         onToggleMedia={() => togglePanel('media')}
         onToggleInspector={() => togglePanel('inspector')}
@@ -217,7 +308,8 @@ function MainWorkspace() {
             anchor of its own group, so regrouping never relocates ChatPanel's
             React parent. An in-progress chat therefore survives any tab change.
             This is the #286 constraint upstream called out; see PanelRegion.
-            Detaching can never touch it either: the Agent is not detachable. */}
+            A detached agent is the one exception: the chat moves to its own
+            window with a session hand-off, and the region skips it. */}
         <PanelRegion
           anchor="agent"
           groups={groups}
@@ -454,10 +546,13 @@ function PanelRegion({
         <PanelTabs anchor={anchor} members={visible} active={activeMember} onSelect={setActive} />
       )}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {/* Never unmount this one. An in-progress turn, its transcript, and the
-            composer draft live under this wrapper; regrouping must not remount
-            ChatPanel, which is why the Agent is always the anchor of its group. */}
-        {anchor === 'agent' && (
+        {/* Never unmount this one for regrouping. An in-progress turn, its
+            transcript, and the composer draft live under this wrapper, which
+            is why the Agent is always the anchor of its group. Detaching is
+            the one move that does relocate the chat — into its own window,
+            with a session hand-off — so a detached agent is suppressed here:
+            moved, never rendered twice. */}
+        {anchor === 'agent' && !detached.includes('agent') && (
           <div
             {...tabPanelProps('agent')}
             className="flex min-h-0 flex-1 flex-col"

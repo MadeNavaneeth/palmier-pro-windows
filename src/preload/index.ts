@@ -137,6 +137,12 @@ const api = {
       ipcRenderer.invoke('ai:chat', messages, provider),
     /** Stop the turn in progress (#58). Resolves whether there was one. */
     cancel: (): Promise<{ cancelled: boolean }> => ipcRenderer.invoke('ai:cancel'),
+    /**
+     * Session hand-off for a detached chat (#286): the structured history
+     * plus the current plan checklist. Narrowed in the renderer before use.
+     */
+    getSession: (): Promise<{ history: unknown[]; plan: unknown }> =>
+      ipcRenderer.invoke('ai:get-session'),
     setApiKey: (provider: string, key: string) =>
       ipcRenderer.invoke('ai:set-key', provider, key),
     /** Persist a provider's base URL and model (#17, #140). Validated in main. */

@@ -121,3 +121,56 @@ describe('detached panel windows (#286)', () => {
     expect(windows[0].destroyed).toBe(true);
   });
 });
+
+describe('detach guard (#286: no move mid-turn)', () => {
+  function guardedHarness() {
+    const base = harness();
+    let busy = false;
+    const manager = new DetachedPanelsManager({
+      createWindow: (panel, url) => {
+        base.created.push({ panel, url });
+        const win = fakeWindow();
+        base.windows.push(win);
+        return win;
+      },
+      canDetach: (panel) => (
+        panel === 'agent' && busy
+          ? { ok: false as const, error: 'A turn is in progress.' }
+          : { ok: true as const }
+      ),
+      broadcast: (panels) => { base.broadcasts.push([...panels]); },
+    });
+    return { ...base, manager, setBusy: (value: boolean) => { busy = value; } };
+  }
+
+  it('refuses to open when the guard says no, broadcasting nothing', () => {
+    const guarded = guardedHarness();
+    guarded.setBusy(true);
+    const result = guarded.manager.detach('agent');
+
+    expect(result).toEqual({ ok: false, error: 'A turn is in progress.' });
+    expect(guarded.created).toEqual([]);
+    expect(guarded.broadcasts).toEqual([]);
+    expect(guarded.manager.listDetached()).toEqual([]);
+  });
+
+  it('opens other panels while the guard only blocks the chat', () => {
+    const guarded = guardedHarness();
+    guarded.setBusy(true);
+
+    expect(guarded.manager.detach('media')).toEqual({ ok: true });
+    expect(guarded.manager.listDetached()).toEqual(['media']);
+  });
+
+  it('focusing an open window bypasses the guard', () => {
+    const guarded = guardedHarness();
+    guarded.manager.detach('agent');
+    guarded.setBusy(true);
+
+    const result = guarded.manager.detach('agent');
+
+    expect(result).toEqual({ ok: true });
+    expect(guarded.created).toHaveLength(1);
+    expect(guarded.windows[0].focused).toBe(true);
+  });
+});

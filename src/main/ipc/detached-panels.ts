@@ -16,8 +16,7 @@ export function registerDetachedPanelsHandlers(manager: DetachedPanelsManager): 
     if (!isDetachablePanel(panel)) {
       return { ok: false as const, error: `Unknown panel: ${String(panel)}` };
     }
-    manager.detach(panel);
-    return { ok: true as const };
+    return manager.detach(panel);
   });
 
   ipcMain.handle('panels:attach', (_event, panel: unknown) => {

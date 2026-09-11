@@ -8,23 +8,24 @@ import {
 } from './detached-panels';
 
 describe('detached panels contract (#286)', () => {
-  it('allows the stateless panels and nothing else', () => {
-    expect([...DETACHABLE_PANELS].sort()).toEqual(['export', 'inspector', 'media']);
-    for (const panel of ['media', 'inspector', 'export']) {
+  it('allows the detachable panels and nothing else', () => {
+    expect([...DETACHABLE_PANELS].sort()).toEqual(['agent', 'export', 'inspector', 'media']);
+    for (const panel of ['media', 'inspector', 'agent', 'export']) {
       expect(isDetachablePanel(panel)).toBe(true);
     }
-    // The Agent is excluded on purpose (transcript hand-off, see module docs).
-    for (const bad of ['agent', 'timeline', 'preview', '', null, undefined, 42, {}, []]) {
+    // The Agent detaches only with a transcript hand-off and the busy rule
+    // (see the module docs); the query parser still narrows everything else.
+    for (const bad of ['timeline', 'preview', '', null, undefined, 42, {}, []]) {
       expect(isDetachablePanel(bad)).toBe(false);
     }
   });
 
   it('reads the panel from the window query, narrowing everything else to null', () => {
     expect(parseDetachedPanel('?panel=media')).toBe('media');
+    expect(parseDetachedPanel('?panel=agent')).toBe('agent');
     expect(parseDetachedPanel('?panel=inspector')).toBe('inspector');
     expect(parseDetachedPanel('?panel=export')).toBe('export');
     expect(parseDetachedPanel('')).toBeNull();
-    expect(parseDetachedPanel('?panel=agent')).toBeNull();
     expect(parseDetachedPanel('?panel=Media')).toBeNull();
     expect(parseDetachedPanel('?panel=media%00')).toBeNull();
     expect(parseDetachedPanel('?other=1')).toBeNull();

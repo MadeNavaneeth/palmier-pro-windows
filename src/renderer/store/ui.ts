@@ -247,8 +247,8 @@ interface UiState {
    * suppress a panel that is actually docked. The main process is the source
    * of truth; this mirrors `panels:list-detached` on boot and every
    * `panels:detached-changed` broadcast. A detached panel is suppressed in the
-   * main workspace — moved, never rendered twice. The Agent can never appear
-   * here (see `setDetachedPanels`), so the chat is unaffected.
+   * main workspace — moved, never rendered twice — and the Agent moves only
+   * with a transcript hand-off (see `ai:get-session`).
    */
   detached: DetachablePanel[];
   /**
@@ -360,10 +360,8 @@ export const useUiStore = create<UiState>((set) => ({
   setDetachedPanels: (value) =>
     set((state) => {
       // The main process narrows too, but an IPC payload is untrusted input:
-      // unknown keys are dropped, duplicates collapse, and 'agent' can never
-      // detach (its transcript is per-window renderer state). Garbage
-      // degrades to nothing-detached, which restores panels rather than
-      // hiding them.
+      // unknown keys are dropped and duplicates collapse. Garbage degrades to
+      // nothing-detached, which restores panels rather than hiding them.
       const next = Array.isArray(value)
         ? [...new Set(value.filter(isDetachablePanel))]
         : [];

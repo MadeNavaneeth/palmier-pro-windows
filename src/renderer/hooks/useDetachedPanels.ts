@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { asMirroredProject } from '../../shared/ui/detached-panels';
+import { useAiStore } from '../store/ai';
 import { useUiStore } from '../store/ui';
 import { useTimelineStore } from '../store/timeline';
 
@@ -14,6 +15,8 @@ import { useTimelineStore } from '../store/timeline';
  */
 export function useDetachedPanels(): void {
   const setDetachedPanels = useUiStore((state) => state.setDetachedPanels);
+  const detached = useUiStore((state) => state.detached);
+  const previousDetached = useRef(detached);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,6 +36,60 @@ export function useDetachedPanels(): void {
       off();
     };
   }, [setDetachedPanels]);
+
+  // Re-adopt on return: the remounting chat pulls the session again, so turns
+  // taken while detached show up in the workspace.
+  useEffect(() => {
+    const wasDetached = previousDetached.current.includes('agent');
+    previousDetached.current = detached;
+    if (wasDetached && !detached.includes('agent')) {
+      void useAiStore.getState().refreshSession();
+    }
+  }, [detached]);
+}
+
+export type DetachedChatStatus = 'loading' | 'live' | 'unavailable';
+
+/**
+ * Adopt the main-process chat session into a detached chat window.
+ *
+ * Project mirror first, session second, both narrowed: the sync mirror must
+ * mount after the project is adopted (see useDetachedProject), and the chat
+ * body must mount after the session is adopted, or the window flashes a blank
+ * chat. A failed pull reports unavailable so the window can offer a retry.
+ */
+export function useDetachedChatSession(): { status: DetachedChatStatus; retry: () => void } {
+  const [status, setStatus] = useState<DetachedChatStatus>('loading');
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const projectResponse: unknown = await window.palmier.editor.getState();
+        const project = asMirroredProject(projectResponse);
+        if (project === null) {
+          if (!cancelled) setStatus('unavailable');
+          return;
+        }
+        try {
+          useTimelineStore.getState().controller.loadProject(project);
+        } catch {
+          if (!cancelled) setStatus('unavailable');
+          return;
+        }
+        const adopted = await useAiStore.getState().refreshSession();
+        if (!cancelled) setStatus(adopted ? 'live' : 'unavailable');
+      } catch {
+        if (!cancelled) setStatus('unavailable');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [attempt]);
+
+  return { status, retry: () => setAttempt((count) => count + 1) };
 }
 
 export type DetachedProjectStatus = 'loading' | 'live' | 'unavailable';

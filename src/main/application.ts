@@ -15,7 +15,7 @@ import { registerExportHandlers } from './media/exporter';
 import { registerAudioHandlers } from './media/audio-envelope';
 import { registerMarkerSettingsHandlers } from './markers/marker-settings';
 import { registerProxyHandlers } from './media/proxies';
-import { registerAiHandlers } from './ai/ipc';
+import { registerAiHandlers, isAgentBusy } from './ai/ipc';
 import { registerGenerationHandlers } from './generation';
 import { registerDetachedPanelsHandlers } from './ipc/detached-panels';
 import { DetachedPanelsManager } from './windows/detached-panels';
@@ -150,6 +150,13 @@ export function startApplication(): void {
 
   const detachedPanels = new DetachedPanelsManager({
     createWindow: (panel) => createDetachedWindow(panel),
+    // The Agent may not move mid-turn: a transcript captured while the answer
+    // is still streaming would be missing the answer. The renderer disables
+    // the control too, but the refusal lives here so no caller can skip it.
+    canDetach: (panel) =>
+      panel === 'agent' && isAgentBusy()
+        ? { ok: false as const, error: 'A turn is in progress. Stop it before moving the chat.' }
+        : { ok: true as const },
     broadcast: (panels) => {
       for (const win of BrowserWindow.getAllWindows()) {
         win.webContents.send('panels:detached-changed', panels);
