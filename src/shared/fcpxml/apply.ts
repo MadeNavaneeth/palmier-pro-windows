@@ -270,7 +270,31 @@ export function applyFcpxmlPlan(
       sourceWidth: dims?.width,
       sourceHeight: dims?.height,
     });
-    if (patch) editor.applyClipProperties([clipId], 'Import clip adjustments', patch);
+    // The embedded-audio twin addClip created shares this clip's ONE source
+    // window, so a recovered speed scales it on the twin as well — exactly what
+    // setClipSpeed writes through expandLinkedClipIds. Speed alone: the twin is
+    // an audio clip and must not inherit this element's transform, opacity or
+    // crop. It rides the SAME batch, so a flat import still costs one undo step
+    // per imported element, and an element carrying no speed adds no twin entry.
+    const adjustments = new Map<string, (draft: Clip) => boolean>();
+    if (patch) adjustments.set(clipId, patch);
+    const twinSpeedPatch = importedSpeedPatch(clip);
+    if (twinSpeedPatch) {
+      for (const linkedId of editor.expandLinkedClipIds([clipId])) {
+        if (linkedId === clipId || adjustments.has(linkedId)) continue;
+        adjustments.set(linkedId, (draft) => {
+          twinSpeedPatch(draft);
+          return true;
+        });
+      }
+    }
+    if (adjustments.size > 0) {
+      editor.applyClipProperties(
+        [...adjustments.keys()],
+        'Import clip adjustments',
+        (draft) => adjustments.get(draft.id)?.(draft) ?? false,
+      );
+    }
     placedClips += 1;
   }
 

@@ -527,3 +527,93 @@ describe('linked A/V groups through a compound round trip', () => {
     expect(importedRoot.clips.filter((clip) => clip.type === 'audio')).toHaveLength(1);
   });
 });
+
+/**
+ * The flat path is the one a plain project round trips through, and it drops the
+ * exporter's redundant audio element and lets `addClip` re-derive the pair — so
+ * it already preserves the clip count. What it lacked is the twin's half of the
+ * speed: the same one window, on both halves, that `setClipSpeed` writes.
+ */
+function linkedSourceProject(speed?: number): EditorController {
+  const source = new EditorController();
+  addCompoundSourceMedia(source, 'compound-source', true);
+  const clipId = addCompoundSourceClip(source, { startFrame: 0, durationFrames: 30, inPoint: 15 });
+  if (speed !== undefined) source.setClipSpeed(clipId, speed);
+  return source;
+}
+
+function importFlatProject(source: EditorController): {
+  target: EditorController;
+  placedClips: number;
+  clips: Clip[];
+  tracks: Track[];
+} {
+  const plan = parseFcpxml(exportFcpxml(source.getProject()));
+  // No sequence resources, so this takes the legacy per-lane path.
+  expect(plan.sequences ?? []).toEqual([]);
+  const target = importTarget('imported-compound-source', true);
+  const result = applyFcpxmlPlan(target, plan, assetMap('imported-compound-source'), sourceDims());
+  const imported = target.getProject().timeline;
+  return { target, placedClips: result.placedClips, clips: imported.clips, tracks: imported.tracks };
+}
+
+describe('flat linked A/V round trip', () => {
+  it('gives the audio twin the sibling speed and the scaled outPoint', () => {
+    const source = linkedSourceProject(2);
+    const sourceTwin = source.getClips().find((clip) => clip.type === 'audio')!;
+    // What setClipSpeed wrote on BOTH halves of the group.
+    expect(sourceTwin).toMatchObject({ inPoint: 15, outPoint: 75, speed: 2, durationFrames: 30 });
+
+    const { target, placedClips, clips, tracks } = importFlatProject(source);
+    // Count behaviour is unchanged and already correct here.
+    expect(placedClips).toBe(1);
+    expect(clips).toHaveLength(2);
+
+    const video = clips.find((clip) => clip.type === 'video')!;
+    const twin = clips.find((clip) => clip.type === 'audio')!;
+    expect(tracks.find((track) => track.id === twin.trackId)?.type).toBe('audio');
+    expect(twin.linkGroupId).toBe(video.linkGroupId);
+    // The twin no longer keeps the unscaled window its sibling was corrected from.
+    expect(twin).toMatchObject({ speed: 2, inPoint: 15, outPoint: 75, durationFrames: 30 });
+    expect(twin.outPoint).toBe(twin.inPoint + Math.round(twin.durationFrames * 2));
+    // Speed only: the twin is an audio clip and inherits no visual adjustment.
+    expect(twin.opacity).toBe(1);
+    expect(twin.width).toBe(source.getProject().settings.width);
+
+    // Both halves moved in the one adjustment batch, so undo arity is unchanged.
+    expect(target.getLastCommandDescription()).toBe('setClipProperties');
+    expect(target.undo()).toBe(true);
+    const afterUndo = target.getClips();
+    expect(afterUndo.map((clip) => ({ in: clip.inPoint, out: clip.outPoint, speed: clip.speed })))
+      .toEqual([
+        { in: 15, out: 45, speed: undefined },
+        { in: 15, out: 45, speed: undefined },
+      ]);
+  });
+
+  it('keeps an unspeeded flat pair byte-identical to the pre-fix import', () => {
+    const source = linkedSourceProject();
+    const { target, placedClips, clips } = importFlatProject(source);
+
+    // Measured before the twin speed patch existed, and unchanged by it: the
+    // element carries no speed, so no twin entry joins the batch at all.
+    expect(placedClips).toBe(1);
+    expect(clips).toHaveLength(2);
+    for (const clip of clips) {
+      expect(clip).toMatchObject({ inPoint: 15, outPoint: 45, durationFrames: 30 });
+      expect(clip.speed).toBeUndefined();
+    }
+    // Last command is the trim, so the unspeeded element still adds no
+    // adjustment command and no undo entry.
+    expect(target.getLastCommandDescription()).toBe('replaceClips');
+  });
+
+  it('matches the source project clip-for-clip after a flat round trip', () => {
+    const source = linkedSourceProject(2);
+    const { clips, tracks } = importFlatProject(source);
+    const sourceProject = source.getProject();
+
+    expect(comparableClips(clips, tracks))
+      .toEqual(comparableClips(sourceProject.timeline.clips, sourceProject.timeline.tracks));
+  });
+});
