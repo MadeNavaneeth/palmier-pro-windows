@@ -201,7 +201,41 @@ One measured caveat is palmier's own: the exporter writes `frameDuration` as
 `(1 / fps).toFixed(6)`, and from 151 fps that quantization exceeds the importer's
 0.01 recovery tolerance, so a 151 fps project recovers as 150.989 and a 240 fps
 project as 239.981. The rescale is still self-correcting at those rates; noted so
-the inexactness is not rediscovered as a bug.
+the inexactness is not rediscovered as a bug. The quantization is one-sided —
+sweeping every project rate 1..240, 23 of them recover *above* their own rate
+(157 → 157.011, 220 → 220.022, 237 → 237.023) — but the maximum over the whole
+range is 239.981, so it never pushes a legal rate past a 240 bound. This is a
+property of our writer, not of FCPXML: upstream emits the exact rational form
+(`FCPXMLExporter.swift:863-870` at `b4b1333` writes `1/<int>s` or
+`1001/<int*1000>s`), which this importer recovers with no error at all —
+`1/240s` gives exactly 240, `1001/24000s` exactly 23.976, `1001/60000s` exactly
+59.94. Writing the rational form is the real fix for the inexactness and was
+deliberately left out of scope here.
+
+**The large-rate half of the contract was investigated and found not to exist.** A
+rate above the project bound is not degenerate, and adding a ceiling mirroring
+`MAX_PROJECT_FPS` (240) would have been a regression rather than a fix. The
+rescale is scale-invariant: the importer rounds each offset to
+`round(seconds * rate)` document frames and the applier multiplies back by
+`projectFps / rate`, so the two cancel in the seconds domain. A 0.5 s offset, a 2 s
+duration and a 0.5 s source in — 15, 60 and 15 frames at 30 fps — measured
+identical from documents declaring 24, 30, 60, 120, 150, 151, 200, 239, 240 (as
+239.981), 241, 250, 300, 500, 1000, 10 000, 100 000, 10^6, 10^9, 10^15, 10^29,
+10^50, 10^100, 10^200 and 10^297 fps. The very document an earlier note here
+claimed collapsed every clip to frame 0 — `frameDuration` of 1e-33 s, recovering
+1e29 fps — places `15/60/15/75`, exactly like a 30 fps document: a small
+`fpsScale` is what makes the cancellation work, not a sign of collapse, and the
+earlier claim came from reading that scale without ever printing the placed
+frames. So the guard is bounded on one side only, and the asymmetry is the point:
+too slow destroys the window at parse time and nothing downstream recovers it,
+too fast destroys nothing. The one large value that genuinely fails is a
+non-finite one (`frameDuration` of 1e-320 s recovers `Infinity`, which the
+`Number.isFinite` clause already refuses), so the contract is a finiteness
+requirement rather than a range. `fps.test.ts` now pins the high-rate cases,
+including the 1e-33 s document, so a future reader cannot add a ceiling without
+watching seven tests fail — and the note a ceiling would emit for a 300 fps
+document is `"declares 300.03 fps, too slow to map frames"`, which is simply
+wrong.
 
 Below one frame per second the rescale stops carrying information: the importer
 has already rounded every `offset`/`duration` to whole multi-second units, so the

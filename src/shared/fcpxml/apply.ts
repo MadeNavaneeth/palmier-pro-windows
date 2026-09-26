@@ -273,6 +273,29 @@ export function applyImportedTitleStyle(
  * the floor below which a frame mapping carries no information; every rate a
  * real document can carry, and every rate the exporter can write (the project
  * rate is a positive integer, `controller.applyProjectSettings`), clears it.
+ *
+ * There is deliberately NO upper bound, and that is a measured decision rather
+ * than an omission. The rescale is scale-invariant: the importer rounds each
+ * offset to `round(seconds * rate)` document frames and the applier multiplies
+ * back by `projectFps / rate`, so the two cancel in the seconds domain. A
+ * 0.5 s offset into a 30 fps project measured `15/60/15/75` from documents
+ * declaring 24, 25, 30, 60, 120, 150, 151, 200, 239, 240 (as 239.981), 241, 250,
+ * 300, 500, 1000, 10 000, 100 000, 10^6, 10^9, 10^15, 10^29, 10^50, 10^100,
+ * 10^200 and 10^297 fps — every one exact, because a small `fpsScale` is what
+ * makes the cancellation work, not a sign of collapse. So a ceiling mirroring
+ * `MAX_PROJECT_FPS` (240) would REFUSE documents that currently import exactly
+ * right — 241.022, 250, 300.03 and 1000 fps all place correctly — which is a
+ * regression traded for nothing. The only large value that genuinely fails is a
+ * non-finite one (`frameDuration` of 1e-320 s recovers `Infinity`), and the
+ * `Number.isFinite` clause in `degenerateRateRefusal` already refuses that.
+ *
+ * For the record, the 6-decimal `frameDuration` this module's own exporter
+ * writes is a precision limit of OUR writer, not of FCPXML: upstream writes the
+ * exact rational form (`FCPXMLExporter.swift:863-870` at `b4b1333` emits
+ * `1/<int>s` or `1001/<int*1000>s`), which this importer recovers with no
+ * error at all — `1/240s` gives exactly 240, `1001/24000s` exactly 23.976. Our
+ * decimal form is what loses precision above 151 fps, and that is a reason to
+ * fix the writer, not to bound the reader.
  */
 const MIN_IMPORT_SOURCE_FPS = 1;
 
@@ -284,6 +307,13 @@ const MIN_IMPORT_SOURCE_FPS = 1;
  * drift from — this rule. The note is pushed onto `plan.unsupported` and also
  * returned, so a caller whose result envelope has no `unsupported` channel (the
  * agent reports a refusal as `success: false`) reports the same wording.
+ *
+ * The contract is bounded on ONE side only, and the two directions fail
+ * differently, which is why they are not symmetric. Too slow destroys the
+ * window at parse time (the importer's own rounding to multi-second units) and
+ * nothing downstream can recover it. Too fast destroys nothing: the rescale
+ * stays exact at every rate measured up to 10^297 fps, so there is no upper
+ * bound to enforce. What remains is a finiteness requirement, not a range.
  *
  * An absent rate means "use the project rate" — the identity rescale, which
  * stays allowed, so a document with no usable `<format frameDuration>` keeps its

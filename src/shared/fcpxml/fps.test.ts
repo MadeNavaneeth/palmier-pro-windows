@@ -197,6 +197,90 @@ describe('cross-rate FCPXML import rescale', () => {
   });
 });
 
+/**
+ * The other end of the range. There is no upper bound, and that is measured
+ * rather than assumed: the importer rounds each offset to `round(seconds *
+ * rate)` document frames and the applier multiplies back by `projectFps /
+ * rate`, so the two cancel and the rescale is scale-invariant. These tests are
+ * the pin that keeps a future reader from adding a ceiling — one mirroring
+ * `MAX_PROJECT_FPS` would refuse documents that import exactly right today.
+ */
+describe('large document rate is not degenerate', () => {
+  /** A document declaring `frameDuration`, clip at 0.5 s / 2 s / source-in 0.5 s. */
+  function rateDoc(frameDuration: string): string {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      `<format id="r1" frameDuration="${frameDuration}" width="1920" height="1080"/>`,
+      `<asset id="r2" name="fps.mp4" src="file:///X:/media/${PATH.split('/').pop()}" start="0s" duration="600s" hasVideo="1" hasAudio="1"/>`,
+      '</resources><library><event name="E"><project name="E"><spine>',
+      '<asset-clip name="A" offset="0.5s" duration="2s" start="0.5s" ref="r2"/>',
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+  }
+
+  const place = (frameDuration: string): { plan: ReturnType<typeof parseFcpxml>; clip: Record<string, unknown> | undefined } => {
+    const plan = parseFcpxml(rateDoc(frameDuration));
+    const target = targetAt(30);
+    applyFcpxmlPlan(target, plan, new Map([[PATH, 'imported']]), DIMS);
+    return { plan, clip: video(target) as never };
+  };
+
+  // 0.5 s and 2 s in a 30 fps project are 15, 60 and 15 frames whatever the
+  // document rate, because the rescale cancels. The rational forms are what
+  // upstream actually writes (FCPXMLExporter.swift:863-870 at b4b1333); the
+  // decimal ones are this repo's own exporter, and the two tiny ones past 151
+  // fps are that writer's quantization showing up.
+  it.each([
+    ['1/24s', 24],
+    ['1/30s', 30],
+    ['1/60s', 60],
+    ['1/240s', 240],
+    ['1001/24000s', 23.976],
+    ['1001/30000s', 29.97],
+    ['1001/60000s', 59.94],
+    ['0.004167s', 239.981],
+    ['0.004166s', 240.038],
+    ['0.004149s', 241.022],
+    ['0.003333s', 300.03],
+    ['0.000001s', 1000000],
+  ])('places a %s document (recovers %s fps) exactly', (frameDuration, expectedFps) => {
+    const { plan, clip } = place(frameDuration as string);
+
+    expect(plan.fps).toBeCloseTo(expectedFps as number, 6);
+    expect(plan.unsupported).toEqual([]);
+    expect(clip).toMatchObject({ startFrame: 15, durationFrames: 60, inPoint: 15, outPoint: 75 });
+  });
+
+  it.each([
+    ['0.000000000000000000000000000001s', 1e29],
+    ['0.0000000000000000000001s', 1e22],
+  ])('places a %s document (recovers ~%s fps) exactly, refusing nothing', (frameDuration, magnitude) => {
+    // A 1e-33 s frameDuration is the very document an earlier note here claimed
+    // collapsed every clip to frame 0. It does not: the small fpsScale is what
+    // makes the two roundings cancel.
+    const { plan, clip } = place(frameDuration as string);
+
+    expect(plan.fps).toBeGreaterThanOrEqual(magnitude as number);
+    expect(plan.unsupported).toEqual([]);
+    expect(clip).toMatchObject({ startFrame: 15, durationFrames: 60, inPoint: 15, outPoint: 75 });
+  });
+
+  it('refuses only a non-finite rate, which is the one large value that fails', () => {
+    // 1e-320 s is denormal enough that 1/frameDuration is Infinity. That is the
+    // only measured large-rate failure, and the finiteness clause catches it.
+    const plan = parseFcpxml(rateDoc(`0.${'0'.repeat(319)}1s`));
+    expect(plan.fps).toBe(Infinity);
+
+    const target = targetAt(30);
+    const result = applyFcpxmlPlan(target, plan, new Map([[PATH, 'imported']]), DIMS);
+
+    expect(result).toEqual({ placedClips: 0, titles: 0, tracksCreated: 0, skippedOffline: 0 });
+    expect(target.getClips()).toEqual([]);
+    expect(plan.unsupported.some((note) => /unusable frame rate/.test(note))).toBe(true);
+  });
+});
+
 describe('degenerate document rate refusal', () => {
   // Below one frame per second the importer has already rounded every offset
   // and duration to whole multi-second units, so the plan cannot be rescaled
