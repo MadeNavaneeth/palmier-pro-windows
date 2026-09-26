@@ -258,6 +258,127 @@ describe('a playhead still reaches the other window', () => {
   });
 });
 
+/**
+ * The push a playhead notification arms is the debounced project mirror, and
+ * a cursor move is a notification like any other.
+ *
+ * The defect this pins shut: the `kind !== 'playhead'` check guarded only
+ * `markDirty`, so everything after it ran for a cursor move too — the pending
+ * write was armed and the timer restarted. Playback advances the playhead on
+ * every advanced frame (`PlaybackEngine.ts:195`), and so does a scrub or a
+ * ruler drag, so during any of them the timer was reset before it could ever
+ * reach its 300ms and NOT ONE push landed. Main kept the pre-edit timeline, and
+ * since preview, export and the agent's `save_project` all read that mirror
+ * (`preview-compositor.ts:771`, `executor.ts:1931`), pressing Play showed the
+ * cut as it was before the last edit, and a save could write that stale
+ * timeline to the user's file.
+ */
+describe('a playhead move does not starve the project push', () => {
+  it('lands the pending edit while the cursor keeps moving', async () => {
+    openSavedProject();
+    const own = mountWindow();
+    await own.sync.ready;
+    own.pushes.length = 0;
+
+    // A real edit, which arms the push for +300ms...
+    const clipId = controller().getClips()[0].id;
+    expect(controller().setClipBlendMode(clipId, 'multiply')).toBe(true);
+
+    // ...and then the transport: a cursor move every 25ms for three seconds,
+    // which is a scrub, a ruler drag, or playback on a fast machine.
+    for (let frame = 1; frame <= 120; frame++) {
+      controller().setPlayhead(frame);
+      await vi.advanceTimersByTimeAsync(25);
+    }
+
+    // One push is not enough to call this fixed: a debounced mirror that fires
+    // once and then stops is the same defect with a lucky start. What used to
+    // happen is that none ever landed at all.
+    expect(own.pushes.length).toBeGreaterThan(1);
+    // The edit reaches main, so the mirror is not the pre-edit timeline the
+    // preview, the export and save_project read.
+    expect(JSON.parse(own.pushes[0]).timeline.clips[0].blendMode).toBe('multiply');
+
+    // And the mirror converges on the cursor: once the window settles, main
+    // holds the position the user is actually looking at, which is what
+    // `get_timeline` reports and what three-point edits default to.
+    await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS);
+    const last = JSON.parse(own.pushes[own.pushes.length - 1]);
+    expect(last.timeline.playheadFrame).toBe(120);
+    expect(last.timeline.clips[0].blendMode).toBe('multiply');
+
+    own.sync.dispose();
+  });
+
+  it('still carries the cursor to main, which is the channel the agent reads', async () => {
+    openSavedProject();
+    const own = mountWindow();
+    await own.sync.ready;
+    own.pushes.length = 0;
+
+    controller().setPlayhead(120);
+    await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS);
+
+    // The agent does not read the cursor from anywhere else. `get_timeline`
+    // spreads the session controller's timeline, `playheadFrame` included
+    // (`executor.ts:669`), and every three-point edit the agent runs defaults
+    // to that controller's `getPlayhead()` (`executor.ts:975`, `:1421` of the
+    // controller). The project mirror is the channel that carries it, so a
+    // cursor move has to keep using it.
+    expect(own.pushes).toHaveLength(1);
+    expect(JSON.parse(own.pushes[0]).timeline.playheadFrame).toBe(120);
+
+    // Which is the whole point of the exclusion: it is a view update end to
+    // end, so carrying it costs the user neither unsaved work nor an undo step.
+    expect(useProjectStore.getState().hasUnsavedChanges).toBe(false);
+    expect(controller().canUndo()).toBe(false);
+
+    own.sync.dispose();
+  });
+});
+
+/**
+ * A drag previews its frames instead of publishing them (`previewFrame`), so
+ * what is on screen mid-gesture is not state anyone else may hold yet. It is
+ * rolled back on the next pointer move and re-applied on mouse-up, so pushing
+ * it would publish a position the user has not committed — to main's
+ * compositor, to every sibling window, and to the agent's `get_timeline`.
+ */
+describe('a staged gesture frame is never published to the mirror', () => {
+  it('holds the mid-drag position back and mirrors the committed one', async () => {
+    openSavedProject();
+    const own = mountWindow();
+    await own.sync.ready;
+    own.pushes.length = 0;
+
+    // Pointer down on the clip at frame 30, then a move to +10 frames: the
+    // clip is on screen at 40 and nothing has been published.
+    const clipId = controller().getClips()[0].id;
+    store().startDrag('move', clipId, 0, 30);
+    store().updateDrag(40);
+    expect(clipStarts()).toEqual([40]);
+    expect(controller().canUndo()).toBe(false);
+
+    // The pointer rests there mid-gesture for four whole debounce windows,
+    // which is someone thinking about the cut they are making.
+    await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS * 4);
+
+    expect(own.pushes).toEqual([]);
+
+    // Mouse-up re-runs the same derivation through the publishing path, and
+    // that is the one moment the gesture becomes state — so that is the moment
+    // it reaches main, as the single undo step it is.
+    store().endDrag();
+    await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS);
+
+    expect(own.pushes).toHaveLength(1);
+    expect(clipStarts(JSON.parse(own.pushes[0]))).toEqual([40]);
+    expect(controller().canUndo()).toBe(true);
+
+    own.sync.dispose();
+  });
+});
+
 describe('a reload seed is not unsaved work', () => {
   it('adopts the session project without arming the autosave', async () => {
     // A reloaded window comes back with a fresh, empty controller and pulls

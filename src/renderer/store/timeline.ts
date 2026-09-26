@@ -180,6 +180,8 @@ export interface TimelineState {
   getPlayhead: () => Frame;
   getProjectFps: () => number;
   getProjectHeight: () => number;
+  /** Whether a live drag is holding a staged, uncommitted frame on the project. */
+  isGestureFrameStaged: () => boolean;
   getProjectDuration: () => Frame;
   canUndo: () => boolean;
   canRedo: () => boolean;
@@ -558,6 +560,17 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     getScopeTimeline: () => scopeTimelineOf(get().project, get().activeTimelineId),
     getProjectFps: () => get().project.settings.fps,
     getProjectHeight: () => get().project.settings.height,
+    /**
+     * Whether a live drag is holding a staged frame on the project.
+     *
+     * True exactly while `drag.frameAfter` is set: the gesture applied a
+     * preview frame, and the next pointer move, Escape, or mouse-up has not
+     * closed it yet. The project therefore holds a position the user has not
+     * committed, so anything that reads the project for another process or
+     * another window — the session mirror — has to ask this before it treats
+     * what it reads as state.
+     */
+    isGestureFrameStaged: () => get().drag.frameAfter !== undefined,
     getProjectDuration: () => {
       const clips = get().project.timeline.clips;
       if (clips.length === 0) return 300; // default 10s at 30fps

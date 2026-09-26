@@ -276,12 +276,33 @@ export function createEditorSync(options: EditorSyncOptions): EditorSync {
       adopting = false;
       return;
     }
+    // A cursor move still has to reach main: `get_timeline` reports the
+    // mirror's playhead, and every three-point edit the agent runs defaults to
+    // it. What it must not do is hold the push back. Re-arming the debounce on
+    // every notification is only safe for work that is still arriving, and a
+    // playhead move arrives once per advanced frame during playback and once
+    // per pointer frame during a scrub — so re-arming on it reset the timer
+    // before it could ever elapse, and a pending edit then waited forever.
+    // While a push is already armed the cursor simply rides along in that
+    // snapshot, which serializes it when the timer fires.
+    if (kind === 'playhead' && pushTimer) return;
     pendingLocal = { json: null };
     if (pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(() => {
       pushTimer = null;
       const pending = pendingLocal;
       if (!pending) return;
+      // A drag stages its frames instead of publishing them, so the project can
+      // be holding a position the user is still dragging towards — which it is
+      // whenever they pause mid-gesture to look at the cut they are making.
+      // Sending that would publish an uncommitted frame to main's compositor,
+      // to every sibling window, and to whatever the agent reads.
+      //
+      // The local commit stays outstanding, which is what an armed debounce
+      // means, and the gesture arms this timer again when it ends: closing a
+      // staged frame notifies, so the next push carries the committed position
+      // and releases the commit then. Nothing is owed by not sending now.
+      if (useTimelineStore.getState().isGestureFrameStaged()) return;
       const json = controller.serialize();
       if (!mirror.needsPush(json)) {
         if (pendingLocal === pending) {
@@ -317,16 +338,19 @@ export function createEditorSync(options: EditorSyncOptions): EditorSync {
         return;
       }
 
-      // A local write is outstanding, so this payload is provably older than
-      // what main will hold once that write lands: attachSessionEditorPush
-      // captures main's project when its controller notifies, and the sync
-      // handler replaces main's state with ours afterwards. Adopting it now
-      // would swap the controller out from under a pending commit, and the
-      // debounce would then serialize the adopted state and push that — losing
-      // the user's edit from the window and from the session. The local write
-      // is the one that wins the session; nothing to queue, because a state
-      // the pending commit is about to supersede must not be applied later.
-      // This holds for a tagged playhead push too, for the same reason.
+      // A local write is outstanding, so this inbound state is dropped. The
+      // local write wins the session, and that is a PRIORITY this module
+      // asserts rather than an ordering it derives: the window is mid-gesture
+      // or mid-debounce, and adopting now would swap the controller out from
+      // under a commit about to be sent, after which the timer would serialize
+      // the adopted state and push that — losing the user's edit from the
+      // window and from the session. So it is dropped, and nothing is queued:
+      // the state is discarded with a success receipt, so an agent edit that
+      // landed inside a 300ms debounce window is gone from this window for
+      // good, with main told the push succeeded. Sequencing these instead —
+      // ordering them by main's acceptance sequence, rebasing, or versioning —
+      // is a separate decision and is deliberately not taken here. The same
+      // rule covers a tagged playhead push, for the same reason.
       if (pendingLocal) return;
 
       // Ignore a push that matches what we last sent (our own state echoed).
