@@ -186,6 +186,35 @@ could change. Out-of-range seeks are rejected before FFmpeg is spawned, and the
 exporter inserts `fps=<project fps>` ahead of each overlay so sources are
 resampled to the project timebase rather than queueing extra frames.
 
+### #154 — FCPXML import across frame rates
+
+A document's `<format frameDuration>` recovers one rate and the importing
+project may hold another, so `applyFcpxmlPlan` rescales every plan frame by
+`projectFps / sourceFps`. Measured across 24 rate/shape combinations, that
+rescale is exact in wall clock up to the `Math.round` at the target rate (≤0.5
+target frame) and preserves the consumed source fraction exactly, on the flat and
+compound paths alike, with the linked audio twin always on its visual sibling's
+window. Repeated export/import cycles drift by exactly zero, because the state
+that survives a hop is the six-decimal seconds string, not a frame count.
+
+One measured caveat is palmier's own: the exporter writes `frameDuration` as
+`(1 / fps).toFixed(6)`, and from 151 fps that quantization exceeds the importer's
+0.01 recovery tolerance, so a 151 fps project recovers as 150.989 and a 240 fps
+project as 239.981. The rescale is still self-correcting at those rates; noted so
+the inexactness is not rediscovered as a bug.
+
+Below one frame per second the rescale stops carrying information: the importer
+has already rounded every `offset`/`duration` to whole multi-second units, so the
+plan's frame numbers cannot be mapped back to what the document said. A foreign
+document declaring `frameDuration="2s"` (0.5 fps) placed a 10/60/15/135 clip at
+0/60/0/120, and `"100s"` (0.01 fps) inflated a 60-frame clip to 3000 frames, both
+reported as success with an empty `unsupported` list. Both materializers now
+refuse such a document whole — one note through `plan.unsupported`, no tracks, no
+clips — and share one `frameRescaler`, so the flat path's converter carries the
+same `clampFrame` the compound path's already had and a `plan.fps` of `0` (which
+`??` does not catch) cannot become `Infinity`/`NaN` on a clip. An absent rate
+still means "use the project rate" and keeps its existing identity behavior.
+
 ### #164 — keyboard shortcuts
 
 Bindings live in data, not in a switch statement. `shortcutConflicts()` is

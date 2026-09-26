@@ -1227,7 +1227,9 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   }
 
   if (!fpsForFrames) {
-    unsupported.push('No integer-capable <format frameDuration>; frame numbers are approximated.');
+    // Not an approximation: every spine child needs a rate to turn its offset
+    // and duration into frames and is dropped above, so say that.
+    unsupported.push('No usable <format frameDuration>; spine timing cannot be mapped to frames, so no clip is imported.');
   }
 
   return {

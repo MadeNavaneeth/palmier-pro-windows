@@ -159,6 +159,55 @@ export function importedClipPatch(
 }
 
 /**
+ * A document rate below one frame per second is not a frame rate: every
+ * `offset`/`duration` the importer read has already been rounded to whole
+ * multi-second units by the time the plan reaches the applier, so the plan's
+ * frame numbers cannot be rescaled back into anything the source said. Measured
+ * on a 30 fps project, a `frameDuration` of 2s (0.5 fps) placed a 10/60/15/135
+ * clip at 0/60/0/120 and one of 100s (0.01 fps) inflated a 60-frame clip to
+ * 3000 frames, both with an empty `unsupported` list. One frame per second is
+ * the floor below which a frame mapping carries no information; every rate a
+ * real document can carry, and every rate the exporter can write (the project
+ * rate is a positive integer, `controller.applyProjectSettings`), clears it.
+ */
+const MIN_IMPORT_SOURCE_FPS = 1;
+
+/**
+ * The document rate to rescale by, or null when the document's rate is
+ * degenerate and the import must be refused whole. Refusing rather than
+ * clamping is the one contract both materializers share: a partly-placed
+ * document whose clips sit at invented positions is worse than a clean
+ * refusal, and the importer's own convention is to report rather than guess.
+ *
+ * An absent rate means "use the project rate" — the identity rescale, which
+ * stays allowed, so a document with no usable `<format frameDuration>` keeps
+ * its existing (importer-reported) behavior.
+ */
+function importSourceFps(plan: ParsedFcpxml, projectFps: number): number | null {
+  const sourceFps = plan.fps ?? projectFps;
+  if (Number.isFinite(sourceFps) && sourceFps >= MIN_IMPORT_SOURCE_FPS) return sourceFps;
+  // Nothing left to place means the importer already refused the whole spine
+  // and said so; a second note would only repeat it.
+  if (plan.clips.length > 0) {
+    plan.unsupported.push(Number.isFinite(sourceFps)
+      ? `<format frameDuration> declares ${sourceFps} fps, too slow to map frames; nothing is imported.`
+      : '<format frameDuration> declares an unusable frame rate; nothing is imported.');
+  }
+  return null;
+}
+
+/**
+ * Document frames -> project frames. `clampFrame` keeps a non-finite
+ * intermediate from becoming an `Infinity`/`NaN` frame value on any clip:
+ * `plan.fps` reaches this module across IPC, and `??` does not catch a `0`
+ * rate, so a degenerate document can still carry one.
+ */
+function frameRescaler(projectFps: number, sourceFps: number): (frames: number) => number {
+  const fpsScale = sourceFps > 0 ? projectFps / sourceFps : 1;
+  return (frames: number): number => clampFrame(Math.round(frames * fpsScale));
+}
+
+/**
  * @param plan          Parsed plan (see importer).
  * @param assetIdByPath Library asset id per absolute asset path; entries the
  *                      caller could not add are treated as offline/skipped.
@@ -179,8 +228,11 @@ export function applyFcpxmlPlan(
   }
 
   const projectFps = editor.getProject().settings.fps;
-  const sourceFps = plan.fps ?? projectFps;
-  const toFrames = (frames: number) => Math.round(frames * (projectFps / sourceFps));
+  const sourceFps = importSourceFps(plan, projectFps);
+  if (sourceFps === null) {
+    return { placedClips: 0, titles: 0, tracksCreated: 0, skippedOffline: 0 };
+  }
+  const toFrames = frameRescaler(projectFps, sourceFps);
   const canvasWidth = editor.getProject().settings.width;
   const canvasHeight = editor.getProject().settings.height;
 
@@ -361,9 +413,11 @@ function materializeCompoundFcpxmlPlan(
 ): ApplyFcpxmlResult {
   const initialProject = editor.getProject();
   const projectFps = initialProject.settings.fps;
-  const sourceFps = plan.fps ?? projectFps;
-  const fpsScale = sourceFps > 0 ? projectFps / sourceFps : 1;
-  const toFrames = (frames: number): number => clampFrame(Math.round(frames * fpsScale));
+  const sourceFps = importSourceFps(plan, projectFps);
+  if (sourceFps === null) {
+    return { placedClips: 0, titles: 0, tracksCreated: 0, skippedOffline: 0 };
+  }
+  const toFrames = frameRescaler(projectFps, sourceFps);
   const canvasWidth = initialProject.settings.width;
   const canvasHeight = initialProject.settings.height;
 
