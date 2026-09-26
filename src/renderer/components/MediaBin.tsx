@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownUp,
   AudioLines,
+  Check,
   FileInput,
   Film,
   Flag,
@@ -34,7 +35,7 @@ import { formatImportErrors } from '../../shared/media/import-summary';
 import { formatDuration } from '../../shared/utils/time';
 import { ASSET_DND_MIME, getDroppedFilePath, setDraggingAsset } from '../lib/dnd';
 import { GenerateDialog } from './GenerateDialog';
-import { applyFcpxmlPlan } from '../../shared/fcpxml/apply';
+import { applyFcpxmlPlan, type ApplyFcpxmlResult } from '../../shared/fcpxml/apply';
 import { applyCaptionCues } from '../../shared/captions/apply';
 import {
   CAPTION_PLAN_LIMITS,
@@ -60,6 +61,46 @@ const panelTabs = [
   { id: 'captions' as const, label: 'Captions', Icon: Subtitles },
   { id: 'audio' as const, label: 'Audio', Icon: AudioLines },
 ];
+
+/**
+ * Everything an import can leave on the panel, in one value: the failure text,
+ * the success line, and the format's own omission notes.
+ *
+ * One object with one setter, replaced whole on every import, is what keeps the
+ * three honest: a failing import cannot leave the last run's success line
+ * showing, and a succeeding one cannot leave the last run's error up. Separate
+ * state per field would have to be cleared by hand in every path and would drift
+ * the first time somebody added one.
+ */
+export interface ImportResultState {
+  error: string;
+  summary: string;
+  notes: readonly string[];
+}
+
+const NO_IMPORT_RESULT: ImportResultState = { error: '', summary: '', notes: [] };
+
+/** "1 clip", "0 titles" — a count that reads as English. */
+function countOf(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * The counts line for a finished import: what arrived, then the assets the
+ * document referenced that the panel could not resolve. Every counted noun takes
+ * a singular form so one clip does not read "1 clips"; `offline` stays the
+ * label it has always been ("2 offline", "1 offline") rather than a pluralised
+ * noun, and stays out of the sentence entirely when it is zero.
+ */
+export function formatImportSummary(result: ApplyFcpxmlResult, offline: number): string {
+  const parts = [
+    countOf(result.placedClips, 'clip'),
+    countOf(result.titles, 'title'),
+    countOf(result.tracksCreated, 'track'),
+  ];
+  if (offline > 0) parts.push(`${offline} offline`);
+  return `Imported: ${parts.join(', ')}.`;
+}
 
 export function MediaBin() {
   const project = useTimelineStore((state) => state.project);
@@ -107,8 +148,7 @@ export function MediaBin() {
   const [activeTab, setActiveTab] = useState<PanelTab>('media');
   const [query, setQuery] = useState('');
   const [isFileDragActive, setIsFileDragActive] = useState(false);
-  const [importError, setImportError] = useState('');
-  const [importNotes, setImportNotes] = useState<string[]>([]);
+  const [importResult, setImportResult] = useState<ImportResultState>(NO_IMPORT_RESULT);
   const [generateOpen, setGenerateOpen] = useState(false);
 
   // Folder layer (#156): which folder scopes the grid; null = library root
@@ -135,9 +175,12 @@ export function MediaBin() {
       importAssets(result.files);
       useProjectStore.getState().markDirty();
     }
-    setImportError(
-      formatImportErrors(result.errors) || (result.success ? '' : 'No supported media files found.'),
-    );
+    // A plain import replaces the whole outcome, so the last XML run's success
+    // line and omission notes do not outlive it.
+    setImportResult({
+      ...NO_IMPORT_RESULT,
+      error: formatImportErrors(result.errors) || (result.success ? '' : 'No supported media files found.'),
+    });
   }
 
   async function handleImport() {
@@ -146,8 +189,7 @@ export function MediaBin() {
 
   /** FCPXML import (#154): main parses+probes; we materialize the plan. */
   const handleImportXml = useCallback(async () => {
-    setImportError('');
-    setImportNotes([]);
+    setImportResult(NO_IMPORT_RESULT);
     const res = await window.palmier.media.openFcpxml() as {
       success: boolean;
       canceled?: boolean;
@@ -160,7 +202,9 @@ export function MediaBin() {
       }>;
     };
     if (!res.success || !res.plan) {
-      if (!res.canceled) setImportError(res.error || 'Could not import the XML file.');
+      if (!res.canceled) {
+        setImportResult({ ...NO_IMPORT_RESULT, error: res.error || 'Could not import the XML file.' });
+      }
       return;
     }
 
@@ -188,14 +232,15 @@ export function MediaBin() {
     );
     useProjectStore.getState().markDirty();
     const skipped = (res.assets ?? []).filter((a) => !a.assetId).length;
-    const parts = [`${result.placedClips} clips`, `${result.titles} titles`, `${result.tracksCreated} tracks`];
-    if (skipped > 0) parts.push(`${skipped} offline`);
-    // Reuse the notice banner as the outcome surface; success clears itself.
-    setImportError(`Imported: ${parts.join(', ')}.`);
-    // What the document carried that this editor cannot place, in the
-    // importer's own words. Read after the apply because the applier adds its
-    // own refusals to the same list.
-    setImportNotes(res.plan.unsupported);
+    // What arrived goes on the success line; what the document carried that
+    // this editor cannot place goes under it, in the importer's own words. The
+    // notes are read after the apply because the applier adds its own refusals
+    // to the same list.
+    setImportResult({
+      error: '',
+      summary: formatImportSummary(result, skipped),
+      notes: res.plan.unsupported,
+    });
   }, []);
 
   async function handleFileDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -208,7 +253,10 @@ export function MediaBin() {
       .filter((filePath): filePath is string => Boolean(filePath));
 
     if (paths.length === 0) {
-      setImportError('Windows did not provide a readable path for the dropped file.');
+      setImportResult({
+        ...NO_IMPORT_RESULT,
+        error: 'Windows did not provide a readable path for the dropped file.',
+      });
       return;
     }
 
@@ -336,12 +384,7 @@ export function MediaBin() {
               </button>
             </div>
           )}
-          {importError && (
-              <div className="mb-2 border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-300">
-                {importError}
-              </div>
-            )}
-            <FcpxmlImportNotes notes={importNotes} />
+            <ImportOutcome result={importResult} />
             <PanelNotice />
             <ArmedSwapBanner />
             {mediaItems.length === 0 ? (
@@ -1002,6 +1045,44 @@ function PanelNotice() {  const notice = useMediaPanelStore((state) => state.not
     >
       {notice}
     </button>
+  );
+}
+
+/**
+ * The import outcome, in the panel's own vocabulary: either a failure or a
+ * success, never both, plus the omission notes underneath.
+ *
+ * The success line is the emerald ✓ the Captions panel's ok notice and the export
+ * dialog's XML result already use, so "Imported: …" no longer borrows the red
+ * error banner — a document that imported cleanly does not read as a failure,
+ * and the amber notes below it read as the reason for what is missing rather
+ * than as the outcome. A failure keeps the panel's red error banner verbatim
+ * (now with `role="alert"`, the same role the file already gives its other
+ * error text) and nothing about it is softened.
+ */
+export function ImportOutcome({ result }: { result: ImportResultState }) {
+  return (
+    <>
+      {result.error && (
+        <div
+          role="alert"
+          className="mb-2 border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-300"
+        >
+          {result.error}
+        </div>
+      )}
+      {result.summary && (
+        <div
+          role="status"
+          data-import-summary
+          className="mb-2 flex items-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-[10px] text-emerald-400"
+        >
+          <Check size={11} strokeWidth={2} aria-hidden="true" />
+          {result.summary}
+        </div>
+      )}
+      <FcpxmlImportNotes notes={result.notes} />
+    </>
   );
 }
 
