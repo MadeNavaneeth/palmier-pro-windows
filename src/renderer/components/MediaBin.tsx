@@ -108,6 +108,7 @@ export function MediaBin() {
   const [query, setQuery] = useState('');
   const [isFileDragActive, setIsFileDragActive] = useState(false);
   const [importError, setImportError] = useState('');
+  const [importNotes, setImportNotes] = useState<string[]>([]);
   const [generateOpen, setGenerateOpen] = useState(false);
 
   // Folder layer (#156): which folder scopes the grid; null = library root
@@ -146,6 +147,7 @@ export function MediaBin() {
   /** FCPXML import (#154): main parses+probes; we materialize the plan. */
   const handleImportXml = useCallback(async () => {
     setImportError('');
+    setImportNotes([]);
     const res = await window.palmier.media.openFcpxml() as {
       success: boolean;
       canceled?: boolean;
@@ -190,6 +192,10 @@ export function MediaBin() {
     if (skipped > 0) parts.push(`${skipped} offline`);
     // Reuse the notice banner as the outcome surface; success clears itself.
     setImportError(`Imported: ${parts.join(', ')}.`);
+    // What the document carried that this editor cannot place, in the
+    // importer's own words. Read after the apply because the applier adds its
+    // own refusals to the same list.
+    setImportNotes(res.plan.unsupported);
   }, []);
 
   async function handleFileDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -335,6 +341,7 @@ export function MediaBin() {
                 {importError}
               </div>
             )}
+            <FcpxmlImportNotes notes={importNotes} />
             <PanelNotice />
             <ArmedSwapBanner />
             {mediaItems.length === 0 ? (
@@ -995,6 +1002,36 @@ function PanelNotice() {  const notice = useMediaPanelStore((state) => state.not
     >
       {notice}
     </button>
+  );
+}
+
+/**
+ * FCPXML import omissions (#154): the plan's own sentences for what the
+ * document carried but this editor cannot place — a refused timeMap, a rate
+ * that maps to no frames, a skipped effect. The counts line reports only what
+ * arrived, so a document refused wholesale reads as "0 clips" with no reason
+ * given; these notes are that reason.
+ *
+ * Amber like the panel's other notices and like the export dialog's XML
+ * omission box, never red: the import ran, and this is what it left out. The
+ * list is capped with its own scrollbar (the ChatPanel idiom) so a document
+ * that accumulates notes cannot push the library off the panel, and no note is
+ * dropped to make room.
+ */
+export function FcpxmlImportNotes({ notes }: { notes: readonly string[] }) {
+  if (notes.length === 0) return null;
+  return (
+    <div
+      data-import-xml-notes
+      className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-relaxed text-amber-300"
+    >
+      <p>{`Not imported (${notes.length}):`}</p>
+      <ul className="mt-1 max-h-28 space-y-0.5 overflow-y-auto break-words pr-0.5">
+        {notes.map((note, index) => (
+          <li key={index}>{note}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
