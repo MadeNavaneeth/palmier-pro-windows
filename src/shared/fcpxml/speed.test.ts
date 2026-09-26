@@ -150,10 +150,55 @@ describe('constant speed FCPXML import and apply (#154/#289)', () => {
     const restored = target.getClips().find((clip) => clip.assetId === 'imported')!;
     expect(restored.speed).toBe(sourceClip.speed);
     expect(restored.startFrame).toBe(sourceClip.startFrame);
-    expect(restored.durationFrames).toBe(sourceClip.durationFrames);
+    // The trim is handed the UNSCALED span on purpose: the clip's speed is still
+    // undefined when trimClip runs, so trimWindowDurationFrames divides by 1 and
+    // derives the timeline length, which the speed patch then converts back into
+    // the real outPoint. Pre-scaling the span here would apply the speed twice.
     expect(restored.inPoint).toBe(sourceClip.inPoint);
     expect(restored.outPoint).toBe(sourceClip.outPoint);
-    expect(restored.outPoint).toBe(restored.inPoint + restored.durationFrames * effectiveSpeed(2));
+    expect(restored.durationFrames).toBe(sourceClip.durationFrames);
+  });
+
+  it('scales a sped-up import source window exactly once', () => {
+    const source = sourceEditor({ speed: 2, inPoint: 15 });
+    const sourceClip = source.editor.getClips().find((clip) => clip.id === source.clipId)!;
+    const plan = parseFcpxml(exportFcpxml(source.editor.getProject()));
+    const target = targetEditor();
+
+    applyFcpxmlPlan(target, plan, new Map([[MEDIA_PATH, 'imported']]), DIMS);
+    const imported = target.getClips().find((clip) => clip.assetId === 'imported')!;
+
+    // Exactly one application of the speed: the source window spans the source
+    // the clip consumes, so a 2x clip whose timeline length is 90 consumes 180
+    // source frames -- not 360, which is what scaling the trim span AND letting
+    // the patch rescale would produce.
+    expect(imported.speed).toBe(2);
+    expect(imported.durationFrames).toBe(sourceClip.durationFrames);
+    expect(imported.inPoint).toBe(sourceClip.inPoint);
+    expect(imported.outPoint).toBe(sourceClip.outPoint);
+    expect(imported.outPoint - imported.inPoint)
+      .toBe(Math.round(imported.durationFrames * effectiveSpeed(2)));
+  });
+
+  it('keeps the source window exact when the plan carries no speed', () => {
+    // A linear timeMap at exactly 1x is not emitted, so "unit" and "absent" are
+    // the same import: both must resolve to the unscaled span.
+    const restored = [sourceEditor(), sourceEditor({ speed: 1 })].map(({ editor }) => {
+      const plan = parseFcpxml(exportFcpxml(editor.getProject()));
+      expect(importedVideo(plan).speed).toBeUndefined();
+      const target = targetEditor();
+      applyFcpxmlPlan(target, plan, new Map([[MEDIA_PATH, 'imported']]), DIMS);
+      const clip = target.getClips().find((candidate) => candidate.assetId === 'imported')!;
+      return {
+        inPoint: clip.inPoint,
+        outPoint: clip.outPoint,
+        durationFrames: clip.durationFrames,
+      };
+    });
+
+    for (const clip of restored) {
+      expect(clip).toEqual({ inPoint: 15, outPoint: 105, durationFrames: 90 });
+    }
   });
 
   it('reports malformed, unparseable, and non-constant timeMaps instead of dropping them silently', () => {

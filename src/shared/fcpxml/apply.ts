@@ -235,7 +235,15 @@ export function applyFcpxmlPlan(
       durationFrames,
     });
     // Source trim is a follow-up edit: addClip has no In/Out params.
-    // Source trim is a follow-up edit: addClip has no In/Out params.
+    // The span stays UNSCALED by any recovered speed, deliberately. trimClip takes
+    // source frames, but it derives the timeline length from the window via
+    // trimWindowDurationFrames = round((out - in) / effectiveSpeed(clip.speed)),
+    // and the clip's speed is still undefined (= 1) here because the speed lands
+    // later in the importedClipPatch batch below. So a pre-scaled span would make
+    // the trim derive a doubled durationFrames, which the patch would then scale
+    // a second time when it rewrites outPoint: a 2x clip would import as 4x.
+    // The unscaled span is what yields the correct source window, and importedClipPatch
+    // converts it to the real outPoint, so both operations agree on the end state.
     if (clip.sourceInFrame > 0) {
       editor.trimClip(clipId, sourceIn, sourceIn + durationFrames);
     }
