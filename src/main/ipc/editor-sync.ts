@@ -124,23 +124,37 @@ export function registerEditorSyncHandlers(
   // `success` is the controller's real boolean, never a constant: undo/redo
   // with an empty history must report failure so Agent/MCP callers do not
   // believe a no-op mutated the timeline.
+  //
+  // A stale refusal carries its reason in the same `error` field the no-session
+  // branch already uses, so a caller can tell "the project moved, so undoing
+  // would overwrite work" from "there was nothing to undo". Reporting the two
+  // identically is the ambiguity this handler exists to avoid. `data` still
+  // carries the unchanged project on both paths, and the success shape is
+  // untouched.
   ipcMain.handle('editor:undo', (event) => {
     const controller = controllerForSender(event.sender);
     if (!controller) return { success: false, error: NO_SESSION_ERROR };
-    return { success: controller.undo(), data: controller.getProject() };
+    const success = controller.undo();
+    const refusal = success ? null : controller.undoRefusalMessage('undo');
+    return { success, data: controller.getProject(), ...(refusal ? { error: refusal } : {}) };
   });
   ipcMain.handle('editor:redo', (event) => {
     const controller = controllerForSender(event.sender);
     if (!controller) return { success: false, error: NO_SESSION_ERROR };
-    return { success: controller.redo(), data: controller.getProject() };
+    const success = controller.redo();
+    const refusal = success ? null : controller.undoRefusalMessage('redo');
+    return { success, data: controller.getProject(), ...(refusal ? { error: refusal } : {}) };
   });
 
   // Renderer pushes its authoritative project to main (no history, no echo).
+  // setProjectFromMirror, not setProjectSilent: this direction is a FOREIGN
+  // change to the session's agent history, so the commands on it go stale and
+  // undo refuses rather than rolling the mirror back past the user's own work.
   ipcMain.handle('editor:sync-from-renderer', async (event, projectJson: string) => {
     const session = getSessionForSender(event.sender);
     if (!session) return { success: false, error: NO_SESSION_ERROR };
     try {
-      session.controller.setProjectSilent(JSON.parse(projectJson));
+      session.controller.setProjectFromMirror(JSON.parse(projectJson));
       const project = session.controller.getProject();
       // Explicitly propagate renderer edits without notifying the controller;
       // siblings adopt this tagged snapshot through setProjectSilent as well.

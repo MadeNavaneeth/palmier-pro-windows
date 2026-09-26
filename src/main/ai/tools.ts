@@ -396,7 +396,11 @@ export const tools = {
   // ── Undo/Redo ────────────────────────────────────────────────────────────────
   undo: {
     name: 'undo',
-    description: 'Undo the last editing command.',
+    description:
+      'Undo the last editing command. Only commands this tool ran on the main project are undoable '
+      + 'here, and only while the project still matches: once the user edits content in the window, '
+      + 'undo refuses rather than overwriting their work, and says so. Moving the playhead or the '
+      + 'in/out marks does not count as an edit and does not block undo.',
     parameters: z.object({}),
   },
 

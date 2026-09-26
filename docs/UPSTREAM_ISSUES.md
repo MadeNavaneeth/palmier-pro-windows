@@ -344,6 +344,97 @@ file cleanup, audio-context teardown, prefetch misses — and each states why.
 Sustained preview composite failures are now reported once per outage instead of
 being dropped at frame rate.
 
+### #331 — agent undo after a renderer edit
+
+The #331 row recorded this as a divergence and, in doing so, understated it. It
+said the two Undo buttons can disagree and that Agent undo "reports nothing to
+undo" after a UI move. The **malignant** direction was never recorded: not a
+disagreement, but silent destruction. A main command captures its inverse state
+when it first executes, so it describes the project only while nothing else has
+changed it — and the renderer's project reaches main as a snapshot that goes
+through no command at all. Undoing an agent command after a user edit therefore
+reverted the *user's* work, and reported success doing it. Measured on the real
+tool: an agent set a clip's `blendMode` to `multiply`, the user restyled the same
+clip to `screen` with `opacity 0.9`, and the agent's undo returned
+`{success: true}` while restoring the stale `previousClips` — the user's edit gone
+with nothing on their side of the history. The wholesale shape is worse: a
+`ReplaceProjectCommand` (agent `new_project` / `open_project`, FCPXML import,
+`deleteMediaFolder`, `moveAssetsToFolder`) returns its whole pre-edit
+`previousProject`, so the entire document was replaced by the project as it stood
+before the agent touched it.
+
+`CommandHistory` now versions every entry against a counter of writes **it did
+not make**, and `undo`/`redo` refuse when the current version is not the version
+the entry was applied at. The counter deliberately does not advance for the
+history's own commands, or popping one entry would immediately stale the one
+beneath it and no sequence of undos would get past the first. A refusal peeks
+before it pops, so it consumes nothing: `canUndo` stays true, the entry keeps its
+command and its label, and the project is untouched.
+
+**The subtlety was the whole fix, and putting the bump in the obvious place
+broke a test that was right.** `setProjectSilent` is the documented mirror-write
+entry point, so that is where the bump went first — and
+`useEditorSync.test.ts` failed, because a renderer uses the *same* method to
+adopt a **sibling** window's snapshot and asserts that undo then returns to its
+own work. Those are two different meanings, so they are now two methods:
+`setProjectFromMirror` (the renderer→main direction, a foreign change to main's
+agent history, bumps when the push carries authored change) and
+`setProjectSilent` (a sibling adopt, a local view update in the window receiving
+it, never bumps). The renderer's own edits never take either path, so its undo
+depth and labels are byte-identical.
+
+Every path that changes main's project without a command was enumerated, not
+assumed: `setProjectFromMirror` bumps, and `loadProject` (`controller.ts:4565`)
+and `reset` (`:4597`) are exempt by construction because they clear the history
+outright, leaving nothing to stale. Deliberately **not** bumped: `movePlayhead`
+(`:3700`), `setInFrame`/`setOutFrame`/`setMarkedRange`/`clearMarkedRange`, and
+`collapsePreviewFrame` (`:1065`) — all direct writes with no entry, all cursor
+or live-gesture state rather than authored content, so no command's captured
+inverse can cover them and none can be made stale by one moving. Bumping there
+would mean a user could not move the playhead and then press Ctrl+Z.
+
+**The same principle then had to be applied to the mirror write, which is where
+the first version drew the asymmetry.** Bumping unconditionally on every push
+meant the renderer's debounced push — which carries the cursor on nearly every
+edit — stranded every pending agent entry, so a user who merely scrubbed could
+no longer be un-done by the agent. `setProjectFromMirror` now compares what main
+held against what the renderer pushed and bumps only when the difference reaches
+something a command's captured inverse could cover (`carriesAuthoredChange`).
+The exclusion is `playheadFrame`, `inFrame` and `outFrame`, applied per timeline
+including nested sequences — the same three fields the render-side exemption
+list is built from, so the two directions now agree. `updatedAt` is deliberately
+**not** excluded: `controller.ts:3779` already records that a cursor move leaves
+it alone because "the cursor is not something the user authored", so a differing
+`updatedAt` is evidence that authored work happened, and refusing is the safe
+direction. `compTrackId` is not excluded either — its only writer also appends an
+authored `Comp` track, so it never moves alone.
+
+Measured after the correction, on the real tool: a playhead-only push leaves
+agent `undo` working and returning the pre-command state
+(`{success: true, data: {action: 'undo'}}`), as does a marks-only push; a push
+carrying a clip, track, media, settings or project-name change still refuses with
+the same specific reason and the user's edit survives. A push mixing a playhead
+move with an authored change still refuses — the comparison is about the whole
+difference, not about whether an excluded field appears in it.
+
+The honest limitation is narrower than "permanently unavailable" and is about
+what the exclusion cannot see. A whole-project `ReplaceProjectCommand` (agent
+`new_project` / `open_project`) restores its entire captured `previousProject`,
+so undoing one after a playhead-only push also rewinds the playhead and the
+marks: authored work is preserved, view state is not. The alternative was to
+refuse every agent undo after a scrub, which is worse. A second, smaller limit:
+the comparison is by value on the pushed snapshot, so a push that carried an
+authored change and then was re-sent with that change reverted to its prior value
+would not bump. Neither is a data-loss path, and both are the cost of not
+reconciling two states — ownership transfer, rebasing and a versioned push all
+remain deferred with the single shared history. The version lives entirely inside
+the history and mirror layer: no field was added to the project, to `Project`, or
+to any IPC payload, so the wire shape is unchanged.
+
+Upstream: no analogue. Upstream retired before the cross-process undo question
+existed, and the whole two-controller mirror is a Windows-architecture artifact,
+so PR #331 stays `Partial` — the divergence it describes is narrowed, not closed.
+
 ### Earlier adopted work
 
 | Upstream | Windows status |

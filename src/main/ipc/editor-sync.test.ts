@@ -340,12 +340,14 @@ describe('editor:undo / editor:redo', () => {
   function invoke(channel: 'editor:undo' | 'editor:redo', windowId: number): {
     success: boolean;
     data: { name: string };
+    error?: string;
   } {
     const handler = electronMocks.handlers.get(channel);
     if (!handler) throw new Error(`${channel} handler was not registered`);
     return handler({ sender: { id: windowId } }) as {
       success: boolean;
       data: { name: string };
+      error?: string;
     };
   }
 
@@ -465,7 +467,6 @@ describe('editor:undo / editor:redo', () => {
     addWindow(session.id, detached);
     addWindow(other.id, otherMain);
     attachSessionEditorPush(session);
-    const nameBefore = session.controller.getProject().name;
 
     // A main-side (agent/MCP) edit still pushes the untagged payload to both
     // of this session's windows and nowhere else.
@@ -489,13 +490,64 @@ describe('editor:undo / editor:redo', () => {
     expect(JSON.parse(detached.calls[1].args[0] as string).name).toBe('Edited in main');
     expect(otherMain.calls).toEqual([]);
 
-    // Undo reaches the same session mirror the propagation wrote to, and is a
-    // real undo: it rolls the mirror back past the agent edit.
+    // Undo does NOT reach past the renderer snapshot. The agent edit captured
+    // its inverse before the user's project arrived, so undoing it now would
+    // discard the work the user just did — the whole-document case replacing
+    // the project outright, the per-clip case silently reverting one clip. The
+    // undo refuses, the renderer's project stays, and there is nothing to redo
+    // because nothing was undone. The renderer snapshot still authored no undo
+    // step here, which is what the previous expectation also asserted.
     const undo = invoke('editor:undo', 1);
-    expect(undo.success).toBe(true);
-    expect(session.controller.getProject().name).toBe(nameBefore);
-    // The renderer snapshot never became history, so redo has nothing to add.
-    expect(session.controller.canRedo()).toBe(true);
-    expect(invoke('editor:redo', 1).data.name).toBe('Agent rename');
+    expect(undo.success).toBe(false);
+    expect(session.controller.getProject().name).toBe('Edited in main');
+    expect(session.controller.canRedo()).toBe(false);
+    expect(session.controller.getUndoRefusal()).toBe('stale');
+  });
+
+  it('reports why the undo refused, so a caller can tell it from an empty stack', async () => {
+    // `success: false` alone is ambiguous: it covers both "there was nothing to
+    // undo" and "undoing now would overwrite work since". The agent surface
+    // already distinguishes them, and the IPC now does too, in the same `error`
+    // field this handler already uses for its other failure.
+    const session = createSession();
+    addWindow(session.id, fakeWindow(1));
+
+    // An empty stack: no reason, so the shape stays exactly as it was.
+    expect(invoke('editor:undo', 1)).toEqual({
+      success: false,
+      data: expect.objectContaining({ name: expect.any(String) }),
+    });
+
+    mainSideEdit(session.controller, 'Agent rename');
+    await syncFrom(1, { ...session.controller.getProject(), name: 'Edited in main' });
+
+    const refused = invoke('editor:undo', 1);
+    expect(refused.success).toBe(false);
+    expect(refused.error).toBe(
+      'Cannot undo: the project changed since that step was applied, so undoing it would '
+      + 'overwrite work done since. Undo it from the window instead.',
+    );
+    // Same wording as the agent's receipt: one source, so the two cannot drift.
+    expect(refused.error).toBe(session.controller.undoRefusalMessage('undo'));
+  });
+
+  it('a playhead-only push leaves the main-side undo working', async () => {
+    // The IPC shape of the correction: a cursor move reaches main on nearly
+    // every push, and it must not cost the caller an undo.
+    const session = createSession();
+    addWindow(session.id, fakeWindow(1));
+    mainSideEdit(session.controller, 'Agent rename');
+    expect(session.controller.getProject().name).toBe('Agent rename');
+
+    const project = session.controller.getProject();
+    await syncFrom(1, {
+      ...project,
+      timeline: { ...project.timeline, playheadFrame: 99 },
+    });
+
+    const undone = invoke('editor:undo', 1);
+    expect(undone.success).toBe(true);
+    expect(undone).not.toHaveProperty('error');
+    expect(session.controller.getProject().name).not.toBe('Agent rename');
   });
 });

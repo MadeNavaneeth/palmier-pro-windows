@@ -64,12 +64,46 @@ interface TransactionScope {
   commands: Command[];
 }
 
+/**
+ * One history entry: the command, plus the project version it was applied at.
+ * A command captures its inverse state when it first executes, so that capture
+ * only describes the project while nothing else has changed it since.
+ */
+interface HistoryEntry {
+  command: Command;
+  /** `CommandHistory`'s version counter at the moment this entry was applied. */
+  version: number;
+}
+
+/**
+ * Why an undo or redo produced no project.
+ *
+ * - `empty` — nothing on the stack. The pre-existing "Nothing to undo." case.
+ * - `stale` — an entry exists, but the project has been written by something
+ *   this history did not do since the entry was applied, so the command's
+ *   captured inverse state describes a project that no longer exists.
+ */
+export type UndoRefusal = 'empty' | 'stale';
+
 export class CommandHistory {
-  private undoStack: Command[] = [];
-  private redoStack: Command[] = [];
+  private undoStack: HistoryEntry[] = [];
+  private redoStack: HistoryEntry[] = [];
   private maxSize: number;
   /** Open transaction scopes, outermost first. */
   private scopes: TransactionScope[] = [];
+  /**
+   * Counts project changes this history did NOT make. A push that replaces the
+   * project behind the history's back (`EditorController.setProjectSilent`, the
+   * renderer->main mirror) calls `noteForeignWrite`, and every entry applied
+   * before that point becomes un-undoable.
+   *
+   * The counter counts FOREIGN writes only. This history's own commands must
+   * not advance it, or popping one entry would immediately stale the one under
+   * it and no sequence of undos would ever get past the first.
+   */
+  private foreignWrites = 0;
+  /** Why the most recent undo/redo produced nothing, or null if it succeeded. */
+  private lastRefusal: UndoRefusal | null = null;
 
   constructor(maxSize = 200) {
     this.maxSize = maxSize;
@@ -147,7 +181,7 @@ export class CommandHistory {
 
   /** Publish one committed history entry, clearing redo and trimming the cap. */
   private publish(entry: Command): void {
-    this.undoStack.push(entry);
+    this.undoStack.push({ command: entry, version: this.foreignWrites });
     this.redoStack = []; // clear redo on new action
 
     // Trim if over max size
@@ -156,18 +190,61 @@ export class CommandHistory {
     }
   }
 
+  /**
+   * Record that the project was replaced by something outside this history —
+   * today, the renderer's authoritative mirror arriving through
+   * `EditorController.setProjectSilent`. Every entry applied before now holds an
+   * inverse state captured from a project that no longer exists, so undo and
+   * redo refuse rather than resurrect it.
+   *
+   * Called only for a write that actually replaced the project. A push that
+   * serializes identically to what this history already holds is not a change,
+   * and the mirror's own `needsPush` check is what establishes that, so bumping
+   * for one would be noise that would refuse an undo for no reason.
+   */
+  noteForeignWrite(): void {
+    this.foreignWrites += 1;
+  }
+
+  /** Why the most recent undo/redo produced no project, or null if it applied. */
+  lastRefusalReason(): UndoRefusal | null {
+    return this.lastRefusal;
+  }
+
   undo(project: Project): Project | null {
-    const command = this.undoStack.pop();
-    if (!command) return null;
-    this.redoStack.push(command);
-    return command.undo(project);
+    const entry = this.undoStack[this.undoStack.length - 1];
+    if (!entry) {
+      this.lastRefusal = 'empty';
+      return null;
+    }
+    // Peek, then refuse, then pop: a refused entry stays where it is, so the
+    // refusal neither consumes the stack nor corrupts what is on it. The
+    // project is untouched either way, so the entry is still undoable once the
+    // project lines up with the version it was applied at again.
+    if (entry.version !== this.foreignWrites) {
+      this.lastRefusal = 'stale';
+      return null;
+    }
+    this.undoStack.pop();
+    this.redoStack.push(entry);
+    this.lastRefusal = null;
+    return entry.command.undo(project);
   }
 
   redo(project: Project): Project | null {
-    const command = this.redoStack.pop();
-    if (!command) return null;
-    this.undoStack.push(command);
-    return command.execute(project);
+    const entry = this.redoStack[this.redoStack.length - 1];
+    if (!entry) {
+      this.lastRefusal = 'empty';
+      return null;
+    }
+    if (entry.version !== this.foreignWrites) {
+      this.lastRefusal = 'stale';
+      return null;
+    }
+    this.redoStack.pop();
+    this.undoStack.push(entry);
+    this.lastRefusal = null;
+    return entry.command.execute(project);
   }
 
   canUndo(): boolean {
@@ -180,12 +257,15 @@ export class CommandHistory {
 
   lastCommandName(): string | null {
     const last = this.undoStack[this.undoStack.length - 1];
-    return last ? last.name : null;
+    return last ? last.command.name : null;
   }
 
   clear(): void {
     this.undoStack = [];
     this.redoStack = [];
+    // Dropping the stacks is what makes a cleared history safe, but the counter
+    // only ever moves forward so an entry can never match a pre-clear version.
+    this.foreignWrites += 1;
   }
 }
 

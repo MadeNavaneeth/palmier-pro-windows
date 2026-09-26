@@ -1868,16 +1868,23 @@ export class ToolExecutor {
 
       case 'undo': {
         const undone = this.editor.undo();
-        return undone
-          ? { success: true, data: { action: 'undo' } }
-          : { success: false, error: 'Nothing to undo.' };
+        if (undone) return { success: true, data: { action: 'undo' } };
+        // The stale wording comes from the controller, which shares it with the
+        // editor:undo IPC so the two surfaces cannot tell the user different
+        // things about the same refusal.
+        return {
+          success: false,
+          error: this.editor.undoRefusalMessage('undo') ?? 'Nothing to undo.',
+        };
       }
 
       case 'redo': {
         const redone = this.editor.redo();
-        return redone
-          ? { success: true, data: { action: 'redo' } }
-          : { success: false, error: 'Nothing to redo.' };
+        if (redone) return { success: true, data: { action: 'redo' } };
+        return {
+          success: false,
+          error: this.editor.undoRefusalMessage('redo') ?? 'Nothing to redo.',
+        };
       }
 
       case 'new_project': {

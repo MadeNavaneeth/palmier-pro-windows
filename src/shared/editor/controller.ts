@@ -34,7 +34,7 @@ import {
   replaceScopeTimeline,
   trimWindowDurationFrames,
 } from './commands';
-import type { Command, TimelineScopeId } from './commands';
+import type { Command, TimelineScopeId, UndoRefusal } from './commands';
 import { resolveLayoutPreset, type GridLayoutPreset } from './grid-layout';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
@@ -694,6 +694,61 @@ export function sameProjectExceptPlayhead(left: Project, right: Project): boolea
   return sameJsonValue(withoutPlayheads(left), withoutPlayheads(right));
 }
 
+/**
+ * Whether a renderer -> main push carries a change that a command's captured
+ * inverse state could not already cover, and so is a foreign write to main's
+ * agent history.
+ *
+ * This applies the same exclusion principle as `sameProjectExceptPlayhead`, on
+ * main's side, to the decision of whether a mirror write invalidates anything.
+ * The cursor and the review marks are view state: a push that moves only those
+ * cannot make a captured inverse stale, and bumping on it would cost the user an
+ * undo every time they moved the playhead — which is how the renderer's
+ * debounced push reaches main, so the cost was the common case, not an edge one.
+ *
+ * `playheadFrame`, `inFrame` and `outFrame` are the entire set, and it is derived
+ * rather than guessed. `setPlayhead`, `setInFrame`, `setOutFrame`,
+ * `setMarkedRange` and `clearMarkedRange` are the writes that touch them, each
+ * was measured to change that field and nothing else (not even `updatedAt`), and
+ * none of them goes through a command, so no command's inverse can cover one.
+ * `compTrackId` is deliberately NOT excluded: its only writer also appends an
+ * authored `Comp` track, so it never moves alone, and keeping the set to fields
+ * that are provably view-only is the smaller claim.
+ *
+ * `sameProjectExceptPlayhead` is left narrower on purpose. It decides the
+ * renderer's unsaved-work prompt, and widening it there would change which
+ * snapshots count as editorial work for that prompt, which is not this decision.
+ *
+ * Errors toward "authored". Any difference this does not deliberately exclude —
+ * including one a normalizer in `adoptSilently` would introduce — counts as a
+ * foreign write, because a refused undo is recoverable and a reverted user edit
+ * is not.
+ */
+export function carriesAuthoredChange(left: Project, right: Project): boolean {
+  if (left === right) return false;
+  return !sameJsonValue(withoutViewState(left), withoutViewState(right));
+}
+
+/** The project with every timeline's cursor and review marks dropped, so they cannot differ. */
+function withoutViewState(project: Project): Project {
+  const strip = (timeline: Timeline): Timeline => ({
+    ...timeline,
+    playheadFrame: 0,
+    inFrame: undefined,
+    outFrame: undefined,
+  });
+  const timelines = project.timelines
+    ? Object.fromEntries(
+      Object.entries(project.timelines).map(([id, timeline]) => [id, strip(timeline)]),
+    )
+    : undefined;
+  return {
+    ...project,
+    timeline: strip(project.timeline),
+    ...(timelines ? { timelines } : {}),
+  };
+}
+
 /** The project with every timeline's playhead pinned, so it cannot differ. */
 function withoutPlayheads(project: Project): Project {
   const pin = (timeline: Timeline): Timeline => ({ ...timeline, playheadFrame: 0 });
@@ -1152,6 +1207,39 @@ export class EditorController {  private project: Project;
 
   canRedo(): boolean {
     return this.history.canRedo();
+  }
+
+  /**
+   * Why the most recent `undo()`/`redo()` produced no change, or null when it
+   * applied. `stale` means the project was written by something this controller's
+   * history did not do — a renderer mirror arriving through
+   * `setProjectFromMirror` — since the entry was applied, so the command's
+   * captured inverse state no longer describes this project.
+   *
+   * The agent reads this so a refusal is reported as itself rather than as the
+   * pre-existing "Nothing to undo."; the boolean return of `undo()` is
+   * unchanged, so nothing that treats false as "no history" has to know.
+   */
+  getUndoRefusal(): UndoRefusal | null {
+    return this.history.lastRefusalReason();
+  }
+
+  /**
+   * The sentence a caller should report for a refused `undo`/`redo`, or null
+   * when the last attempt applied or when there is nothing to explain (an empty
+   * stack, which `success: false` already reports honestly).
+   *
+   * One source for the wording, because the agent's `ToolResult` and the
+   * `editor:undo` / `editor:redo` IPC report this same refusal and a second
+   * copy would be free to drift into telling the user something different.
+   */
+  undoRefusalMessage(direction: 'undo' | 'redo'): string | null {
+    if (this.history.lastRefusalReason() !== 'stale') return null;
+    return direction === 'undo'
+      ? 'Cannot undo: the project changed since that step was applied, so undoing it would '
+        + 'overwrite work done since. Undo it from the window instead.'
+      : 'Cannot redo: the project changed since that step was applied, so redoing it would '
+        + 'overwrite work done since. Redo it from the window instead.';
   }
 
   /** Human-readable description of the next undo, or null. */
@@ -4576,11 +4664,55 @@ export class EditorController {  private project: Project;
 
   /**
    * Replace the project WITHOUT notifying subscribers or touching history.
-   * Used by the main process to mirror the renderer's authoritative state
-   * (renderer -> main sync) so MCP/agent reads see live data, without
-   * triggering a sync echo back to the renderer.
+   * Used by the renderer to adopt a SIBLING window's snapshot (no history, no
+   * push back).
+   *
+   * This is deliberately NOT the main-side mirror write: a sibling adopt is a
+   * local view update in the window that receives it, and its undo is expected
+   * to return to that window's own work, so it must not count against this
+   * controller's history. See `setProjectFromMirror` for the other direction.
    */
   setProjectSilent(project: Project): void {
+    this.adoptSilently(project);
+  }
+
+  /**
+   * Adopt the RENDERER's authoritative project as a mirror write — the
+   * renderer -> main direction, so the agent and MCP read what the user sees.
+   *
+   * This is the one write that replaces the project with no command behind it,
+   * and on main that is a foreign change: the commands on this controller hold
+   * inverse state captured from the project as it was BEFORE this write, so an
+   * undo after it resurrects a document that no longer exists — reverting the
+   * user's own edit for a `SetClipPropertiesCommand`, or replacing the whole
+   * project with its pre-edit self for a `ReplaceProjectCommand`. Recording the
+   * write is what makes undo refuse instead, and it is recorded without
+   * publishing a history entry, so the renderer's snapshot still authors no undo
+   * step here.
+   *
+   * The counter only moves for a push that carries authored change. A push that
+   * moves only the cursor or the review marks is not a foreign write: those are
+   * view state, no command's captured inverse covers them, and the renderer's
+   * debounced push carries the playhead on nearly every edit, so bumping on them
+   * would make an agent undo permanently unavailable after a cursor move. The
+   * comparison is the same exclusion principle already applied to `movePlayhead`
+   * and the mark setters on the renderer's side, extended to the mirror write
+   * where it was missing. See `carriesAuthoredChange`.
+   *
+   * `loadProject` and `reset` need no counterpart: they clear the history
+   * outright, which leaves nothing to stale.
+   */
+  setProjectFromMirror(project: Project): void {
+    // Compare what main held against what the renderer pushed, before the
+    // normalizers in `adoptSilently` get a chance to widen the difference.
+    const before = this.project;
+    this.adoptSilently(project);
+    if (carriesAuthoredChange(before, project)) {
+      this.history.noteForeignWrite();
+    }
+  }
+
+  private adoptSilently(project: Project): void {
     this.project = withNarrowedOpacityTracks(narrowProjectGradePresetLinks(project));
     this.coerceScope();
   }
