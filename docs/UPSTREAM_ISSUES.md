@@ -215,6 +215,23 @@ same `clampFrame` the compound path's already had and a `plan.fps` of `0` (which
 `??` does not catch) cannot become `Infinity`/`NaN` on a clip. An absent rate
 still means "use the project rate" and keeps its existing identity behavior.
 
+The agent's `import_fcpxml` inlines placement rather than delegating to
+`applyFcpxmlPlan`, and carried the same unguarded converter — harder, since it had
+no `?? projectFps` fallback either, and its own `!plan.fps` check let 0.5 and 0.01
+fps straight through to place the same invented windows (`0/60/60/180` and a
+`dur 3000` clip, both `success: true` with an empty `unsupported`). It now asks
+`apply.ts` for the rule through the shared `degenerateRateRefusal` and
+`frameRescaler` rather than re-deriving them, so the two surfaces cannot drift on
+what counts as an unmappable rate or on the wording. The agent keeps its own
+envelope for a refusal — `success: false` with the shared note as `error`, asked
+before any asset is probed so a refused document leaves the library untouched —
+because `success: true` with `placedClips: 0` is a signal an agent caller can
+misread, and that envelope is what the tool already used for an unusable
+`frameDuration`. Measured unchanged across the fix: 30→30 gives
+`20/48/30/126` speed 2, 24→30 gives `25/60/38/158`, 30→24 gives `16/38/24/100`,
+each with the linked twin on the same rescaled window, and a zero or unparseable
+rate still returns the pre-existing `success: false` with no clip touched.
+
 ### #164 — keyboard shortcuts
 
 Bindings live in data, not in a switch statement. `shortcutConflicts()` is

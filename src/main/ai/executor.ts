@@ -132,7 +132,7 @@ import {
 } from '../media/whisper-local';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxmlWithReport } from '../../shared/fcpxml/exporter';
-import { importedClipPatch } from '../../shared/fcpxml/apply';
+import { importedClipPatch, degenerateRateRefusal, frameRescaler } from '../../shared/fcpxml/apply';
 import { createHash } from 'crypto';
 import { validateLutFile } from '../media/lut-loader';
 import { inspectFramePath, rgbaToPng } from '../media/frame-png';
@@ -2014,11 +2014,19 @@ export class ToolExecutor {
       case 'import_fcpxml': {
         const xml = await fs.readFile(args.path, 'utf8');
         const plan = parseFcpxml(xml);
+        const projectFps = this.editor.getProject().settings.fps;
         if (!plan.fps) {
           return { success: false, error: 'The file has no usable <format frameDuration>; frame mapping is undefined.' };
         }
-        const fpsScale = this.editor.getProject().settings.fps / plan.fps;
-        const toProjectFrames = (frames: number) => Math.round(frames * fpsScale);
+        // The dialog path (shared/fcpxml/apply.ts) owns this rule and this
+        // wording; asking it here keeps the two surfaces from drifting on what
+        // counts as an unmappable rate. Asked before any asset is probed, so a
+        // refused document leaves the library untouched.
+        const rateRefusal = degenerateRateRefusal(plan, projectFps);
+        if (rateRefusal !== null) {
+          return { success: false, error: rateRefusal };
+        }
+        const toProjectFrames = frameRescaler(projectFps, plan.fps);
 
         // Assets: probe each unique path into the library; missing files are
         // reported and their clips skipped rather than failing the import.

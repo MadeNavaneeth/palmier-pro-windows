@@ -173,27 +173,33 @@ export function importedClipPatch(
 const MIN_IMPORT_SOURCE_FPS = 1;
 
 /**
- * The document rate to rescale by, or null when the document's rate is
- * degenerate and the import must be refused whole. Refusing rather than
- * clamping is the one contract both materializers share: a partly-placed
- * document whose clips sit at invented positions is worse than a clean
- * refusal, and the importer's own convention is to report rather than guess.
+ * The refusal for a document rate that cannot carry a frame mapping, or null
+ * when the rate is usable. The single decision both import surfaces ask: the
+ * applier below, and the agent's own `import_fcpxml` tool, which inlines
+ * placement rather than delegating here and so would otherwise re-derive — and
+ * drift from — this rule. The note is pushed onto `plan.unsupported` and also
+ * returned, so a caller whose result envelope has no `unsupported` channel (the
+ * agent reports a refusal as `success: false`) reports the same wording.
  *
  * An absent rate means "use the project rate" — the identity rescale, which
- * stays allowed, so a document with no usable `<format frameDuration>` keeps
- * its existing (importer-reported) behavior.
+ * stays allowed, so a document with no usable `<format frameDuration>` keeps its
+ * existing (importer-reported) behavior.
  */
-function importSourceFps(plan: ParsedFcpxml, projectFps: number): number | null {
+export function degenerateRateRefusal(plan: ParsedFcpxml, projectFps: number): string | null {
   const sourceFps = plan.fps ?? projectFps;
-  if (Number.isFinite(sourceFps) && sourceFps >= MIN_IMPORT_SOURCE_FPS) return sourceFps;
+  if (Number.isFinite(sourceFps) && sourceFps >= MIN_IMPORT_SOURCE_FPS) return null;
+  const note = Number.isFinite(sourceFps)
+    ? `<format frameDuration> declares ${sourceFps} fps, too slow to map frames; nothing is imported.`
+    : '<format frameDuration> declares an unusable frame rate; nothing is imported.';
   // Nothing left to place means the importer already refused the whole spine
   // and said so; a second note would only repeat it.
-  if (plan.clips.length > 0) {
-    plan.unsupported.push(Number.isFinite(sourceFps)
-      ? `<format frameDuration> declares ${sourceFps} fps, too slow to map frames; nothing is imported.`
-      : '<format frameDuration> declares an unusable frame rate; nothing is imported.');
-  }
-  return null;
+  if (plan.clips.length > 0) plan.unsupported.push(note);
+  return note;
+}
+
+function importSourceFps(plan: ParsedFcpxml, projectFps: number): number | null {
+  if (degenerateRateRefusal(plan, projectFps) !== null) return null;
+  return plan.fps ?? projectFps;
 }
 
 /**
@@ -202,7 +208,7 @@ function importSourceFps(plan: ParsedFcpxml, projectFps: number): number | null 
  * `plan.fps` reaches this module across IPC, and `??` does not catch a `0`
  * rate, so a degenerate document can still carry one.
  */
-function frameRescaler(projectFps: number, sourceFps: number): (frames: number) => number {
+export function frameRescaler(projectFps: number, sourceFps: number): (frames: number) => number {
   const fpsScale = sourceFps > 0 ? projectFps / sourceFps : 1;
   return (frames: number): number => clampFrame(Math.round(frames * fpsScale));
 }
