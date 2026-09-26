@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { EditorController } from '../editor/controller';
 import { resolveRenderTimeline } from '../editor/compound';
+import type { Clip, Track } from '../types/project';
 import { exportFcpxml } from './exporter';
 import { parseFcpxml } from './importer';
 import { applyFcpxmlPlan } from './apply';
@@ -104,7 +105,19 @@ describe('applyFcpxmlPlan (#154 wiring core)', () => {
 
 const COMPOUND_MEDIA_PATH = 'X:/media/compound-source.mp4';
 
-function addCompoundSourceMedia(editor: EditorController, id = 'compound-source'): void {
+/**
+ * Present only when a test needs the asset to read as picture-plus-sound, which
+ * is what makes `addClip` create the linked audio twin and the compound
+ * materializer rebuild one. Absent otherwise, so the existing tests keep
+ * single-clip semantics.
+ */
+const EMBEDDED_AUDIO = { audioCodec: 'aac', channels: 2, sampleRate: 48000 } as const;
+
+function addCompoundSourceMedia(
+  editor: EditorController,
+  id = 'compound-source',
+  embeddedAudio = false,
+): void {
   editor.addMedia({
     id,
     path: COMPOUND_MEDIA_PATH,
@@ -115,6 +128,7 @@ function addCompoundSourceMedia(editor: EditorController, id = 'compound-source'
     height: 1080,
     fileSize: 1,
     addedAt: '2026-08-26T00:00:00.000Z',
+    ...(embeddedAudio ? EMBEDDED_AUDIO : {}),
   });
 }
 
@@ -139,7 +153,7 @@ function addCompoundSourceClip(
   return id;
 }
 
-function importTarget(sourceId = 'imported-compound-source'): EditorController {
+function importTarget(sourceId = 'imported-compound-source', embeddedAudio = false): EditorController {
   const target = new EditorController();
   target.addMedia({
     id: sourceId,
@@ -151,6 +165,7 @@ function importTarget(sourceId = 'imported-compound-source'): EditorController {
     height: 1080,
     fileSize: 1,
     addedAt: new Date().toISOString(),
+    ...(embeddedAudio ? EMBEDDED_AUDIO : {}),
   });
   return target;
 }
@@ -354,5 +369,161 @@ describe('compound FCPXML import/apply round trip', () => {
     expect(target.redo()).toBe(true);
     expect(target.getProject().timelines).toEqual(afterImport.timelines);
     expect(target.getProject().timeline.clips).toEqual(afterImport.timeline.clips);
+  });
+});
+
+/**
+ * A linked A/V group is two model clips over one media asset, and the exporter
+ * writes both halves as separate elements (the visual one on a visual lane, the
+ * audio one on a negative lane with `audioRole`). `kind` in the importer
+ * describes the ASSET, not the lane, so the audio half of a video-bearing asset
+ * arrives as `kind: 'video'` on a negative lane -- indistinguishable from a
+ * second visual clip unless the lane is read. The flat path drops it and lets
+ * the visual element rebuild the pair; the compound materializer must agree,
+ * or every linked group imports twice.
+ *
+ * Clip ids are fresh on import by contract (an import is additive and never
+ * reuses a resource id), so these tests compare the comparable shape -- clip
+ * count, per-clip type, track type, source window, speed and link pairing --
+ * rather than literal ids.
+ */
+function comparableClips(clips: readonly Clip[], tracks: readonly Track[]): unknown[] {
+  // Link group ids are fresh on import, so compare the pairing as an ordinal:
+  // two clips share one group iff they carry the same ordinal.
+  const groupOrdinal = new Map<string, number>();
+  for (const clip of clips) {
+    if (clip.linkGroupId && !groupOrdinal.has(clip.linkGroupId)) {
+      groupOrdinal.set(clip.linkGroupId, groupOrdinal.size);
+    }
+  }
+  return clips.map((clip) => ({
+    type: clip.type,
+    track: tracks.find((track) => track.id === clip.trackId)?.type,
+    startFrame: clip.startFrame,
+    durationFrames: clip.durationFrames,
+    inPoint: clip.inPoint,
+    outPoint: clip.outPoint,
+    speed: clip.speed,
+    linkGroup: clip.linkGroupId === undefined ? undefined : groupOrdinal.get(clip.linkGroupId),
+  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function linkedSourceNest(speed?: number): { source: EditorController; nestId: string } {
+  const source = new EditorController();
+  addCompoundSourceMedia(source, 'compound-source', true);
+  const first = addCompoundSourceClip(source, { startFrame: 0, durationFrames: 30, inPoint: 15 });
+  const second = addCompoundSourceClip(source, { startFrame: 60, durationFrames: 30, inPoint: 90 });
+  if (speed !== undefined) {
+    source.setClipSpeed(first, speed);
+    source.setClipSpeed(second, speed);
+  }
+  source.nestClips([first, second], { name: 'Linked Nest' });
+  const timelines = source.getProject().timelines ?? {};
+  return { source, nestId: Object.keys(timelines)[0]! };
+}
+
+describe('linked A/V groups through a compound round trip', () => {
+  it('imports a nest of linked pairs once, with the source clip count and windows', () => {
+    const { source, nestId } = linkedSourceNest();
+    const sourceNest = source.getProject().timelines![nestId]!;
+    // Two placed video clips, each with the twin addClip created for it.
+    expect(sourceNest.clips).toHaveLength(4);
+    expect(sourceNest.tracks.map((track) => track.type).sort()).toEqual(['audio', 'video']);
+
+    const plan = parseFcpxml(exportFcpxml(source.getProject()));
+    // The exporter really does write both halves: two negative-lane elements.
+    expect(plan.sequences?.[0]?.clips.map((clip) => clip.lane)).toEqual([-1, 1, -1, 1]);
+
+    const target = importTarget('imported-compound-source', true);
+    const result = applyFcpxmlPlan(target, plan, assetMap('imported-compound-source'), sourceDims());
+    // One placed clip per visual element; the redundant audio elements place nothing.
+    expect(result.placedClips).toBe(2);
+
+    const carrier = target.getProject().timeline.clips.find((clip) => clip.type === 'compound')!;
+    const imported = target.getProject().timelines![carrier.compoundTimelineId!]!;
+    // Count preserved: the group is imported once, not once per written element.
+    expect(imported.clips).toHaveLength(4);
+    expect(imported.tracks.map((track) => track.type).sort()).toEqual(['audio', 'video']);
+    expect(comparableClips(imported.clips, imported.tracks))
+      .toEqual(comparableClips(sourceNest.clips, sourceNest.tracks));
+  });
+
+  it('gives the linked audio twin the sibling speed and the scaled outPoint', () => {
+    const { source, nestId } = linkedSourceNest(2);
+    const sourceNest = source.getProject().timelines![nestId]!;
+    const sourceTwin = sourceNest.clips.find((clip) => clip.type === 'audio')!;
+    // What setClipSpeed wrote on BOTH halves of the group.
+    expect(sourceTwin).toMatchObject({ inPoint: 15, outPoint: 75, speed: 2, durationFrames: 30 });
+
+    const plan = parseFcpxml(exportFcpxml(source.getProject()));
+    const target = importTarget('imported-compound-source', true);
+    applyFcpxmlPlan(target, plan, assetMap('imported-compound-source'), sourceDims());
+
+    const carrier = target.getProject().timeline.clips.find((clip) => clip.type === 'compound')!;
+    const imported = target.getProject().timelines![carrier.compoundTimelineId!]!;
+    const video = imported.clips.find((clip) => clip.type === 'video')!;
+    const twin = imported.clips.find((clip) => clip.type === 'audio')!;
+
+    expect(imported.tracks.find((track) => track.id === twin.trackId)?.type).toBe('audio');
+    expect(twin.linkGroupId).toBe(video.linkGroupId);
+    // The speed lands on the twin, not just on the sibling it was written beside.
+    expect(twin).toMatchObject({ speed: 2, inPoint: 15, outPoint: 75, durationFrames: 30 });
+    expect(twin.outPoint).toBe(twin.inPoint + Math.round(twin.durationFrames * 2));
+  });
+
+  it('keeps an unspeeded import window unscaled', () => {
+    const { source, nestId } = linkedSourceNest();
+    const plan = parseFcpxml(exportFcpxml(source.getProject()));
+    // A linear timeMap at exactly 1x is not emitted, so absent speed is the
+    // only unspeeded form: no element may be rescaled on the way in.
+    expect(plan.sequences?.[0]?.clips.every((clip) => clip.kind === 'video'
+      && (clip as { speed?: number }).speed === undefined)).toBe(true);
+
+    const target = importTarget('imported-compound-source', true);
+    applyFcpxmlPlan(target, plan, assetMap('imported-compound-source'), sourceDims());
+
+    const carrier = target.getProject().timeline.clips.find((clip) => clip.type === 'compound')!;
+    const imported = target.getProject().timelines![carrier.compoundTimelineId!]!;
+    for (const clip of imported.clips) {
+      expect(clip.speed).toBeUndefined();
+      expect(clip.inPoint).toBe(clip.startFrame === 0 ? 15 : 90);
+      expect(clip.outPoint).toBe(clip.inPoint + clip.durationFrames);
+      expect(clip.durationFrames).toBe(30);
+    }
+    expect(comparableClips(imported.clips, imported.tracks))
+      .toEqual(comparableClips(
+        source.getProject().timelines![nestId]!.clips,
+        source.getProject().timelines![nestId]!.tracks,
+      ));
+  });
+
+  it('imports a linked pair on the root of a compound document once', () => {
+    const source = new EditorController();
+    addCompoundSourceMedia(source, 'compound-source', true);
+    const rootPair = addCompoundSourceClip(source, { startFrame: 0, durationFrames: 30, inPoint: 15 });
+    source.setClipSpeed(rootPair, 2);
+    const nested = addCompoundSourceClip(source, { startFrame: 200, durationFrames: 30, inPoint: 0 });
+    source.nestClips([nested], { name: 'Root Nest' });
+    const sourceRoot = source.getProject().timeline;
+    // The pair plus the nest carrier.
+    expect(sourceRoot.clips).toHaveLength(3);
+
+    const plan = parseFcpxml(exportFcpxml(source.getProject()));
+    const target = importTarget('imported-compound-source', true);
+    const result = applyFcpxmlPlan(target, plan, assetMap('imported-compound-source'), sourceDims());
+    // The pair's visual element plus the nest's own leaf; the carrier and the
+    // redundant audio element place nothing.
+    expect(result.placedClips).toBe(2);
+
+    const importedRoot = target.getProject().timeline;
+    expect(importedRoot.clips).toHaveLength(3);
+    const video = importedRoot.clips.find((clip) => clip.type === 'video')!;
+    const twin = importedRoot.clips.find((clip) => clip.type === 'audio')!;
+    expect(target.getTracks().find((track) => track.id === twin.trackId)?.type).toBe('audio');
+    expect(twin.linkGroupId).toBe(video.linkGroupId);
+    expect(twin).toMatchObject({ speed: 2, inPoint: 15, outPoint: 75, durationFrames: 30 });
+    // No second video clip for the audio element's lane: the group is placed once.
+    expect(importedRoot.clips.filter((clip) => clip.type === 'video')).toHaveLength(1);
+    expect(importedRoot.clips.filter((clip) => clip.type === 'audio')).toHaveLength(1);
   });
 });

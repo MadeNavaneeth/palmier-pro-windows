@@ -64,6 +64,26 @@ export interface ImportedClipFields {
 }
 
 /**
+ * The speed half of an imported adjustment, or null when the plan clip carries
+ * none. Split out of `importedClipPatch` because both halves of a linked A/V
+ * group hold ONE source window: `setClipSpeed` writes `speed` and the scaled
+ * `outPoint` onto every linked partner, so the audio twin needs this same rule
+ * and there must be exactly one definition of it.
+ */
+function importedSpeedPatch(
+  clip: ImportedClipFields,
+): ((draft: Clip) => void) | null {
+  if (clip.speed === undefined) return null;
+  const speed = effectiveSpeed(clip.speed);
+  return (draft) => {
+    draft.speed = speed;
+    // The trim pass has already established draft.inPoint; the model encodes the
+    // consumed source span in outPoint just like EditorController.setClipSpeed.
+    draft.outPoint = draft.inPoint + Math.round(draft.durationFrames * speed);
+  };
+}
+
+/**
  * One applyClipProperties callback carrying every imported adjustment, or
  * null when the plan clip carries none — so an untouched clip adds no undo
  * history. Shared by both materializers (this module and the agent
@@ -78,16 +98,10 @@ export function importedClipPatch(
     const opacity = Math.min(1, Math.max(0, clip.opacity));
     sets.push((draft) => { draft.opacity = opacity; });
   }
-  if (clip.speed !== undefined) {
-    const speed = effectiveSpeed(clip.speed);
-    // Keep the source window and speed in the same undoable adjustment batch.
-    // The trim pass has already established draft.inPoint; the model encodes
-    // the consumed source span in outPoint just like EditorController.setClipSpeed.
-    sets.push((draft) => {
-      draft.speed = speed;
-      draft.outPoint = draft.inPoint + Math.round(draft.durationFrames * speed);
-    });
-  }
+  // Speed and the source window it implies stay in the same undoable batch as
+  // the rest of the adjustment.
+  const speedPatch = importedSpeedPatch(clip);
+  if (speedPatch) sets.push(speedPatch);
   if (clip.opacityTrack) {
     // The importer already narrows the track through the shared sanitizer;
     // assign it in this callback so all imported adjustments stay one
@@ -268,8 +282,23 @@ export function applyFcpxmlPlan(
   };
 }
 
+/**
+ * The element the exporter wrote for the AUDIO half of a linked A/V group: a
+ * negative lane (`-(audioTrackIndex + 1)`, the FCPXML marker for an audio lane
+ * below the spine) carrying a video-bearing asset. `kind` narrows the ASSET, not
+ * the lane, so the importer hands this back as `kind: 'video'` on a negative
+ * lane — see `parseAssetClipTag`'s `isAudioOnly`. It is the twin, never a
+ * second visual clip, and the visual element of the same group rebuilds the
+ * whole pair.
+ */
+function isLinkedAudioHalf(clip: ImportedClip): boolean {
+  return clip.kind === 'video' && clip.lane < 0;
+}
+
 function isAudioLaneClip(clip: ImportedClip): boolean {
-  return clip.kind === 'audio' || (isImportedCompoundClip(clip) && clip.lane < 0);
+  return clip.kind === 'audio'
+    || isLinkedAudioHalf(clip)
+    || (isImportedCompoundClip(clip) && clip.lane < 0);
 }
 
 function importedLane(clip: ImportedClip): number {
@@ -424,6 +453,19 @@ function materializeCompoundFcpxmlPlan(
       adjustment(draft);
     });
   };
+  // addClip creates the embedded-audio twin itself, and that twin shares the
+  // pair's ONE source window — so it needs the same speed the visual clip gets,
+  // exactly as EditorController.setClipSpeed writes it onto a linked group.
+  const addLinkedSpeedPatch = (clipId: string, clip: ImportedClip): void => {
+    const speedPatch = importedSpeedPatch(clip);
+    if (!speedPatch) return;
+    for (const linkedId of editor.expandLinkedClipIds([clipId])) {
+      if (linkedId === clipId) continue;
+      rootPatches.set(linkedId, (draft) => {
+        speedPatch(draft);
+      });
+    }
+  };
 
   for (const clip of plan.clips) {
     const lane = importedLane(clip);
@@ -494,6 +536,10 @@ function materializeCompoundFcpxmlPlan(
       skippedOffline += 1;
       continue;
     }
+    // The visual element of a linked A/V group rebuilds the whole pair — the
+    // flat path drops this element for the same reason — so materializing it
+    // here would place the group twice.
+    if (isLinkedAudioHalf(clip)) continue;
     const trackId = isAudioLaneClip(clip)
       ? audioLaneTrack.get(lane)
       : videoLaneTrack.get(lane);
@@ -510,6 +556,7 @@ function materializeCompoundFcpxmlPlan(
       editor.trimClip(clipId, sourceIn, sourceIn + durationFrames);
     }
     addAdjustmentPatch(clipId, clip);
+    addLinkedSpeedPatch(clipId, clip);
     placedClips += 1;
   }
 
@@ -706,6 +753,11 @@ function materializeCompoundFcpxmlPlan(
         offline += 1;
         continue;
       }
+      // The visual element of a linked A/V group rebuilds the whole pair, so
+      // the audio element the exporter wrote for it is redundant here — the
+      // flat path drops it for the same reason. Materializing it would give
+      // every linked group a second video track and a second pair.
+      if (isLinkedAudioHalf(imported)) continue;
       const trackId = isAudioLaneClip(imported)
         ? audioTracks.get(lane)
         : videoTracks.get(lane);
@@ -748,7 +800,7 @@ function materializeCompoundFcpxmlPlan(
         const linkGroupId = nanoid();
         clip.linkGroupId = linkGroupId;
         clips.push(clip);
-        clips.push({
+        const twin: Clip = {
           id: nanoid(),
           assetId,
           type: 'audio',
@@ -771,7 +823,13 @@ function materializeCompoundFcpxmlPlan(
           volume: 1,
           muted: false,
           label: imported.label,
-        });
+        };
+        // The twin is built apart from its visual sibling, so it does not ride
+        // the sibling's adjustment pass. Both halves of a link group hold one
+        // source window, and a recovered speed scales it on BOTH — leaving the
+        // twin unscaled is a state EditorController.setClipSpeed never writes.
+        importedSpeedPatch(imported)?.(twin);
+        clips.push(twin);
       } else {
         clips.push(clip);
       }
