@@ -11,6 +11,7 @@
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { GuideOverlay } from './preview/GuideOverlay';
+import { ShapeOverlay } from './preview/ShapeOverlay';
 import { useUiStore } from '../store/ui';
 
 interface PreviewCanvasProps {
@@ -124,6 +125,12 @@ export function PreviewCanvas({ width, height, emptyMessage }: PreviewCanvasProp
       />
       <GuideOverlay
         guides={guides}
+        width={width}
+        height={height}
+        displayWidth={displayWidth}
+        displayHeight={displayHeight}
+      />
+      <ShapeOverlay
         width={width}
         height={height}
         displayWidth={displayWidth}

@@ -14,7 +14,7 @@ jobs:
   checks:
     name: Windows TypeScript and Rust checks
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -57,3 +57,68 @@ jobs:
       - name: Rust tests
         working-directory: native
         run: cargo test
+
+      # Catches the packaging regression where a build can complete without ever
+      # producing the addon that `dist:win` packages. Kept to building and
+      # asserting the artifact rather than running a full electron-builder
+      # package, which is too slow for a check job.
+      - name: Build native addon
+        run: npm run build:rust
+
+      - name: Verify native addon artifact
+        run: npm run native:check
+
+      - name: Verify packaging globs match the addon
+        run: node scripts/verify-packaging-globs.mjs
+
+  linux:
+    name: Linux checks and packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Rust check
+        working-directory: native
+        run: cargo check
+
+      - name: Rust tests
+        working-directory: native
+        run: cargo test
+
+      - name: Build Linux packages
+        run: npm run dist:linux
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            out/*.AppImage
+            out/*.deb

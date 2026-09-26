@@ -18,6 +18,7 @@ import { ReplicateProvider } from './provider-replicate';
 import { HiggsFieldProvider } from './provider-higgsfield';
 import {
   cancelGeneration,
+  GenerationTimeoutError,
   configureGenerationProvider,
   configuredProvidersFor,
   listGenerationProviders,
@@ -109,7 +110,21 @@ export function registerGenerationHandlers(): void {
       onProgress: (progress) => win?.webContents.send('generation:progress', progress),
       onStart: (id) => { startedId = id; },
     }).then((result) => {
-      win?.webContents.send('generation:complete', result);
+      // Cancellation is locally terminal. Never surface a provider result —
+      // including a late completion racing the cancel request — because the
+      // renderer treats this event as permission to probe and import the file.
+      if (result.status !== 'cancelled') {
+        win?.webContents.send('generation:complete', result);
+      }
+    }).catch((error: unknown) => {
+      // Timeouts are already reported as a terminal progress event. Other
+      // post-start failures still use the existing completion plumbing.
+      if (error instanceof GenerationTimeoutError) return;
+      win?.webContents.send('generation:complete', {
+        id: startedId,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
 
     return startedId

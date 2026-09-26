@@ -22,9 +22,14 @@ import { useProjectStore } from '../store/project';
 import { useTimelineStore } from '../store/timeline';
 import { canExtractAudio, useMediaPanelStore } from '../store/media-panel';
 import { MarkerIndexBrowser } from './timeline/MarkerIndexBrowser';
-import { assetMatchesQuery, deriveTags } from '../../shared/media/tags';
+import { deriveTags } from '../../shared/media/tags';
+import {
+  MEDIA_FOLDER_NAME_MAX_LENGTH,
+  filterLibraryAssets,
+  folderAssetCount,
+} from '../../shared/media/folders';
 import { selectionModeFromModifiers } from '../../shared/media-panel/selection';
-import type { MediaAsset } from '../../shared/types/project';
+import type { MediaAsset, MediaFolder } from '../../shared/types/project';
 import { formatImportErrors } from '../../shared/media/import-summary';
 import { formatDuration } from '../../shared/utils/time';
 import { ASSET_DND_MIME, getDroppedFilePath, setDraggingAsset } from '../lib/dnd';
@@ -36,6 +41,7 @@ import {
   normalizeCaptionPlanOptions,
   type CaptionPlanOptions,
 } from '../../shared/captions/planner';
+import { WHISPER_LANGUAGES } from '../../shared/stt/languages';
 
 /** Minimum tile width in the media grid; must match the grid template below. */
 const MEDIA_TILE_MIN_WIDTH = 112;
@@ -104,10 +110,20 @@ export function MediaBin() {
   const [importError, setImportError] = useState('');
   const [generateOpen, setGenerateOpen] = useState(false);
 
+  // Folder layer (#156): which folder scopes the grid; null = library root
+  // (unfiled). A folder id that no longer exists (deleted, or undone while a
+  // rename/delete was pending) falls back to root instead of stranding the
+  // view on a filter that can never match.
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const folders = project.mediaFolders ?? [];
+  const activeFolderId = folders.some((folder) => folder.id === selectedFolderId)
+    ? selectedFolderId
+    : null;
+
   const mediaItems = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return project.media.filter((item) => assetMatchesQuery(item, normalized));
-  }, [project.media, query]);
+    return filterLibraryAssets(project.media, normalized, activeFolderId);
+  }, [project.media, query, activeFolderId]);
 
   function addImportedFiles(result: {
     success: boolean;
@@ -291,6 +307,10 @@ export function MediaBin() {
             <ProxyModeToggle />
           </div>
 
+          {/* Folder layer (#156): root + named folders scope the grid below;
+              search stays global. */}
+          <FolderLayer activeFolderId={activeFolderId} onSelect={setSelectedFolderId} />
+
           {/* Three-point placement strip for the single selected asset */}
           <SourcePlaceStrip />
 
@@ -323,9 +343,13 @@ export function MediaBin() {
                   <Upload size={18} strokeWidth={1.5} />
                 </div>
                 <p className="text-[11px] font-medium text-text-secondary">
-                  {query ? 'No matching media' : 'Import media to begin'}
+                  {query
+                    ? 'No matching media'
+                    : activeFolderId === null
+                      ? 'Import media to begin'
+                      : 'No media in this folder'}
                 </p>
-                {!query && (
+                {!query && activeFolderId === null && (
                   <p className="mt-1 max-w-48 text-[10px] leading-4 text-text-muted">
                     Drop video, audio, or images here
                   </p>
@@ -348,9 +372,10 @@ export function MediaBin() {
 
           {generateOpen && (
             <GenerateDialog
+              projectFps={fps}
               onClose={() => setGenerateOpen(false)}
               onImported={(asset) => {
-                importAssets([asset]);
+                controller.importMediaAssets([asset]);
                 useProjectStore.getState().markDirty();
               }}
             />
@@ -375,6 +400,268 @@ function MediaLibraryCount({ visibleCount }: { visibleCount: number }) {
       {selectedCount > 1 && <span className="text-text-secondary">{selectedCount} selected · </span>}
       {visibleCount} {visibleCount === 1 ? 'item' : 'items'}
     </span>
+  );
+}
+
+/**
+ * Folder layer for the media library (#156): a chip row of the library root
+ * ("Unfiled") plus each named folder with its `folderAssetCount`. Clicking a
+ * chip scopes the grid (a search still matches globally across folders);
+ * right-clicking one opens the same menu vocabulary the bin's tiles use, and
+ * rename runs inline the way a track header renames. Delete confirms in the
+ * standard dialog shell — the bin has no confirm for media delete, so a
+ * destructive organization action gets an explicit refuse-with-confirm here
+ * (media itself is never deleted; members fall back to the root).
+ */
+function FolderLayer({
+  activeFolderId,
+  onSelect,
+}: {
+  activeFolderId: string | null;
+  onSelect: (folderId: string | null) => void;
+}) {
+  const project = useTimelineStore((s) => s.project);
+  const controller = useTimelineStore((s) => s.controller);
+  const folders = project.mediaFolders ?? [];
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<MediaFolder | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!creating && renamingId === null) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [creating, renamingId]);
+
+  const notice = (message: string) => useMediaPanelStore.getState().setNotice(message);
+
+  const startCreate = () => {
+    setRenamingId(null);
+    setDraft('');
+    setCreating(true);
+  };
+
+  const startRename = (folder: MediaFolder) => {
+    setCreating(false);
+    setDraft(folder.name);
+    setRenamingId(folder.id);
+  };
+
+  const commitCreate = () => {
+    if (!creating) return;
+    const name = draft.trim();
+    setCreating(false);
+    if (name.length === 0) return;
+    try {
+      controller.createMediaFolder(name);
+      useProjectStore.getState().markDirty();
+    } catch (err) {
+      notice(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const commitRename = () => {
+    if (renamingId === null) return;
+    const folder = folders.find((candidate) => candidate.id === renamingId);
+    setRenamingId(null);
+    if (!folder) return;
+    const name = draft.trim();
+    // An identical name is a controller no-op; skip markDirty so a pure view
+    // commit does not flag the project unsaved.
+    if (name.length === 0 || name === folder.name) return;
+    try {
+      controller.renameMediaFolder(folder.id, name);
+      useProjectStore.getState().markDirty();
+    } catch (err) {
+      notice(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const confirmDelete = () => {
+    const folder = pendingDelete;
+    setPendingDelete(null);
+    if (!folder) return;
+    try {
+      const result = controller.deleteMediaFolder(folder.id);
+      useProjectStore.getState().markDirty();
+      if (result.movedAssetIds.length > 0) {
+        const count = result.movedAssetIds.length;
+        notice(
+          `Folder deleted — ${count} item${count === 1 ? '' : 's'} moved to the library root.`,
+        );
+      }
+    } catch (err) {
+      notice(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const chipCls = (active: boolean) =>
+    `flex h-5 items-center gap-1 rounded-md border px-1.5 text-[10px] font-medium outline-none focus-visible:ring-1 focus-visible:ring-accent/60 ${
+      active
+        ? 'border-accent bg-accent/10 text-text-primary'
+        : 'border-white/15 text-text-secondary hover:bg-white/[0.08] hover:text-text-primary'
+    }`;
+
+  const rootCount = folderAssetCount(project, undefined);
+  const pendingDeleteCount = pendingDelete ? folderAssetCount(project, pendingDelete.id) : 0;
+
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-1 px-2 py-1" data-folder-layer>
+      <button
+        type="button"
+        onClick={() => onSelect(null)}
+        aria-pressed={activeFolderId === null}
+        className={chipCls(activeFolderId === null)}
+        title={`Library root — ${rootCount} item${rootCount === 1 ? '' : 's'} not in a folder`}
+      >
+        Unfiled
+        <span className="tabular-nums text-text-muted">{rootCount}</span>
+      </button>
+
+      {folders.map((folder) => {
+        const count = folderAssetCount(project, folder.id);
+        const renaming = renamingId === folder.id;
+        return (
+          <div key={folder.id} className="relative">
+            {renaming ? (
+              <input
+                ref={inputRef}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') commitRename();
+                  if (event.key === 'Escape') setRenamingId(null);
+                }}
+                maxLength={MEDIA_FOLDER_NAME_MAX_LENGTH}
+                aria-label={`Rename folder ${folder.name}`}
+                className="h-5 w-32 rounded-md border border-accent/60 bg-surface-0 px-1.5 text-[10px] text-text-primary outline-none"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => onSelect(folder.id)}
+                onDoubleClick={() => startRename(folder)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setMenuId(folder.id);
+                }}
+                aria-pressed={activeFolderId === folder.id}
+                className={chipCls(activeFolderId === folder.id)}
+                title={`${folder.name} — ${count} item${count === 1 ? '' : 's'} · double-click to rename`}
+              >
+                <Folder size={11} strokeWidth={1.7} className="shrink-0" />
+                <span className="max-w-28 truncate">{folder.name}</span>
+                <span className="tabular-nums text-text-muted">{count}</span>
+              </button>
+            )}
+            {menuId === folder.id && (
+              <>
+                {/* Click-away layer so the menu closes without a global listener. */}
+                <div className="fixed inset-0 z-20" onClick={() => setMenuId(null)} />
+                <div
+                  role="menu"
+                  className="absolute left-0 top-full z-30 mt-0.5 min-w-32 rounded border border-white/15 bg-surface-2 py-0.5 shadow-lg"
+                >
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuId(null);
+                      startRename(folder);
+                    }}
+                    className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+                  >
+                    Rename
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuId(null);
+                      setPendingDelete(folder);
+                    }}
+                    className="block w-full px-2 py-1 text-left text-[10px] text-red-300 hover:bg-red-500/10"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })}
+
+      {creating ? (
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commitCreate}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') commitCreate();
+            if (event.key === 'Escape') setCreating(false);
+          }}
+          maxLength={MEDIA_FOLDER_NAME_MAX_LENGTH}
+          placeholder="Folder name"
+          aria-label="New folder name"
+          className="h-5 w-32 rounded-md border border-accent/60 bg-surface-0 px-1.5 text-[10px] text-text-primary outline-none placeholder:text-text-muted"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={startCreate}
+          className={chipCls(false) + ' w-8 justify-center'}
+          title="New folder"
+          aria-label="New folder"
+        >
+          <Plus size={11} strokeWidth={1.8} />
+        </button>
+      )}
+
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="folder-delete-title"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setPendingDelete(null);
+            }}
+            className="w-[340px] rounded-lg border border-surface-3 bg-surface-1 shadow-2xl"
+          >
+            <div className="border-b border-white/10 px-4 py-3">
+              <h2 id="folder-delete-title" className="text-sm font-medium text-text-primary">
+                Delete “{pendingDelete.name}”?
+              </h2>
+            </div>
+            <div className="px-4 py-3 text-[11px] leading-5 text-text-secondary">
+              {pendingDeleteCount > 0
+                ? `${pendingDeleteCount} item${pendingDeleteCount === 1 ? '' : 's'} move to the library root — media in the library is never deleted.`
+                : 'This folder is empty.'}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-white/10 px-4 py-3">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setPendingDelete(null)}
+                className="rounded px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                className="rounded border border-red-500/50 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10"
+              >
+                Delete folder
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -465,6 +752,16 @@ function MediaGrid({ items, fps }: { items: MediaAsset[]; fps: number }) {
           event.preventDefault();
           deleteSelection();
           return;
+        case 'ContextMenu': {
+          // Keyboard route into the same context menu a right-click opens,
+          // anchored on the keyboard selection (aria-activedescendant).
+          if (!anchorId) return;
+          event.preventDefault();
+          document
+            .getElementById(mediaOptionId(anchorId))
+            ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+          return;
+        }
         default:
       }
     },
@@ -727,6 +1024,29 @@ function saveCaptionPlan(plan: Partial<CaptionPlanOptions>): void {
   }
 }
 
+type SttEngineChoice = 'auto' | 'local' | 'custom' | 'cloud';
+
+interface LocalModelStatus {
+  id: string;
+  sizeLabel: string;
+  approxBytes: number;
+  downloaded: boolean;
+  bytesOnDisk: number;
+}
+
+interface LocalSttStatus {
+  arch: string;
+  binary: {
+    present: boolean;
+    path: string | null;
+    source: 'override' | 'user-data' | 'path' | null;
+    missingOverride: boolean;
+    download: { url: string; bytes: number; sizeLabel: string; sha256: string } | null;
+  };
+  models: LocalModelStatus[];
+  storage: { usedBytes: number; capBytes: number };
+}
+
 function CaptionsPanel() {
   const project = useTimelineStore((s) => s.project);
   const controller = useTimelineStore((s) => s.controller);
@@ -741,6 +1061,51 @@ function CaptionsPanel() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; message: string } | null>(null);
 
+  // Transcription engine (#39 local half): persisted like the server fields,
+  // so the agent and the UI resolve the same engine through the same config.
+  const [engine, setEngine] = useState<SttEngineChoice>('auto');
+  const [localModel, setLocalModel] = useState('base');
+  const [localBinaryPath, setLocalBinaryPath] = useState('');
+  const [sttStatus, setSttStatus] = useState<LocalSttStatus | null>(null);
+  const [downloading, setDownloading] = useState<{
+    kind: 'model' | 'binary'; modelId?: string;
+    receivedBytes: number; totalBytes: number | null; ratio: number | null;
+  } | null>(null);
+  const [runProgress, setRunProgress] = useState<{
+    completedSec: number; totalSec: number | null; ratio: number | null;
+  } | null>(null);
+
+  const refreshLocalStatus = useCallback(async () => {
+    try {
+      const res = await window.palmier.media.getLocalSttStatus() as {
+        success: boolean;
+        status?: LocalSttStatus;
+        config?: { engine?: SttEngineChoice; localModel?: string; localBinaryPath?: string };
+      };
+      if (res.success && res.status) setSttStatus(res.status);
+      if (res.success && res.config) {
+        if (res.config.engine) setEngine(res.config.engine);
+        if (res.config.localModel) setLocalModel(res.config.localModel);
+        if (typeof res.config.localBinaryPath === 'string') setLocalBinaryPath(res.config.localBinaryPath);
+      }
+    } catch {
+      // Status is best-effort; transcription still reports real errors.
+    }
+  }, []);
+
+  // Local download + run progress stream on events while the invokes pend.
+  useEffect(() => {
+    const offProgress = window.palmier.on('local-stt:progress', (payload: unknown) => {
+      const p = payload as { receivedBytes: number; totalBytes: number | null; ratio: number | null; modelId?: string };
+      setDownloading((current) => current ? { ...current, ...p } : current);
+    });
+    const offRun = window.palmier.on('transcribe:progress', (payload: unknown) => {
+      const p = payload as { completedSec: number; totalSec: number | null; ratio: number | null };
+      setRunProgress(p);
+    });
+    return () => { offProgress(); offRun(); };
+  }, []);
+
   // Caption planning controls (#91). Persisted like the panel layout keys,
   // and narrowed on read so a stale/foreign value falls back to the
   // broadcast defaults rather than feeding the packing math.
@@ -749,25 +1114,90 @@ function CaptionsPanel() {
     saveCaptionPlan(plan);
   }, [plan]);
 
-  // Load any persisted custom server (#287) once.
+  // Load any persisted custom server (#287) + engine choice once.
   useEffect(() => {
     void window.palmier.media.getTranscribeConfig().then((res) => {
-      const cfg = (res as { config?: { baseUrl?: string; model?: string } }).config;
+      const cfg = (res as {
+        config?: {
+          baseUrl?: string; model?: string; engine?: SttEngineChoice;
+          localModel?: string; localBinaryPath?: string;
+        };
+      }).config;
       if (cfg?.baseUrl) setServerUrl(cfg.baseUrl);
       if (cfg?.model) setModel((current) => current || cfg.model!);
+      if (cfg?.engine) setEngine(cfg.engine);
+      if (cfg?.localModel) setLocalModel(cfg.localModel);
+      if (typeof cfg?.localBinaryPath === 'string') setLocalBinaryPath(cfg.localBinaryPath);
     }).catch(() => {});
+    void refreshLocalStatus();
+  }, [refreshLocalStatus]);
+
+  const persistEngine = useCallback((next: SttEngineChoice) => {
+    setEngine(next);
+    void window.palmier.media.setTranscribeConfig({ engine: next }).catch(() => {});
   }, []);
+
+  const persistLocalModel = useCallback((next: string) => {
+    setLocalModel(next);
+    void window.palmier.media.setTranscribeConfig({ localModel: next }).catch(() => {});
+  }, []);
+
+  const downloadModel = useCallback(async (modelId: string) => {
+    setDownloading({ kind: 'model', modelId, receivedBytes: 0, totalBytes: null, ratio: null });
+    setNotice(null);
+    try {
+      const res = await window.palmier.media.downloadLocalModel(modelId) as {
+        success: boolean; error?: string;
+      };
+      if (!res.success) setNotice({ kind: 'error', message: res.error ?? 'Model download failed.' });
+    } catch (err) {
+      setNotice({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setDownloading(null);
+      void refreshLocalStatus();
+    }
+  }, [refreshLocalStatus]);
+
+  const downloadBinary = useCallback(async () => {
+    setDownloading({ kind: 'binary', receivedBytes: 0, totalBytes: null, ratio: null });
+    setNotice(null);
+    try {
+      const res = await window.palmier.media.downloadLocalBinary() as {
+        success: boolean; error?: string;
+      };
+      if (!res.success) setNotice({ kind: 'error', message: res.error ?? 'Binary download failed.' });
+    } catch (err) {
+      setNotice({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setDownloading(null);
+      void refreshLocalStatus();
+    }
+  }, [refreshLocalStatus]);
+
+  const removeModel = useCallback(async (modelId: string) => {
+    try {
+      await window.palmier.media.deleteLocalModel(modelId);
+    } catch {
+      // Removal is best-effort; the refreshed status shows the truth.
+    } finally {
+      void refreshLocalStatus();
+    }
+  }, [refreshLocalStatus]);
 
   const activeId = candidates.some((c) => c.id === assetId) ? assetId : candidates[0]?.id ?? '';
   const activeAsset = candidates.find((c) => c.id === activeId);
+  const showLocal = engine === 'auto' || engine === 'local';
+  const showServer = engine !== 'local';
+  const activeModelStatus = sttStatus?.models.find((m) => m.id === localModel);
 
   const run = useCallback(async () => {
     if (!activeAsset) return;
     setBusy(true);
     setNotice(null);
+    setRunProgress(null);
     try {
       // A custom server (#287) persists before the run so main routes there.
-      if (serverUrl.trim()) {
+      if (showServer && serverUrl.trim()) {
         await window.palmier.media.setTranscribeConfig({
           baseUrl: serverUrl.trim(),
           ...(serverKey.trim() ? { apiKey: serverKey.trim() } : {}),
@@ -777,9 +1207,10 @@ function CaptionsPanel() {
         path: activeAsset.path,
         language: language.trim() || undefined,
         model: model.trim() || undefined,
+        engine,
         plan,
       }) as {
-        success: boolean; error?: string;
+        success: boolean; error?: string; engine?: string;
         cues?: Array<{ startSec: number; endSec: number; text: string }>;
         words?: number;
       };
@@ -791,15 +1222,23 @@ function CaptionsPanel() {
         setNotice({ kind: 'error', message: 'No speech detected in that asset.' });
         return;
       }
-      const applied = applyCaptionCues(controller, res.cues);
+      const applied = applyCaptionCues(controller, res.cues, { assetId: activeAsset.id });
       useProjectStore.getState().markDirty();
-      setNotice({ kind: 'ok', message: `Placed ${applied.count} caption clips on a new track.` });
+      setNotice({
+        kind: 'ok',
+        message: `Placed ${applied.count} caption clips on a new track${res.engine === 'local' ? ' (offline)' : ''}.`,
+      });
     } catch (err) {
       setNotice({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     } finally {
       setBusy(false);
+      setRunProgress(null);
     }
-  }, [activeAsset, controller, language, model, serverUrl, serverKey, plan]);
+  }, [activeAsset, controller, language, model, engine, serverUrl, serverKey, plan, showServer]);
+
+  const cancelRun = useCallback(() => {
+    void window.palmier.media.cancelTranscribe().catch(() => {});
+  }, []);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
@@ -825,38 +1264,153 @@ function CaptionsPanel() {
                 ))}
               </select>
             </Field>
-            <Field label="Language (optional)">
-              <input
+            <Field label="Engine">
+              <select
+                value={engine}
+                onChange={(event) => persistEngine(event.target.value as SttEngineChoice)}
+                disabled={busy}
+                data-stt-engine
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] text-text-primary focus:border-accent focus:outline-none"
+              >
+                <option value="auto" className="bg-surface-2">Auto (local when ready)</option>
+                <option value="local" className="bg-surface-2">Local — offline</option>
+                <option value="custom" className="bg-surface-2">Custom server</option>
+                <option value="cloud" className="bg-surface-2">Cloud (BYOK)</option>
+              </select>
+            </Field>
+            {showLocal && (
+              <>
+                <Field label="Local model">
+                  <select
+                    value={localModel}
+                    onChange={(event) => persistLocalModel(event.target.value)}
+                    disabled={busy || downloading !== null}
+                    data-stt-local-model
+                    className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary focus:border-accent focus:outline-none"
+                  >
+                    {(sttStatus?.models ?? [{ id: 'base', sizeLabel: '142 MB', downloaded: false }]).map((m) => (
+                      <option key={m.id} value={m.id} className="bg-surface-2">
+                        {`${m.id} — ${m.sizeLabel}${m.downloaded ? ' (downloaded)' : ''}`}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <div className="flex items-center gap-2 text-[10px] text-text-muted" data-stt-local-state>
+                  <span className="min-w-0 flex-1 truncate">
+                    {sttStatus == null && 'Checking local engine…'}
+                    {sttStatus != null && !sttStatus.binary.present && 'Local binary missing.'}
+                    {sttStatus != null && sttStatus.binary.present && !(activeModelStatus?.downloaded ?? false)
+                      && `Binary ready — model "${localModel}" not downloaded.`}
+                    {sttStatus != null && sttStatus.binary.present && (activeModelStatus?.downloaded ?? false)
+                      && `Ready offline (${localModel}).`}
+                  </span>
+                  {sttStatus != null && !sttStatus.binary.present && sttStatus.binary.download && (
+                    <button
+                      type="button"
+                      onClick={() => void downloadBinary()}
+                      disabled={busy || downloading !== null}
+                      data-stt-download-binary
+                      className="shrink-0 rounded border border-surface-3 px-1.5 py-0.5 font-medium text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {downloading?.kind === 'binary' ? 'Downloading…' : `Download binary (${sttStatus.binary.download.sizeLabel})`}
+                    </button>
+                  )}
+                  {sttStatus != null && sttStatus.binary.present && !(activeModelStatus?.downloaded ?? false) && (
+                    <button
+                      type="button"
+                      onClick={() => void downloadModel(localModel)}
+                      disabled={busy || downloading !== null}
+                      data-stt-download-model
+                      className="shrink-0 rounded border border-surface-3 px-1.5 py-0.5 font-medium text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {downloading?.kind === 'model' ? 'Downloading…' : `Download (${activeModelStatus?.sizeLabel ?? ''})`}
+                    </button>
+                  )}
+                  {sttStatus != null && (activeModelStatus?.downloaded ?? false) && (
+                    <button
+                      type="button"
+                      onClick={() => void removeModel(localModel)}
+                      disabled={busy || downloading !== null}
+                      className="shrink-0 rounded border border-surface-3 px-1.5 py-0.5 font-medium text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                {downloading !== null && (
+                  <div className="flex items-center gap-2" data-stt-download-progress>
+                    <div className="h-1 min-w-0 flex-1 overflow-hidden rounded bg-surface-3">
+                      <div
+                        className="h-full rounded bg-accent transition-[width]"
+                        style={{ width: `${Math.round((downloading.ratio ?? 0) * 100)}%` }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void window.palmier.media.cancelLocalDownload().catch(() => {})}
+                      className="shrink-0 rounded border border-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-text-secondary hover:bg-surface-2"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                {sttStatus != null && !sttStatus.binary.present && !sttStatus.binary.download && (
+                  <Field label="Custom binary path (no prebuilt binary for this CPU)">
+                    <input
+                      value={localBinaryPath}
+                      onChange={(event) => setLocalBinaryPath(event.target.value)}
+                      onBlur={() => {
+                        void window.palmier.media.setTranscribeConfig({ localBinaryPath }).catch(() => {});
+                        void refreshLocalStatus();
+                      }}
+                      placeholder="C:\tools\whisper-cli.exe"
+                      maxLength={512}
+                      disabled={busy}
+                      className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+                    />
+                  </Field>
+                )}
+              </>
+            )}
+            <Field label="Language">
+              <select
                 value={language}
                 onChange={(event) => setLanguage(event.target.value)}
-                placeholder="en"
-                maxLength={12}
                 disabled={busy}
-                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-              />
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] text-text-primary focus:border-accent focus:outline-none"
+              >
+                <option value="" className="bg-surface-2">Auto-detect</option>
+                {WHISPER_LANGUAGES.map((l) => (
+                  <option key={l.code} value={l.code} className="bg-surface-2">{`${l.name} (${l.code})`}</option>
+                ))}
+              </select>
             </Field>
-            <Field label="Custom server (optional, #287)">
-              <input
-                value={serverUrl}
-                onChange={(event) => setServerUrl(event.target.value)}
-                placeholder="http://localhost:8080/v1"
-                maxLength={200}
-                disabled={busy}
-                data-stt-server-url
-                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-              />
-            </Field>
-            <Field label="Server API key (optional)">
-              <input
-                type="password"
-                value={serverKey}
-                onChange={(event) => setServerKey(event.target.value)}
-                placeholder="Paste key if the server needs one"
-                disabled={busy}
-                data-stt-server-key
-                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-              />
-            </Field>
+            {showServer && (
+              <>
+                <Field label="Custom server (optional, #287)">
+                  <input
+                    value={serverUrl}
+                    onChange={(event) => setServerUrl(event.target.value)}
+                    placeholder="http://localhost:8080/v1"
+                    maxLength={200}
+                    disabled={busy}
+                    data-stt-server-url
+                    className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+                  />
+                </Field>
+                <Field label="Server API key (optional)">
+                  <input
+                    type="password"
+                    value={serverKey}
+                    onChange={(event) => setServerKey(event.target.value)}
+                    placeholder="Paste key if the server needs one"
+                    disabled={busy}
+                    data-stt-server-key
+                    className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+                  />
+                </Field>
+              </>
+            )}
             <Field label="Model (optional)">
               <input
                 value={model}
@@ -920,15 +1474,40 @@ function CaptionsPanel() {
                 </Field>
               </div>
             </div>
-            <button
-              onClick={() => void run()}
-              disabled={busy || !activeId}
-              data-transcribe-run
-              className="flex items-center justify-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {busy && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
-              {busy ? 'Transcribing…' : 'Generate captions'}
-            </button>
+            {runProgress !== null && runProgress.ratio !== null && (
+              <div className="flex items-center gap-2" data-transcribe-progress>
+                <div className="h-1 min-w-0 flex-1 overflow-hidden rounded bg-surface-3">
+                  <div
+                    className="h-full rounded bg-accent transition-[width]"
+                    style={{ width: `${Math.round(runProgress.ratio * 100)}%` }}
+                  />
+                </div>
+                <span className="shrink-0 text-[10px] tabular-nums text-text-muted">
+                  {`${Math.round(runProgress.ratio * 100)}%`}
+                </span>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void run()}
+                disabled={busy || !activeId}
+                data-transcribe-run
+                className="flex flex-1 items-center justify-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {busy && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
+                {busy ? 'Transcribing…' : 'Generate captions'}
+              </button>
+              {busy && (
+                <button
+                  type="button"
+                  onClick={cancelRun}
+                  data-transcribe-cancel
+                  className="shrink-0 rounded border border-surface-3 px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
             {notice && (
               <p
                 role="status"
@@ -1003,7 +1582,52 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
   const isSelected = useMediaPanelStore((state) => state.selection.selectedIds.includes(item.id));
   const selectedIds = useMediaPanelStore((state) => state.selection.selectedIds);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [moveMode, setMoveMode] = useState(false);
   const [extracting, setExtracting] = useState(false);
+  // ─── AI description (#118 AI half, explicit only) ──────────────────────
+  const [describing, setDescribing] = useState(false);
+  const [describeError, setDescribeError] = useState('');
+  const [visionLabel, setVisionLabel] = useState('');
+  useEffect(() => {
+    if (!menuOpen || visionLabel) return;
+    void window.palmier.ai.getProviders().then((res) => {
+      const list = res as Array<{ name?: string; hasKey?: boolean; model?: string }> | undefined;
+      const usable = Array.isArray(list) ? list.find((p) => p.hasKey && p.model) : undefined;
+      if (usable?.name && usable?.model) setVisionLabel(`${usable.name} / ${usable.model}`);
+    }).catch(() => {});
+  }, [menuOpen, visionLabel]);
+
+  async function handleDescribe() {
+    if (describing || item.type === 'audio') return;
+    setDescribing(true);
+    setDescribeError('');
+    try {
+      const res = await window.palmier.media.describe({
+        assetId: item.id,
+        assetPath: item.path,
+        assetType: item.type,
+        ...(item.thumbnailPath ? { thumbnailPath: item.thumbnailPath } : {}),
+        ...(typeof item.width === 'number' ? { assetWidth: item.width } : {}),
+        ...(typeof item.height === 'number' ? { assetHeight: item.height } : {}),
+      }) as { success: boolean; description?: string; provider?: string; model?: string; error?: string };
+      if (!res.success || typeof res.description !== 'string') {
+        setDescribeError(res.error ?? 'Description failed.');
+        return;
+      }
+      controller.setAssetDescription(item.id, res.description);
+      useProjectStore.getState().markDirty();
+      setMenuOpen(false);
+      useMediaPanelStore.getState().setNotice(
+        res.provider && res.model
+          ? `Described with ${res.provider} / ${res.model} — billed to your key.`
+          : 'Description saved.',
+      );
+    } catch (err) {
+      setDescribeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDescribing(false);
+    }
+  }
 
   // ─── Armed swap pick mode (#500) ────────────────────────────────────────────
   const armedSwap = useMediaPanelStore((state) => state.armedSwap);
@@ -1019,6 +1643,41 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
   const selectedCount = useMediaPanelStore((state) => state.selection.selectedIds.length);
   const deleteLabel =
     isSelected && selectedCount > 1 ? `Delete ${selectedCount} items` : 'Delete';
+
+  // ─── Move to folder (#156) ───────────────────────────────────────────────
+  // One menu action = one controller call: moveAssetsToFolder owns the undo
+  // granularity for the whole targeted set, the same way deleteSelection does.
+  const folders = project.mediaFolders ?? [];
+  const moveTargetIds = useMemo(() => {
+    const ids = isSelected && selectedCount > 1 ? [...selectedIds] : [item.id];
+    return ids.filter((id) => project.media.some((asset) => asset.id === id));
+  }, [isSelected, selectedCount, selectedIds, item.id, project.media]);
+
+  const targetsAllIn = (folderId: string | null): boolean =>
+    moveTargetIds.every((id) => {
+      const asset = project.media.find((candidate) => candidate.id === id);
+      return asset !== undefined && (asset.folderId ?? null) === folderId;
+    });
+
+  function handleMove(folderId: string | null) {
+    setMenuOpen(false);
+    setMoveMode(false);
+    try {
+      const result = controller.moveAssetsToFolder(moveTargetIds, folderId);
+      if (result.movedAssetIds.length === 0) return;
+      useProjectStore.getState().markDirty();
+      const destination =
+        folderId === null
+          ? 'the library root'
+          : `“${folders.find((folder) => folder.id === folderId)?.name ?? ''}”`;
+      const count = result.movedAssetIds.length;
+      useMediaPanelStore
+        .getState()
+        .setNotice(`Moved ${count} item${count === 1 ? '' : 's'} to ${destination}.`);
+    } catch (err) {
+      useMediaPanelStore.getState().setNotice(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   // Extraction acts on the whole selection when the right-clicked tile is part
   // of it, mirroring the delete targeting rule.
@@ -1090,6 +1749,7 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
         // Right-clicking outside the selection retargets it, so the menu always
         // acts on what the user pointed at.
         if (!isSelected) selectItem(item.id, 'replacing');
+        setMoveMode(false);
         setMenuOpen(true);
       }}
       onDragStart={(event) => {
@@ -1105,6 +1765,7 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
             : `Not eligible: ${swapVerdict.reason}`
           : `Drag onto the timeline to add - ${item.filename}`
             + (item.startTimecode ? ` · TC ${item.startTimecode}` : '')
+            + (item.aiDescription ? ` · ${item.aiDescription}` : '')
       }
       data-swap-eligible={armedSwap ? (swapVerdict?.ok ? 'yes' : 'no') : undefined}
       className={`group relative min-w-0 cursor-grab active:cursor-grabbing ${armedSwap && !swapVerdict?.ok ? 'opacity-40' : ''}`}
@@ -1154,11 +1815,52 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
       {menuOpen && (
         <>
           {/* Click-away layer so the menu closes without a global listener. */}
-          <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
+          <div
+            className="fixed inset-0 z-20"
+            onClick={() => {
+              setMenuOpen(false);
+              setMoveMode(false);
+            }}
+          />
           <div
             role="menu"
             className="absolute left-1 top-1 z-30 min-w-28 rounded border border-white/15 bg-surface-2 py-0.5 shadow-lg"
           >
+            {folders.length > 0 && !moveMode && (
+              <button
+                role="menuitem"
+                onClick={() => setMoveMode(true)}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Move to folder
+              </button>
+            )}
+            {moveMode && (
+              <>
+                <p className="px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-text-muted">
+                  Move {moveTargetIds.length > 1 ? `${moveTargetIds.length} items` : 'item'} to
+                </p>
+                <button
+                  role="menuitem"
+                  disabled={targetsAllIn(null)}
+                  onClick={() => handleMove(null)}
+                  className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:cursor-default disabled:text-text-muted disabled:hover:bg-transparent"
+                >
+                  Library root
+                </button>
+                {folders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    role="menuitem"
+                    disabled={targetsAllIn(folder.id)}
+                    onClick={() => handleMove(folder.id)}
+                    className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:cursor-default disabled:text-text-muted disabled:hover:bg-transparent"
+                  >
+                    {folder.name}
+                  </button>
+                ))}
+              </>
+            )}
             {canExtractAudio(item) && (
               <button
                 role="menuitem"
@@ -1186,6 +1888,32 @@ function MediaCard({ item, fps }: { item: MediaAsset; fps: number }) {
               >
                 Remove proxy (use original)
               </button>
+            )}
+            {item.type !== 'audio' && (
+              <button
+                role="menuitem"
+                disabled={describing}
+                onClick={() => void handleDescribe()}
+                title={
+                  visionLabel
+                    ? `Describe with ${visionLabel} — billed to your key (one vision request)`
+                    : 'Describe with your AI provider — billed to your key (one vision request)'
+                }
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10 disabled:text-text-muted"
+              >
+                {describing
+                  ? 'Describing…'
+                  : describeError
+                    ? 'Retry description'
+                    : item.aiDescription
+                      ? 'Refresh description'
+                      : 'Describe (AI)'}
+              </button>
+            )}
+            {describeError && (
+              <p role="alert" className="px-2 py-1 text-[9px] text-red-300">
+                {describeError}
+              </p>
             )}
             <button
               role="menuitem"

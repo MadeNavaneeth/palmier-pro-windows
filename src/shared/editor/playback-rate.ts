@@ -13,7 +13,7 @@
  */
 
 /** Rates offered in the preview toolbar, slowest first. */
-export const PLAYBACK_RATE_PRESETS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4, 10] as const;
+export const PLAYBACK_RATE_PRESETS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4, 8, 10] as const;
 
 /** Slowest usable rate. Below this the playhead barely advances. */
 export const MIN_PLAYBACK_RATE = 0.25;

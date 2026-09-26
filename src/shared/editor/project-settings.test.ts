@@ -5,7 +5,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { EditorController } from './controller';
-import type { Project } from '../types/project';
+import { assetDurationSeconds } from '../media/source-time';
+import type { Clip, Project } from '../types/project';
 import { createEmptyProject } from '../types/project';
 
 function projectWithClips(): Project {
@@ -122,6 +123,105 @@ describe('project settings', () => {
     expect(clip(ctrl, 'c1').durationFrames).toBe(30);
     expect(ctrl.getPlayhead()).toBe(30);
     expect(ctrl.getTimeline().inFrame).toBe(10);
+  });
+
+  it('rescales media durations in project frames and preserves source length across undo/redo', () => {
+    const project = createEmptyProject('Media rescale');
+    project.media = [{
+      id: 'asset', path: '/asset.mp4', filename: 'asset.mp4', type: 'video',
+      duration: 900, fileSize: 1, addedAt: new Date().toISOString(),
+    }];
+    const ctrl = new EditorController(project);
+
+    ctrl.applyProjectSettings({ fps: 60 });
+    const rescaled = ctrl.getMedia()[0]!;
+    expect(rescaled.duration).toBe(1800);
+    expect(assetDurationSeconds(rescaled, ctrl.getProject().settings.fps)).toBe(30);
+
+    expect(ctrl.undo()).toBe(true);
+    const original = ctrl.getMedia()[0]!;
+    expect(original.duration).toBe(900);
+    expect(assetDurationSeconds(original, ctrl.getProject().settings.fps)).toBe(30);
+
+    ctrl.redo();
+    expect(ctrl.getMedia()[0]!.duration).toBe(1800);
+    expect(assetDurationSeconds(ctrl.getMedia()[0]!, ctrl.getProject().settings.fps)).toBe(30);
+  });
+
+  it('rescales every keyframe track with the project frame-rate ratio', () => {
+    const project = createEmptyProject('Keyframe rescale');
+    project.media = [{
+      id: 'asset', path: '/asset.mp4', filename: 'asset.mp4', type: 'video',
+      duration: 900, fileSize: 1, addedAt: new Date().toISOString(),
+    }];
+    const clip: Clip = {
+      id: 'keyframes', assetId: 'asset', type: 'video', trackId: 'v1',
+      startFrame: 0, durationFrames: 30, inPoint: 0, outPoint: 30,
+      x: 0, y: 0, width: 1920, height: 1080,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, anchorX: 0, anchorY: 0,
+      volume: 1, muted: false,
+      motionX: [{ frame: 0, value: 0 }, { frame: 15, value: 15 }, { frame: 30, value: 30 }],
+      motionY: [{ frame: 0, value: 1 }, { frame: 15, value: 2 }, { frame: 30, value: 3 }],
+      motionRot: [{ frame: 0, value: 10 }, { frame: 15, value: 20 }, { frame: 30, value: 30 }],
+      motionScaleX: [{ frame: 0, value: 1 }, { frame: 15, value: 1.5 }, { frame: 30, value: 2 }],
+      motionScaleY: [{ frame: 0, value: 2 }, { frame: 15, value: 1.5 }, { frame: 30, value: 1 }],
+      opacityTrack: [{ frame: 0, value: 0.25 }, { frame: 15, value: 0.5 }, { frame: 30, value: 1 }],
+      volumeDb: [{ frame: 0, value: -6 }, { frame: 15, value: 0 }, { frame: 30, value: 6 }],
+    };
+    project.timeline.clips = [clip];
+    const ctrl = new EditorController(project);
+
+    ctrl.applyProjectSettings({ fps: 60 });
+    const rescaled = ctrl.getClips()[0]!;
+    const frames = (track: readonly { frame: number }[] | undefined): number[] | undefined =>
+      track?.map((point) => point.frame);
+
+    expect(frames(rescaled.motionX)).toEqual([0, 30, 60]);
+    expect(frames(rescaled.motionY)).toEqual([0, 30, 60]);
+    expect(frames(rescaled.motionRot)).toEqual([0, 30, 60]);
+    expect(frames(rescaled.motionScaleX)).toEqual([0, 30, 60]);
+    expect(frames(rescaled.motionScaleY)).toEqual([0, 30, 60]);
+    expect(frames(rescaled.opacityTrack)).toEqual([0, 30, 60]);
+    expect(frames(rescaled.volumeDb)).toEqual([0, 30, 60]);
+  });
+
+  it('rescales nested timelines and their keyframes too', () => {
+    const project = createEmptyProject('Nested keyframe rescale');
+    const nestedClip: Clip = {
+      id: 'nested-keyframes', assetId: 'asset', type: 'video', trackId: 'v1',
+      startFrame: 10, durationFrames: 30, inPoint: 0, outPoint: 30,
+      x: 0, y: 0, width: 1920, height: 1080,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, anchorX: 0, anchorY: 0,
+      volume: 1, muted: false,
+      motionX: [{ frame: 0, value: 0 }, { frame: 15, value: 15 }, { frame: 30, value: 30 }],
+      opacityTrack: [{ frame: 0, value: 0 }, { frame: 15, value: 0.5 }, { frame: 30, value: 1 }],
+      volumeDb: [{ frame: 0, value: -12 }, { frame: 15, value: 0 }, { frame: 30, value: 12 }],
+    };
+    project.media = [{
+      id: 'asset', path: '/asset.mp4', filename: 'asset.mp4', type: 'video',
+      duration: 900, fileSize: 1, addedAt: new Date().toISOString(),
+    }];
+    project.timelines = {
+      nested: {
+        tracks: [...project.timeline.tracks],
+        clips: [nestedClip],
+        playheadFrame: 7,
+      },
+    };
+    const ctrl = new EditorController(project);
+
+    ctrl.applyProjectSettings({ fps: 60 });
+    const rescaled = ctrl.getProject().timelines!.nested;
+    const rescaledClip = rescaled.clips[0]!;
+    const frames = (track: readonly { frame: number }[] | undefined): number[] | undefined =>
+      track?.map((point) => point.frame);
+
+    expect(rescaledClip.startFrame).toBe(20);
+    expect(rescaledClip.durationFrames).toBe(60);
+    expect(rescaled.playheadFrame).toBe(14);
+    expect(frames(rescaledClip.motionX)).toEqual([0, 30, 60]);
+    expect(frames(rescaledClip.opacityTrack)).toEqual([0, 30, 60]);
+    expect(frames(rescaledClip.volumeDb)).toEqual([0, 30, 60]);
   });
 
   it('keeps clips from overlapping when the rescale rounds', () => {

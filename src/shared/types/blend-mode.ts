@@ -34,6 +34,28 @@ export type BlendMode = (typeof BLEND_MODES)[number];
 export const DEFAULT_BLEND_MODE: BlendMode = 'normal';
 
 /**
+ * FFmpeg's `blend` filter uses the W3C names without the separators used by
+ * our model. Keep this table beside the model so preview and export cannot
+ * grow separate mode vocabularies. The names are the ones listed by
+ * `ffmpeg -h filter=blend` (FFmpeg 8.1.2): `dodge`, `burn`, `hardlight`, and
+ * `softlight` are the spellings for the four hyphenated model names.
+ */
+export const FFMPEG_BLEND_MODES: Readonly<Record<BlendMode, string>> = {
+  normal: 'normal',
+  multiply: 'multiply',
+  screen: 'screen',
+  overlay: 'overlay',
+  darken: 'darken',
+  lighten: 'lighten',
+  'color-dodge': 'dodge',
+  'color-burn': 'burn',
+  'hard-light': 'hardlight',
+  'soft-light': 'softlight',
+  difference: 'difference',
+  exclusion: 'exclusion',
+};
+
+/**
  * Map a blend mode to the integer index used by the shader/native code.
  * Order is the source of truth — do not reorder without updating the shader.
  */

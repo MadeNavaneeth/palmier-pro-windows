@@ -134,6 +134,18 @@ describe('rasterizeTitle geometry contract', () => {
     expect(firstCanvas!.ctx.getImageDataCalls).toEqual([{ x: 0, y: 0, w: 1920, h: 1080 }]);
   });
 
+  it('keeps a full-canvas raster for a variable-font title (#50)', () => {
+    // A non-default axis makes isAdvancedTitle() true, so export bakes the
+    // title and overlays it at the frame origin; preview must hand the
+    // compositor the same full-canvas raster or the two paths diverge.
+    const clip = titleClip({ x: 100, y: 50, width: 400, height: 120, titleVariationWght: 800 });
+    const result = rasterizeTitle(clip, 1920, 1080);
+
+    expect(result).not.toBeNull();
+    expect(result).toMatchObject({ width: 1920, height: 1080, x: 0, y: 0 });
+    expect(firstCanvas!.ctx.getImageDataCalls).toEqual([{ x: 0, y: 0, w: 1920, h: 1080 }]);
+  });
+
   it('rounds a fractional box to integer pixels', () => {
     const clip = titleClip({ x: 100.5, y: 50.4, width: 399.5, height: 120.2 });
     const result = rasterizeTitle(clip, 1920, 1080);
@@ -173,5 +185,14 @@ describe('rasterizeTitle geometry contract', () => {
     const second = rasterizeTitle(titleClip({ text: 'Goodbye' }), 1920, 1080);
 
     expect(second).not.toBe(first);
+  });
+
+  it('invalidates the cache entry when a variation axis changes (#50)', () => {
+    const first = rasterizeTitle(titleClip({ titleVariationWght: 700 }), 1920, 1080)!;
+    const second = rasterizeTitle(titleClip({ titleVariationWght: 800 }), 1920, 1080)!;
+    // Identity in plain JS: vitest pretty-prints matcher arguments, and an
+    // 8 MB full-canvas raster makes not.toBe() cost seconds, not ms.
+    expect(first === second).toBe(false);
+    expect(first.data === second.data).toBe(false);
   });
 });

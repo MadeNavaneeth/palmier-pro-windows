@@ -1,11 +1,15 @@
 /**
  * Regression coverage for SRT import (roadmap R3): cue-to-clip mapping
  * relative to the drop frame, one undoable step, sanitization skips, and
- * track guards.
+ * track guards. Placement shares the caption contract in
+ * `shared/captions/apply.ts`, so these also pin that the importer stays
+ * inside the representable frame range.
  */
 
 import { describe, it, expect } from 'vitest';
 import { EditorController } from './controller';
+import { sanitizeTitleText } from './title';
+import { MAX_FRAME } from '../utils/safe-number';
 
 const SRT = [
   '1',
@@ -55,5 +59,25 @@ describe('importSrt (R3)', () => {
     expect(ctrl.importSrt('v1', 'no cues here')).toEqual([]);
     const canUndoBefore = ctrl.canUndo();
     expect(ctrl.canUndo()).toBe(canUndoBefore);
+  });
+
+  it('writes the same sanitized text the transcriber path does', () => {
+    const ctrl = new EditorController();
+    const raw = 'a\u0000b\u0007c';
+    const srt = ['1', '00:00:01,000 --> 00:00:02,000', raw].join('\n');
+
+    const [id] = ctrl.importSrt('v1', srt, 0);
+    expect(ctrl.getClips().find((c) => c.id === id)!.text).toBe(sanitizeTitleText(raw));
+  });
+
+  it('keeps a cue placed at the top of the frame range inside it', () => {
+    const ctrl = new EditorController();
+    const ids = ctrl.importSrt('v1', SRT, MAX_FRAME);
+    expect(ids).toHaveLength(2);
+    for (const id of ids) {
+      const clip = ctrl.getClips().find((c) => c.id === id)!;
+      expect(clip.startFrame).toBeLessThanOrEqual(MAX_FRAME);
+      expect(clip.startFrame + clip.durationFrames).toBeLessThanOrEqual(MAX_FRAME);
+    }
   });
 });

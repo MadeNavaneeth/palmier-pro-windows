@@ -26,12 +26,14 @@ export const CHARS_PER_TOKEN = 4;
  *
  * Anthropic's current models are 200k; the OpenAI-compatible path is a
  * heterogeneous set of endpoints (OpenAI, OpenRouter, Groq, Together, Ollama,
- * LM Studio) where the safe assumption is the smaller common denominator. A
+ * LM Studio) where the safe assumption is the smaller common denominator, and
+ * the Codex CLI joins that set — its model varies by user config. A
  * deployment with a different window sets it explicitly.
  */
 export const DEFAULT_CONTEXT_WINDOW: Record<ProviderKind, number> = {
   anthropic: 200_000,
   'openai-compatible': 128_000,
+  'codex-cli': 128_000,
 };
 
 /** Compact once the outgoing request is within a tenth of the window. */

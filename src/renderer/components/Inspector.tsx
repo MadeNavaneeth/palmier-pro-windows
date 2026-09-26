@@ -9,23 +9,85 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Pipette } from 'lucide-react';
-import { useTimelineStore } from '../store/timeline';
+import { useTimelineStore, type SilenceRemovalOutcome } from '../store/timeline';
 import { useProjectStore } from '../store/project';
 import { BLEND_MODES, BLEND_MODE_LABELS, type BlendMode } from '../../shared/types/blend-mode';
 import { DEFAULT_SILENCE_CONFIG, SILENCE_LIMITS } from '../../shared/audio/silence-detector';
 import { useSilenceSettings } from '../hooks/useSilenceSettings';
 import { useMediaPanelStore } from '../store/media-panel';
-import { evaluateMotion } from '../../shared/media/motion';
+import { evaluateMotion, type MotionEasing } from '../../shared/media/motion';
+import {
+  SHAPE_KINDS,
+  SHAPE_STROKE_WIDTH_MAX,
+  sanitizeShapeKind,
+} from '../../shared/editor/shape';
 import { mergeChromaKey, DEFAULT_CHROMA_KEY_COLOR } from '../../shared/editor/chroma-key';
+import {
+  TITLE_VARIATION_ITAL_DEFAULT,
+  TITLE_VARIATION_SLNT_DEFAULT,
+  TITLE_VARIATION_WDTH_DEFAULT,
+  TITLE_VARIATION_WDTH_MAX,
+  TITLE_VARIATION_WDTH_MIN,
+  TITLE_VARIATION_WGHT_DEFAULT,
+  TITLE_VARIATION_WGHT_MAX,
+  TITLE_VARIATION_WGHT_MIN,
+  sanitizeTitleVariationItal,
+  sanitizeTitleVariationSlnt,
+  sanitizeTitleVariationWdth,
+  sanitizeTitleVariationWght,
+} from '../../shared/editor/title';
 import {
   COLOR_GRADE_LIMITS,
   DEFAULT_COLOR_GRADE,
+  sanitizeColorGrade,
+  type GradeCurve,
+  type GradeWheels,
+  type HueCurves,
+} from '../../shared/editor/color-grade';
+import {
   GRADE_PRESETS,
   GRADE_PRESET_NAME_MAX,
-  sanitizeColorGrade,
-  type ColorGrade,
   type GradePreset,
-} from '../../shared/editor/color-grade';
+} from '../../shared/editor/grade-preset-store';
+import { LUT_INTENSITY_LIMITS, lutRefsEqual, sanitizeLutRef } from '../../shared/editor/lut';
+import {
+  DEFAULT_GLOW,
+  DEFAULT_GRAIN,
+  DEFAULT_VIGNETTE,
+  EFFECT_LIMITS,
+  effectsOf,
+  grainsEqual,
+  glowsEqual,
+  sanitizeGlow,
+  sanitizeGrain,
+  sanitizeVignette,
+  vignettesEqual,
+  type Glow,
+  type Grain,
+  type Vignette,
+} from '../../shared/editor/effects';
+import {
+  applyGradePresetTo,
+  gradeFromClip,
+  resolveGradePresetPropagation,
+  shotFromClip,
+  type GradePresetPropagateMode,
+} from '../lib/grade-preset';
+import { clipPresetLink, presetOptionLabel } from '../lib/grade-preset-label';
+import { supportsMediaAdjustmentControls } from '../lib/inspector-eligibility';
+import {
+  hasOpacityTrack,
+  nextOpacityTrack,
+  opacityPercent,
+  removeOpacityKeyframe,
+  withOpacityEasing,
+} from '../lib/opacity-track';
+import { curveForEditing } from '../lib/curve-editor';
+import { CurveEditor } from './CurveEditor';
+import { wheelsForEditing } from '../lib/color-wheels';
+import { ColorWheels } from './ColorWheels';
+import { hueCurvesForEditing } from '../lib/hue-curves';
+import { HueCurveEditor } from './HueCurveEditor';
 import { useGradePresetsStore } from '../store/grade-presets';
 import {
   COMPRESSOR_LIMITS,
@@ -35,6 +97,11 @@ import {
   normalizeCompressor,
   type CompressorConfig,
 } from '../../shared/audio/compressor';
+import {
+  DEFAULT_NOISE_REDUCTION,
+  NOISE_REDUCTION_LIMITS,
+  noiseReductionOf,
+} from '../../shared/audio/denoise';
 import { linearToDb } from '../../shared/audio/normalize';
 import type { Clip } from '../../shared/types/project';
 import type { EditorController } from '../../shared/editor/controller';
@@ -115,17 +182,12 @@ export function Inspector() {
   const handleRemoveSilence = useCallback(async () => {
     if (!clip) return;
     setWorking(true);
-    setSilenceStatus('Analyzing audioâ€¦');
+    setSilenceStatus('Analyzing audio…');
     const result = await removeSilenceForClip(clip.id);
     setWorking(false);
-    if (result.error) {
-      setSilenceStatus(result.error);
-    } else if (result.removed === 0) {
-      setSilenceStatus('No silence found.');
-    } else {
-      setSilenceStatus(`Removed ${result.removed} silent gap${result.removed === 1 ? '' : 's'}.`);
-    }
+    setSilenceStatus(silenceRemovalStatus(result));
   }, [clip, removeSilenceForClip]);
+
 
   if (!clip) {
     // More than one clip (and not a single linked A/V pair): edit them together.
@@ -175,6 +237,8 @@ export function Inspector() {
         <ColorLabelPicker clipId={clip.id} currentColor={clip.color} />
 
         <GenerationInfo clipId={clip.id} />
+
+        <AssetDescription clipId={clip.id} />
 
         {!isAudio && (
           <>
@@ -239,6 +303,13 @@ export function Inspector() {
               </div>
             </div>
 
+            {/* Opacity animation track. Sits with the opacity/fades concern but
+                is a separate control from the static slider and the fades;
+                gated to the decoded-media clips the track can animate. */}
+            {supportsMediaAdjustmentControls(clip.type) && (
+              <OpacityKeyframeControls clipId={clip.id} />
+            )}
+
             {/* Geometric transition (wipe / slide) */}
             <div className="flex flex-col gap-1">
               <label className="text-2xs text-text-muted uppercase tracking-wide">Transition In</label>
@@ -276,7 +347,25 @@ export function Inspector() {
               </div>
             </div>
 
-            {/* Invert Colors (upstream PR #408) */}
+             {/* Shape style (tutorial overlays): kind + stroke/fill only. Media
+                 stages below (grade, effects, chroma, edges) operate on
+                 decoded frames and do not apply to vector shapes. */}
+            {clip.type === 'shape' && (
+              <ShapeControls clipId={clip.id} clip={clip} controller={controller} />
+            )}
+
+             {/* Variable-font axes (upstream issue #50): mechanical sliders
+                 only — one undo step per change, default clears the field so
+                 presence always means non-default (the bake-routing rule). */}
+            {clip.type === 'title' && (
+              <TitleVariationControls clipId={clip.id} clip={clip} controller={controller} />
+            )}
+
+             {/* Media stages below (grade, effects, chroma, edges) operate on
+                 decoded frames. Title, shape, and compound clips use separate
+                 render paths and bypass them; generated clips stay eligible. */}
+            {supportsMediaAdjustmentControls(clip.type) && (
+              <>
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
@@ -299,6 +388,9 @@ export function Inspector() {
 
             {/* Color grade + named presets (upstream #157, stack from R4) */}
             <ColorGradeControls clipId={clip.id} clip={clip} controller={controller} />
+
+            {/* Effects subgroups (upstream #157: blur, vignette, grain, glow) */}
+            <EffectsControls clipId={clip.id} clip={clip} controller={controller} />
 
             {/* Chroma key (upstream issue #97) */}
             <ChromaKeyControls clipId={clip.id} chromaKey={clip.chromaKey} controller={controller} />
@@ -358,6 +450,8 @@ export function Inspector() {
                 </div>
               );
             })()}
+              </>
+            )}
           </>
         )}
 
@@ -368,16 +462,17 @@ export function Inspector() {
             </p>
             <EqControls clipId={clip.id} clip={clip} />
             <CompressorControls clipId={clip.id} clip={clip} />
+            <NoiseReductionControls clipId={clip.id} clip={clip} />
             <VolumeKeyframeControls clipId={clip.id} />
           </>
         )}
 
-        {(clip.type === 'video' || clip.type === 'image') && (
+        {(clip.type === 'video' || clip.type === 'image' || clip.type === 'shape') && (
           <MotionControls clipId={clip.id} />
         )}
 
-        {/* Audio tools â€” available for audio and video clips (both can carry sound). */}
-        {clip.type !== 'image' && clip.type !== 'title' && (
+        {/* Audio tools — available for audio and video clips (both can carry sound). */}
+        {clip.type !== 'image' && clip.type !== 'title' && clip.type !== 'shape' && (
           <SilenceRemovalControls
             onRemove={handleRemoveSilence}
             working={working}
@@ -390,23 +485,35 @@ export function Inspector() {
 }
 
 /**
- * Write a preset's whole grade onto one or more clips in one undo step.
- * Fields the preset does not define are cleared, which is what makes the
- * built-in "Neutral" a real reset rather than a no-op.
+ * The one status line under "Remove Silence".
+ *
+ * The detector reads the whole asset while the clip shows a trimmed part of it,
+ * so a detected span with no overlap in the clip is omitted rather than clamped
+ * to the nearest edge (upstream PR #426). Reporting that as "No silence found."
+ * would be a false statement about the user's own audio, so a span that was
+ * found and left in place is named as such: how many were found, how many were
+ * removed, and why the rest produced no cut. Nothing found is still the plain
+ * "no silence" line.
  */
-function applyGradePresetTo(
-  controller: EditorController,
-  clipIds: string[],
-  preset: GradePreset,
-): void {
-  const grade = sanitizeColorGrade(preset.grade);
-  controller.applyClipProperties(clipIds, `Grade: ${preset.label}`, (draft) => {
-    for (const field of Object.keys(COLOR_GRADE_LIMITS) as Array<keyof typeof COLOR_GRADE_LIMITS>) {
-      if (grade[field] === undefined) delete draft[field];
-      else draft[field] = grade[field];
-    }
-    return true;
-  });
+export function silenceRemovalStatus(result: SilenceRemovalOutcome): string {
+  if (result.error) return result.error;
+  const outsideClip = result.omitted?.['outside-clip'] ?? 0;
+  const invalid = result.omitted?.['invalid-range'] ?? 0;
+  const omitted = outsideClip + invalid;
+  if (omitted === 0) {
+    return result.removed === 0
+      ? 'No silence found.'
+      : `Removed ${result.removed} silent gap${result.removed === 1 ? '' : 's'}.`;
+  }
+  const found = result.removed + omitted;
+  const gaps = `silent gap${found === 1 ? '' : 's'}`;
+  const why = [
+    ...(outsideClip > 0 ? [`${outsideClip} outside this clip's trimmed window`] : []),
+    ...(invalid > 0 ? [`${invalid} with invalid timings`] : []),
+  ].join(', ');
+  return result.removed === 0
+    ? `Found ${found} ${gaps} in this audio, but removed none: ${why}.`
+    : `Removed ${result.removed} of ${found} ${gaps}: ${why}.`;
 }
 
 /**
@@ -419,9 +526,65 @@ function applyGradePresetTo(
  * as one undo step and removes the field at its default, so a neutral clip
  * still reads as ungraded everywhere (`hasColorGrade`). Presets apply the
  * whole grade at once; the built-in list and the user's own saved looks share
- * one picker, and a saved look can be deleted from the same row.
+ * one picker, and a saved look can be deleted from the same row. A saved look
+ * also carries the clip's curves, while a built-in look leaves the clip's own
+ * curves untouched (see `lib/grade-preset`).
+ *
+ * "Save current as preset…" stores the whole look, not just the grade: the
+ * clip's effects ride along with the grade, and its current static framing
+ * (position, scale, rotation, opacity, crop) is captured as a normalized shot
+ * sibling so the saved name is portable across project sizes. Such a row is
+ * marked "· grade + framing" in the picker, because applying it reframes the
+ * clip as well as recoloring it. Motion tracks are deliberately not captured
+ * and keep winning over the static values. Both halves land in one
+ * `applyClipProperties` call, so applying a preset is a single undo step.
+ *
+ * Applying a saved preset also records `Clip.gradePresetId` in that same step,
+ * and the row then shows which preset the clip uses. That link is metadata
+ * only: a later manual grade edit makes it stale, and drift is deliberately
+ * not detected or repaired, so the note never claims the clip still matches.
+ * A link whose preset was deleted degrades to a quiet "Preset no longer
+ * exists" with the same "Clear link" action — the clip's look is untouched
+ * either way. Clearing the link is one undo step that leaves the grade and
+ * framing exactly as they are.
+ *
+ * The tone-curve editor at the bottom writes the clip's `curves` field through
+ * the same sanitize-then-apply path, so a curve drag is one undo step and an
+ * all-identity curve clears the field like a neutral slider does. The color
+ * wheels below it work the same way over the clip's `wheels` field: pad drags
+ * and master changes commit once per gesture. The hue-curves editor below the
+ * wheels works the same way over `hueCurves`, with the cyclic eval wrapping
+ * the drawn stroke across the 0/1 seam.
  */
-function ColorGradeControls({
+/**
+ * The grade block's apply step: resolve the opt-in propagation, then write the
+ * snapshot to the whole covered set in one undo step.
+ *
+ * Split out of the component so the wiring can be exercised without a DOM
+ * event. With no modes the cover is exactly the one clip the user is looking
+ * at, so an unticked apply is byte-for-byte the previous single-clip apply. A
+ * covered clip that cannot be written refuses the whole call and leaves the
+ * project untouched rather than leaving the look half applied.
+ */
+export function applyPresetWithPropagation(
+  controller: EditorController,
+  clipId: string,
+  preset: GradePreset,
+  linkPreset: boolean,
+  modes: readonly GradePresetPropagateMode[],
+): { ok: true; clipIds: string[] } | { ok: false; error: string } {
+  const cover = resolveGradePresetPropagation(
+    controller,
+    [clipId],
+    modes,
+    (clip) => supportsMediaAdjustmentControls(clip.type),
+  );
+  if (!cover.ok) return { ok: false, error: cover.error };
+  applyGradePresetTo(controller, cover.cover.clipIds, preset, linkPreset);
+  return { ok: true, clipIds: cover.cover.clipIds };
+}
+
+export function ColorGradeControls({
   clipId,
   clip,
   controller,
@@ -437,21 +600,19 @@ function ColorGradeControls({
   const [saving, setSaving] = useState(false);
   const [presetName, setPresetName] = useState('');
   const [saveError, setSaveError] = useState('');
+  // Propagation is a per-apply choice, never a remembered default: both boxes
+  // start unchecked so a preset never leaves the clip the user is looking at.
+  const [propagateLinked, setPropagateLinked] = useState(false);
+  const [propagateSyncLock, setPropagateSyncLock] = useState(false);
+  const [applyError, setApplyError] = useState('');
 
-  const current: ColorGrade = {
-    brightness: clip.brightness ?? DEFAULT_COLOR_GRADE.brightness,
-    contrast: clip.contrast ?? DEFAULT_COLOR_GRADE.contrast,
-    saturation: clip.saturation ?? DEFAULT_COLOR_GRADE.saturation,
-    hueRotation: clip.hueRotation ?? DEFAULT_COLOR_GRADE.hueRotation,
-    exposure: clip.exposure ?? DEFAULT_COLOR_GRADE.exposure,
-    temperature: clip.temperature ?? DEFAULT_COLOR_GRADE.temperature,
-    tint: clip.tint ?? DEFAULT_COLOR_GRADE.tint,
-    vibrance: clip.vibrance ?? DEFAULT_COLOR_GRADE.vibrance,
-    highlights: clip.highlights ?? DEFAULT_COLOR_GRADE.highlights,
-    shadows: clip.shadows ?? DEFAULT_COLOR_GRADE.shadows,
-    blacks: clip.blacks ?? DEFAULT_COLOR_GRADE.blacks,
-    whites: clip.whites ?? DEFAULT_COLOR_GRADE.whites,
-  };
+  // Normalized shot capture needs the project canvas (position is a fraction of
+  // it), so the saved look travels with the project size.
+  const canvas = useTimelineStore((s) => s.project.settings);
+
+  // Slider values plus the clip's curves, which is also what "Save current as
+  // preset…" stores (`lib/grade-preset`: identity curves are omitted).
+  const current = gradeFromClip(clip);
   const graded =
     clip.brightness !== undefined
     || clip.contrast !== undefined
@@ -464,7 +625,11 @@ function ColorGradeControls({
     || clip.highlights !== undefined
     || clip.shadows !== undefined
     || clip.blacks !== undefined
-    || clip.whites !== undefined;
+    || clip.whites !== undefined
+    || clip.curves !== undefined
+    || clip.wheels !== undefined
+    || clip.hueCurves !== undefined
+    || clip.lut !== undefined;
 
   const setField = (field: keyof typeof COLOR_GRADE_LIMITS, value: number) => {
     const sanitized = sanitizeColorGrade({ [field]: value });
@@ -476,25 +641,109 @@ function ColorGradeControls({
     });
   };
 
+  // The curve editor commits one whole curve per gesture. `sanitizeColorGrade`
+  // canonicalizes it back to no field at all once every channel is identity,
+  // which is what keeps a cleared curve out of `hasColorGrade`.
+  const setCurves = (next: GradeCurve, label: string) => {
+    const sanitized = sanitizeColorGrade({ curves: next });
+    controller.applyClipProperties([clipId], label, (draft) => {
+      if (sanitized.curves) draft.curves = sanitized.curves;
+      else delete draft.curves;
+      return true;
+    });
+  };
+
+  // The wheels editor commits one whole wheels per gesture, same shape: an
+  // all-identity wheels deletes the field so a cleared wheels leaves no
+  // grading behind.
+  const setWheels = (next: GradeWheels, label: string) => {
+    const sanitized = sanitizeColorGrade({ wheels: next });
+    controller.applyClipProperties([clipId], label, (draft) => {
+      if (sanitized.wheels) draft.wheels = sanitized.wheels;
+      else delete draft.wheels;
+      return true;
+    });
+  };
+
+  // The hue-curves editor commits one whole channel set per gesture, same
+  // shape: all-neutral channels delete the field so cleared hue curves leave
+  // no grading behind.
+  const setHueCurves = (next: HueCurves, label: string) => {
+    const sanitized = sanitizeColorGrade({ hueCurves: next });
+    controller.applyClipProperties([clipId], label, (draft) => {
+      if (sanitized.hueCurves) draft.hueCurves = sanitized.hueCurves;
+      else delete draft.hueCurves;
+      return true;
+    });
+  };
+
+  // Applying a saved preset records the link on the clip in the same single
+  // undo step as the grade/shot. A built-in is not a saved named preset, so it
+  // clears the link rather than recording one (same contract as the agent's
+  // apply_grade_preset linkPreset flag). Propagation adds the ticked relations
+  // to the same batch, so a pushed apply is still one undo step.
   const applyPreset = (preset: GradePreset) => {
-    applyGradePresetTo(controller, [clipId], preset);
+    const isUserPreset = userPresets.some((candidate) => candidate.id === preset.id);
+    const modes: GradePresetPropagateMode[] = [
+      ...(propagateLinked ? ['linked' as const] : []),
+      ...(propagateSyncLock ? ['syncLock' as const] : []),
+    ];
+    const result = applyPresetWithPropagation(controller, clipId, preset, isUserPreset, modes);
+    if (!result.ok) {
+      setApplyError(result.error);
+      return;
+    }
+    setApplyError('');
     setLastPresetId(preset.id);
+  };
+
+  // Which saved look this clip is linked to. Drift after a hand edit is not
+  // detected (deliberate), so this only says the link exists, not that the clip
+  // still matches the preset.
+  const linked = clipPresetLink(clip, userPresets);
+
+  const clearPresetLink = () => {
+    // One undo step: drop the link and leave the grade/shot exactly as they
+    // are, matching every other single-field edit in this block.
+    controller.applyClipProperties([clipId], 'Clear grade preset link', (draft) => {
+      delete draft.gradePresetId;
+      return true;
+    });
   };
 
   const lastUserPreset = lastPresetId
     ? userPresets.find((preset) => preset.id === lastPresetId) ?? null
     : null;
 
-  const commitSave = () => {
-    const stored = saveUserPreset(presetName, { ...current });
+  const commitSave = async () => {
+    // Save the whole look, not just the grade (upstream #157): the clip's
+    // current static framing travels with it as a normalized shot sibling, so
+    // applying the preset reframes the target as well as recoloring it. Motion
+    // tracks stay out of the payload and keep winning over the static values.
+    const shot = shotFromClip(clip, canvas);
+    const stored = await saveUserPreset(presetName, { ...current }, shot);
     if (!stored) {
-      setSaveError(`Enter a name (max ${GRADE_PRESET_NAME_MAX} characters).`);
+      // The async store returns null for a refused or failed save; the
+      // repository owns the reason, so name the class of refusals here.
+      setSaveError(
+        `Could not save — enter a name (max ${GRADE_PRESET_NAME_MAX} characters) that is not already used.`,
+      );
       return;
     }
     setLastPresetId(stored.id);
     setSaving(false);
     setPresetName('');
     setSaveError('');
+  };
+
+  const removeLastPreset = async () => {
+    if (!lastUserPreset) return;
+    if (await removeUserPreset(lastUserPreset.id)) {
+      setLastPresetId(null);
+      setSaveError('');
+      return;
+    }
+    setSaveError(`Could not delete “${lastUserPreset.label}”.`);
   };
 
   const reset = () => {
@@ -511,6 +760,10 @@ function ColorGradeControls({
       delete draft.shadows;
       delete draft.blacks;
       delete draft.whites;
+      delete draft.curves;
+      delete draft.wheels;
+      delete draft.hueCurves;
+      delete draft.lut;
       return true;
     });
   };
@@ -554,14 +807,44 @@ function ColorGradeControls({
           <optgroup label="My presets">
             {userPresets.map((preset) => (
               <option key={preset.id} value={preset.id}>
-                {preset.label}
+                {presetOptionLabel(preset)}
               </option>
             ))}
           </optgroup>
         )}
       </select>
 
-      <div className="flex items-center gap-1.5">
+      {/* Opt-in push, never a default: the boxes read "also" so the extra
+          clips are the user's explicit choice for this apply. */}
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={propagateLinked}
+            onChange={(event) => setPropagateLinked(event.target.checked)}
+            data-grade-preset-propagate="linked"
+            aria-label="Also apply to linked clips"
+            className="accent-[var(--color-accent)]"
+          />
+          <span className="text-2xs uppercase tracking-wide text-text-muted">Also linked clips</span>
+        </label>
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={propagateSyncLock}
+            onChange={(event) => setPropagateSyncLock(event.target.checked)}
+            data-grade-preset-propagate="syncLock"
+            aria-label="Also apply to sync-locked tracks"
+            className="accent-[var(--color-accent)]"
+          />
+          <span className="text-2xs uppercase tracking-wide text-text-muted">Also sync-locked tracks</span>
+        </label>
+      </div>
+      {applyError && (
+        <p className="text-[9px] text-red-400" data-grade-preset-propagate-error>{applyError}</p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           onClick={() => {
@@ -569,6 +852,7 @@ function ColorGradeControls({
             setSaveError('');
           }}
           data-grade-preset-save
+          title="Saves the clip's color grade, effects, and current framing (position, scale, rotation, opacity, crop) under one name"
           className="rounded border border-surface-4 px-1.5 py-0.5 text-[9px] text-text-secondary hover:bg-white/10 hover:text-text-primary"
         >
           Save current as preset…
@@ -576,15 +860,37 @@ function ColorGradeControls({
         {lastUserPreset && (
           <button
             type="button"
-            onClick={() => {
-              removeUserPreset(lastUserPreset.id);
-              setLastPresetId(null);
-            }}
+            onClick={() => void removeLastPreset()}
             data-grade-preset-delete
             className="rounded px-1.5 py-0.5 text-[9px] text-red-400 hover:bg-red-500/10"
           >
             Delete “{lastUserPreset.label}”
           </button>
+        )}
+        {/* Which saved look this clip is linked to (#157). Plain, factual, and
+            truncating so a long name cannot push the row wider. */}
+        {linked.kind !== 'none' && (
+          <span
+            className="flex min-w-0 items-baseline gap-1 text-[9px] text-text-muted"
+            data-grade-preset-link
+            title={
+              linked.kind === 'linked'
+                ? `Linked to “${linked.label}” — manual grade edits since then are not tracked`
+                : 'This clip points at a saved preset that no longer exists'
+            }
+          >
+            <span className="min-w-0 truncate">
+              {linked.kind === 'linked' ? `Using “${linked.label}”` : 'Preset no longer exists'}
+            </span>
+            <button
+              type="button"
+              onClick={clearPresetLink}
+              data-grade-preset-unlink
+              className="shrink-0 rounded px-1 py-0.5 text-[9px] text-text-secondary underline decoration-dotted hover:text-text-primary"
+            >
+              Clear link
+            </button>
+          </span>
         )}
       </div>
       {saving && (
@@ -593,7 +899,7 @@ function ColorGradeControls({
             value={presetName}
             onChange={(event) => setPresetName(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') commitSave();
+              if (event.key === 'Enter') void commitSave();
               if (event.key === 'Escape') setSaving(false);
             }}
             placeholder="Preset name"
@@ -721,6 +1027,362 @@ function ColorGradeControls({
         format={(value) => `${Math.round(value)}°`}
         onChange={(value) => setField('hueRotation', value)}
       />
+
+      <CurveEditor curve={curveForEditing(clip.curves)} onCommit={setCurves} />
+
+      <ColorWheels wheels={wheelsForEditing(clip.wheels)} onCommit={setWheels} />
+
+      <HueCurveEditor curves={hueCurvesForEditing(clip.hueCurves)} onCommit={setHueCurves} />
+
+      <LutControls clipId={clipId} clip={clip} controller={controller} />
+    </div>
+  );
+}
+
+/**
+ * .cube LUT row (upstream #157 LUTs).
+ *
+ * Mechanical only, from existing patterns: the file button copies the preset
+ * picker's bordered style and shows the chosen file's name (upstream's file
+ * row shows the last path component the same way), the intensity control is
+ * the shared GradeSlider below, and Remove copies the preset delete button's
+ * red style. Every write goes through `applyClipProperties` as one undo
+ * step; choosing a file keeps the current intensity (upstream's picker only
+ * writes the path), and an intensity identical to the stored one writes
+ * nothing, so scrubbing back to the start adds no history.
+ *
+ * A stored path whose file went missing diagnoses here (the main-process
+ * validate IPC names the reason) while preview and export skip that stage.
+ */
+function LutControls({
+  clipId,
+  clip,
+  controller,
+}: {
+  clipId: string;
+  clip: Clip;
+  controller: EditorController;
+}) {
+  const lut = sanitizeLutRef(clip.lut);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [choosing, setChoosing] = useState(false);
+
+  useEffect(() => {
+    if (!clip.lut?.path) {
+      setNotice(null);
+      return;
+    }
+    let cancelled = false;
+    const api = (window as unknown as { palmier?: { media?: {
+      validateLut?: (path: string) => Promise<unknown>;
+    } } }).palmier?.media;
+    if (!api?.validateLut) {
+      setNotice(null);
+      return;
+    }
+    api.validateLut(clip.lut.path)
+      .then((result) => {
+        if (cancelled) return;
+        const res = result as { valid?: boolean; error?: unknown };
+        setNotice(res.valid ? null : (typeof res.error === 'string' ? res.error : 'LUT file is missing or invalid.'));
+      })
+      .catch(() => {
+        if (!cancelled) setNotice('LUT file could not be checked.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clip.lut?.path]);
+
+  const fileName = lut?.path.split(/[\\/]/).pop() ?? null;
+
+  const choose = async () => {
+    const api = (window as unknown as { palmier?: { media?: {
+      chooseLut?: () => Promise<unknown>;
+    } } }).palmier?.media;
+    if (!api?.chooseLut || choosing) return;
+    setChoosing(true);
+    try {
+      const result = await api.chooseLut() as {
+        success?: boolean; canceled?: boolean; lut?: unknown; error?: unknown;
+      };
+      if (!result?.success || !result.lut) {
+        if (result && !result.canceled && typeof result.error === 'string') setNotice(result.error);
+        return;
+      }
+      const sanitized = sanitizeLutRef(result.lut);
+      if (!sanitized) {
+        setNotice('That file is not a usable .cube LUT.');
+        return;
+      }
+      const existingIntensity = sanitizeLutRef(clip.lut)?.intensity;
+      const next = existingIntensity !== undefined
+        ? { ...sanitized, intensity: existingIntensity }
+        : sanitized;
+      if (lutRefsEqual(next, clip.lut)) return;
+      setNotice(null);
+      controller.applyClipProperties([clipId], 'Apply LUT', (draft) => {
+        draft.lut = next;
+        return true;
+      });
+    } finally {
+      setChoosing(false);
+    }
+  };
+
+  const setIntensity = (value: number) => {
+    const clamped = Math.min(LUT_INTENSITY_LIMITS.max, Math.max(LUT_INTENSITY_LIMITS.min, value));
+    controller.applyClipProperties([clipId], 'Change LUT intensity', (draft) => {
+      const existing = sanitizeLutRef(draft.lut);
+      if (!existing) return true;
+      const next = { ...existing, intensity: clamped };
+      if (lutRefsEqual(next, draft.lut)) return true;
+      draft.lut = next;
+      return true;
+    });
+  };
+
+  const remove = () => {
+    controller.applyClipProperties([clipId], 'Remove LUT', (draft) => {
+      delete draft.lut;
+      return true;
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-white/10 pt-1" data-lut>
+      <div className="flex items-center justify-between">
+        <label className="text-2xs uppercase tracking-wide text-text-muted">LUT</label>
+        {lut && (
+          <button
+            type="button"
+            onClick={remove}
+            data-lut-remove
+            className="rounded px-1.5 py-0.5 text-[9px] text-red-400 hover:bg-red-500/10"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={choose}
+        disabled={choosing}
+        aria-label="Choose LUT file"
+        data-lut-choose
+        title={lut?.path ?? 'Choose a .cube LUT file'}
+        className="w-full truncate rounded border border-surface-3 bg-surface-2 px-2 py-1 text-left text-xs text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
+      >
+        {fileName ?? 'Choose .cube…'}
+      </button>
+      {lut && (
+        <GradeSlider
+          label="Intensity"
+          value={lut.intensity}
+          min={LUT_INTENSITY_LIMITS.min}
+          max={LUT_INTENSITY_LIMITS.max}
+          step={0.01}
+          format={(value) => `${Math.round(value * 100)}%`}
+          onChange={setIntensity}
+        />
+      )}
+      {notice && <p className="text-[9px] text-red-400">{notice}</p>}
+    </div>
+  );
+}
+
+/**
+ * Effects subgroups (upstream #157: Detail, Blur, Vignette, Film Grain,
+ * Glow — only the shippable stages, see `shared/editor/effects.ts`).
+ *
+ * Mechanical only: every row is the shared GradeSlider below, writing one
+ * field through `applyClipProperties` as one undo step. A slider moved off
+ * identity creates the stage filled with registry defaults (upstream's
+ * upsert rule); steering every component back to default prunes the field,
+ * so a cleared effect leaves no grading behind. An identical write assigns
+ * nothing, so scrubbing back to the start adds no history.
+ */
+function EffectsControls({
+  clipId,
+  clip,
+  controller,
+}: {
+  clipId: string;
+  clip: Clip;
+  controller: EditorController;
+}) {
+  const effected = effectsOf(clip) !== null;
+
+  const setBlur = (value: number) => {
+    controller.applyClipProperties([clipId], 'Blur', (draft) => {
+      if (value === EFFECT_LIMITS.blurRadius.min) delete draft.blurRadius;
+      else draft.blurRadius = value;
+      return true;
+    });
+  };
+
+  const setVignette = (patch: Partial<Vignette>) => {
+    controller.applyClipProperties([clipId], 'Vignette', (draft) => {
+      const merged = { ...(sanitizeVignette(draft.vignette) ?? { ...DEFAULT_VIGNETTE }), ...patch };
+      const next = sanitizeVignette(merged);
+      if (vignettesEqual(next, draft.vignette)) return true;
+      if (next) draft.vignette = next;
+      else delete draft.vignette;
+      return true;
+    });
+  };
+
+  const setGrain = (patch: Partial<Grain>) => {
+    controller.applyClipProperties([clipId], 'Film grain', (draft) => {
+      const merged = { ...(sanitizeGrain(draft.grain) ?? { ...DEFAULT_GRAIN }), ...patch };
+      const next = sanitizeGrain(merged);
+      if (grainsEqual(next, draft.grain)) return true;
+      if (next) draft.grain = next;
+      else delete draft.grain;
+      return true;
+    });
+  };
+
+  const setGlow = (patch: Partial<Glow>) => {
+    controller.applyClipProperties([clipId], 'Glow', (draft) => {
+      const merged = { ...(sanitizeGlow(draft.glow) ?? { ...DEFAULT_GLOW }), ...patch };
+      const next = sanitizeGlow(merged);
+      if (glowsEqual(next, draft.glow)) return true;
+      if (next) draft.glow = next;
+      else delete draft.glow;
+      return true;
+    });
+  };
+
+  const reset = () => {
+    controller.applyClipProperties([clipId], 'Reset effects', (draft) => {
+      delete draft.blurRadius;
+      delete draft.vignette;
+      delete draft.grain;
+      delete draft.glow;
+      return true;
+    });
+  };
+
+  const vignette = sanitizeVignette(clip.vignette) ?? { ...DEFAULT_VIGNETTE };
+  const grain = sanitizeGrain(clip.grain) ?? { ...DEFAULT_GRAIN };
+  const glow = sanitizeGlow(clip.glow) ?? { ...DEFAULT_GLOW };
+  const percent = (value: number): string => `${Math.round(value * 100)}%`;
+  const signedPercent = (value: number): string => (value === 0 ? '0' : `${value > 0 ? '+' : ''}${Math.round(value * 100)}%`);
+  const px = (value: number): string => `${Math.round(value)}px`;
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-white/10 pt-1" data-effects>
+      <div className="flex items-center justify-between">
+        <label className="text-2xs uppercase tracking-wide text-text-muted">Effects</label>
+        {effected && (
+          <button
+            onClick={reset}
+            className="text-2xs text-text-muted underline decoration-dotted transition hover:text-text-secondary"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      <GradeSlider
+        label="Blur"
+        value={clip.blurRadius ?? EFFECT_LIMITS.blurRadius.min}
+        min={EFFECT_LIMITS.blurRadius.min}
+        max={EFFECT_LIMITS.blurRadius.max}
+        step={1}
+        format={px}
+        onChange={setBlur}
+      />
+      <GradeSlider
+        label="Vignette amount"
+        value={vignette.amount}
+        min={EFFECT_LIMITS.vignette.amount.min}
+        max={EFFECT_LIMITS.vignette.amount.max}
+        step={0.05}
+        format={signedPercent}
+        onChange={(value) => setVignette({ amount: value })}
+      />
+      <GradeSlider
+        label="Vignette midpoint"
+        value={vignette.midpoint}
+        min={EFFECT_LIMITS.vignette.midpoint.min}
+        max={EFFECT_LIMITS.vignette.midpoint.max}
+        step={0.05}
+        format={percent}
+        onChange={(value) => setVignette({ midpoint: value })}
+      />
+      <GradeSlider
+        label="Vignette roundness"
+        value={vignette.roundness}
+        min={EFFECT_LIMITS.vignette.roundness.min}
+        max={EFFECT_LIMITS.vignette.roundness.max}
+        step={0.05}
+        format={signedPercent}
+        onChange={(value) => setVignette({ roundness: value })}
+      />
+      <GradeSlider
+        label="Vignette feather"
+        value={vignette.feather}
+        min={EFFECT_LIMITS.vignette.feather.min}
+        max={EFFECT_LIMITS.vignette.feather.max}
+        step={0.05}
+        format={percent}
+        onChange={(value) => setVignette({ feather: value })}
+      />
+      <GradeSlider
+        label="Grain amount"
+        value={grain.amount}
+        min={EFFECT_LIMITS.grain.amount.min}
+        max={EFFECT_LIMITS.grain.amount.max}
+        step={0.05}
+        format={percent}
+        onChange={(value) => setGrain({ amount: value })}
+      />
+      <GradeSlider
+        label="Grain size"
+        value={grain.size}
+        min={EFFECT_LIMITS.grain.size.min}
+        max={EFFECT_LIMITS.grain.size.max}
+        step={0.1}
+        format={(value) => `${value.toFixed(1)}px`}
+        onChange={(value) => setGrain({ size: value })}
+      />
+      <GradeSlider
+        label="Glow intensity"
+        value={glow.intensity}
+        min={EFFECT_LIMITS.glow.intensity.min}
+        max={EFFECT_LIMITS.glow.intensity.max}
+        step={0.05}
+        format={percent}
+        onChange={(value) => setGlow({ intensity: value })}
+      />
+      <GradeSlider
+        label="Glow radius"
+        value={glow.radius}
+        min={EFFECT_LIMITS.glow.radius.min}
+        max={EFFECT_LIMITS.glow.radius.max}
+        step={1}
+        format={px}
+        onChange={(value) => setGlow({ radius: value })}
+      />
+      <GradeSlider
+        label="Glow threshold"
+        value={glow.threshold}
+        min={EFFECT_LIMITS.glow.threshold.min}
+        max={EFFECT_LIMITS.glow.threshold.max}
+        step={0.05}
+        format={percent}
+        onChange={(value) => setGlow({ threshold: value })}
+      />
+      <GradeSlider
+        label="Glow warmth"
+        value={glow.warmth}
+        min={EFFECT_LIMITS.glow.warmth.min}
+        max={EFFECT_LIMITS.glow.warmth.max}
+        step={0.05}
+        format={percent}
+        onChange={(value) => setGlow({ warmth: value })}
+      />
     </div>
   );
 }
@@ -771,8 +1433,252 @@ function GradeSlider({
  * the single deactivation switch shared with the executor and export/
  * preview readers), matching the Edge Rounding block's pattern below.
  */
-function ChromaKeyControls({
+/**
+ * Shape style (tutorial overlays): kind select, stroke color/width, and an
+ * optional fill with its own alpha. Mechanical controls only — each writes
+ * one field through `applyClipProperties` as one undo step, mirroring the
+ * edge/chroma rows above. No canvas manipulation lives here; direct
+ * manipulation is a designer-lane follow-up.
+ */
+function ShapeControls({
   clipId,
+  clip,
+  controller,
+}: {
+  clipId: string;
+  clip: Clip;
+  controller: EditorController;
+}) {
+  const kind = clip.shapeKind ?? 'rect';
+  const strokeWidth = clip.shapeStrokeWidth ?? 0;
+  const fill = clip.shapeFillColor ?? null;
+  const fillRgb = fill ? fill.slice(0, 7) : '#ffffff';
+  const fillAlphaPct = fill
+    ? Math.round((parseInt(fill.slice(7, 9), 16) / 255) * 100)
+    : 50;
+
+  const setFill = (rgb: string, alphaPct: number): void => {
+    const alpha = Math.round((Math.max(0, Math.min(100, alphaPct)) / 100) * 255)
+      .toString(16)
+      .padStart(2, '0');
+    const value = `${rgb}${alpha}`;
+    controller.applyClipProperties([clipId], 'Shape fill', (draft) => {
+      if (draft.type !== 'shape') return false;
+      draft.shapeFillColor = value;
+      return true;
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-white/10 pt-1">
+      <div className="flex flex-col gap-1">
+        <label className="text-2xs text-text-muted uppercase tracking-wide">Shape Kind</label>
+        <select
+          value={kind}
+          onChange={(e) => {
+            const next = sanitizeShapeKind(e.target.value) ?? 'rect';
+            controller.applyClipProperties([clipId], 'Shape kind', (draft) => {
+              if (draft.type !== 'shape') return false;
+              draft.shapeKind = next;
+              draft.label = next.charAt(0).toUpperCase() + next.slice(1);
+              return true;
+            });
+          }}
+          className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+        >
+          {SHAPE_KINDS.map((mode) => (
+            <option key={mode} value={mode}>
+              {mode.charAt(0).toUpperCase() + mode.slice(1)}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-2xs text-text-muted uppercase tracking-wide">Stroke Color</label>
+        <input
+          type="color"
+          value={clip.shapeStrokeColor ?? '#ffffff'}
+          onChange={(e) => {
+            const value = e.target.value;
+            controller.applyClipProperties([clipId], 'Shape stroke', (draft) => {
+              if (draft.type !== 'shape') return false;
+              draft.shapeStrokeColor = value;
+              return true;
+            });
+          }}
+          aria-label="Shape stroke color"
+          className="h-6 w-10 cursor-pointer rounded border border-surface-3 bg-surface-2"
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between">
+          <label className="text-2xs text-text-muted uppercase tracking-wide">Stroke Width</label>
+          <span className="text-2xs text-text-secondary tabular-nums">{strokeWidth}px</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={SHAPE_STROKE_WIDTH_MAX}
+          value={strokeWidth}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            controller.applyClipProperties([clipId], 'Shape stroke width', (draft) => {
+              if (draft.type !== 'shape') return false;
+              if (v > 0) draft.shapeStrokeWidth = v;
+              else delete draft.shapeStrokeWidth;
+              return true;
+            });
+          }}
+          aria-label="Shape stroke width"
+          className="w-full accent-accent"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={fill !== null}
+            onChange={(e) => {
+              if (e.target.checked) {
+                setFill(clip.shapeStrokeColor ?? '#ffffff', 50);
+              } else {
+                controller.applyClipProperties([clipId], 'Shape fill', (draft) => {
+                  if (draft.type !== 'shape') return false;
+                  delete draft.shapeFillColor;
+                  return true;
+                });
+              }
+            }}
+            className="accent-[var(--color-accent)]"
+          />
+          <span className="text-2xs text-text-muted uppercase tracking-wide">Fill</span>
+        </label>
+        {fill !== null && (
+          <input
+            type="color"
+            value={fillRgb}
+            onChange={(e) => setFill(e.target.value, fillAlphaPct)}
+            aria-label="Shape fill color"
+            className="h-6 w-10 cursor-pointer rounded border border-surface-3 bg-surface-2"
+          />
+        )}
+      </div>
+      {fill !== null && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between">
+            <label className="text-2xs text-text-muted uppercase tracking-wide">Fill Opacity</label>
+            <span className="text-2xs text-text-secondary tabular-nums">{fillAlphaPct}%</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={fillAlphaPct}
+            onChange={(e) => setFill(fillRgb, Number(e.target.value))}
+            aria-label="Shape fill opacity"
+            className="w-full accent-accent"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Variable-font axes (upstream issue #50).
+ *
+ * Mechanical only: four shared GradeSliders writing one axis each through
+ * `applyClipProperties` as one undo step. A slider at its default deletes
+ * the field (sanitize maps defaults to undefined), so a stored axis is
+ * always non-default — which is exactly the bake-routing condition
+ * `hasTitleVariations` pins. No fonts ship with the app; the axes apply to
+ * whatever variable font the title family resolves to, and any other font
+ * ignores them.
+ */
+function TitleVariationControls({
+  clipId,
+  clip,
+  controller,
+}: {
+  clipId: string;
+  clip: Clip;
+  controller: EditorController;
+}) {
+  return (
+    <div className="flex flex-col gap-2 border-t border-white/10 pt-1">
+      <GradeSlider
+        label="Variation weight"
+        value={clip.titleVariationWght ?? TITLE_VARIATION_WGHT_DEFAULT}
+        min={TITLE_VARIATION_WGHT_MIN}
+        max={TITLE_VARIATION_WGHT_MAX}
+        step={1}
+        format={(value) => `${Math.round(value)}`}
+        onChange={(value) => {
+          const clean = sanitizeTitleVariationWght(Math.round(value));
+          controller.applyClipProperties([clipId], 'Variation weight', (draft) => {
+            if (draft.type !== 'title') return false;
+            if (clean === undefined) delete draft.titleVariationWght;
+            else draft.titleVariationWght = clean;
+            return true;
+          });
+        }}
+      />
+      <GradeSlider
+        label="Variation width"
+        value={clip.titleVariationWdth ?? TITLE_VARIATION_WDTH_DEFAULT}
+        min={TITLE_VARIATION_WDTH_MIN}
+        max={TITLE_VARIATION_WDTH_MAX}
+        step={1}
+        format={(value) => `${Math.round(value)}%`}
+        onChange={(value) => {
+          const clean = sanitizeTitleVariationWdth(Math.round(value));
+          controller.applyClipProperties([clipId], 'Variation width', (draft) => {
+            if (draft.type !== 'title') return false;
+            if (clean === undefined) delete draft.titleVariationWdth;
+            else draft.titleVariationWdth = clean;
+            return true;
+          });
+        }}
+      />
+      <GradeSlider
+        label="Variation slant"
+        value={clip.titleVariationSlnt ?? TITLE_VARIATION_SLNT_DEFAULT}
+        min={-90}
+        max={90}
+        step={1}
+        format={(value) => `${Math.round(value)}°`}
+        onChange={(value) => {
+          const clean = sanitizeTitleVariationSlnt(value);
+          controller.applyClipProperties([clipId], 'Variation slant', (draft) => {
+            if (draft.type !== 'title') return false;
+            if (clean === undefined) delete draft.titleVariationSlnt;
+            else draft.titleVariationSlnt = clean;
+            return true;
+          });
+        }}
+      />
+      <GradeSlider
+        label="Variation italic"
+        value={clip.titleVariationItal ?? TITLE_VARIATION_ITAL_DEFAULT}
+        min={0}
+        max={1}
+        step={0.05}
+        format={(value) => `${Math.round(value * 100)}%`}
+        onChange={(value) => {
+          const clean = sanitizeTitleVariationItal(value);
+          controller.applyClipProperties([clipId], 'Variation italic', (draft) => {
+            if (draft.type !== 'title') return false;
+            if (clean === undefined) delete draft.titleVariationItal;
+            else draft.titleVariationItal = clean;
+            return true;
+          });
+        }}
+      />
+    </div>
+  );
+}
+
+function ChromaKeyControls({  clipId,
   chromaKey,
   controller,
 }: {
@@ -1028,6 +1934,51 @@ function CompressorControls({ clipId, clip }: { clipId: string; clip: Clip }) {
 }
 
 /**
+ * Noise reduction (upstream #165): a checkbox arms the stage at the 60%
+ * default and one strength slider scales it. Sliding to 0 (or clearing the
+ * checkbox) deletes the field entirely — absent and 0 are both "off" for
+ * the shared export/preview readers, so an unarmed clip stays structurally
+ * unarmed exactly like the EQ and compressor stages.
+ */
+function NoiseReductionControls({ clipId, clip }: { clipId: string; clip: Clip }) {
+  const controller = useTimelineStore((s) => s.controller);
+  const amount = noiseReductionOf(clip);
+
+  const update = (next: number | null) => {
+    controller.applyClipProperties([clipId], 'Noise reduction', (draft) => {
+      if (next !== null) draft.noiseReduction = next;
+      else delete draft.noiseReduction;
+      return true;
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1" data-noise-reduction>
+      <label className="flex cursor-pointer items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={amount !== null}
+          onChange={(event) => update(event.target.checked ? DEFAULT_NOISE_REDUCTION : null)}
+          className="accent-[var(--color-accent)]"
+        />
+        <span className="text-2xs uppercase tracking-wide text-text-muted">Noise Reduction</span>
+      </label>
+      {amount !== null && (
+        <GradeSlider
+          label="Strength"
+          value={amount}
+          min={NOISE_REDUCTION_LIMITS.min}
+          max={NOISE_REDUCTION_LIMITS.max}
+          step={1}
+          format={(value) => `${value}%`}
+          onChange={(value) => update(value <= 0 ? null : value)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
  * Volume keyframes (upstream #535/#539-#541 audio slice): a dB automation
  * track on audio clips, mirroring MotionControls' chip/add-keyframe pattern
  * for one axis. "Set" captures the clip's current effective level at the
@@ -1035,8 +1986,8 @@ function CompressorControls({ clipId, clip }: { clipId: string; clip: Clip }) {
  * entirely, so removing the last chip restores static control.
  */
 function VolumeKeyframeControls({ clipId }: { clipId: string }) {
-  const clip = useTimelineStore((s) => s.project.timeline.clips.find((c) => c.id === clipId));
-  const playhead = useTimelineStore((s) => s.project.timeline.playheadFrame);
+  const clip = useTimelineStore((s) => s.getScopeTimeline().clips.find((c) => c.id === clipId));
+  const playhead = useTimelineStore((s) => s.getScopeTimeline().playheadFrame);
   const applyClipProperties = useTimelineStore((s) => s.controller.applyClipProperties);
 
   if (!clip) return null;
@@ -1123,7 +2074,7 @@ function VolumeKeyframeControls({ clipId }: { clipId: string }) {
  */
 function MotionControls({ clipId }: { clipId: string }) {
   const clip = useTimelineStore((s) =>
-    s.project.timeline.clips.find((c) => c.id === clipId));
+    s.getScopeTimeline().clips.find((c) => c.id === clipId));
   const playhead = useTimelineStore((s) => s.project.timeline.playheadFrame);
   const applyClipProperties = useTimelineStore((s) => s.controller.applyClipProperties);
 
@@ -1213,6 +2164,99 @@ function MotionControls({ clipId }: { clipId: string }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Opacity keyframes — a sibling of the Motion rows above, same chip /
+ * + Keyframe / easing-select pattern, for `Clip.opacityTrack` (the automation
+ * track the preview and the media exporter already evaluate).
+ *
+ * Every edit goes through `controller.setClipOpacityTrack`, the only sanctioned
+ * writer, so each one is a single undo step and the controller's refusal of a
+ * no-op adds no history. The controller also requires at least two points, so
+ * the point arithmetic (seeding the first pair, clearing instead of leaving a
+ * lone keyframe, segment easing) lives in `lib/opacity-track` rather than here.
+ *
+ * Fades are a separate control above and are deliberately not folded in: the
+ * two multiply independently.
+ */
+function OpacityKeyframeControls({ clipId }: { clipId: string }) {
+  const clip = useTimelineStore((s) =>
+    s.getScopeTimeline().clips.find((c) => c.id === clipId));
+  const playhead = useTimelineStore((s) => s.project.timeline.playheadFrame);
+  const fps = useTimelineStore((s) => s.project.settings.fps);
+  const setClipOpacityTrack = useTimelineStore((s) => s.controller.setClipOpacityTrack);
+
+  if (!clip) return null;
+
+  const track = clip.opacityTrack;
+  const animated = hasOpacityTrack(track);
+
+  // undefined means "clear the track", which the controller takes as [].
+  const submit = (points: ReturnType<typeof nextOpacityTrack> | undefined) => {
+    setClipOpacityTrack(clipId, points ?? []);
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-white/10 pt-1" data-opacity-keyframes>
+      <div className="flex items-center justify-between">
+        <label className="text-2xs uppercase tracking-wide text-text-muted">Opacity Keyframes</label>
+        {animated && (
+          <button
+            onClick={() => submit(undefined)}
+            data-reset-opacity-track
+            className="text-2xs text-text-muted underline decoration-dotted transition hover:text-text-secondary"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      <div className="rounded border border-surface-3 bg-surface-2 px-2 py-1">
+        <div className="flex flex-wrap items-center justify-between gap-1">
+          <div className="flex flex-wrap items-center gap-1">
+            {(track ?? []).map((point) => (
+              <button
+                key={point.frame}
+                title={`Frame ${point.frame}: ${opacityPercent(point.value)}% — click to remove`}
+                onClick={() => submit(removeOpacityKeyframe(track, point.frame))}
+                data-opacity-keyframe={point.frame}
+                className="rounded bg-surface-4/60 px-1 py-0.5 font-mono text-[8px] text-text-secondary hover:bg-red-500/20 hover:text-red-300"
+              >
+                f{point.frame}:{opacityPercent(point.value)}%
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => submit(nextOpacityTrack(track, playhead, clip.opacity, fps))}
+            data-add-keyframe="opacity"
+            className="rounded border border-surface-4 px-1 py-0.5 text-[9px] text-text-secondary hover:bg-white/10 hover:text-text-primary"
+          >
+            + Keyframe
+          </button>
+        </div>
+        {track && track.length >= 2 && (
+          <select
+            value={track[0].easing ?? 'linear'}
+            onChange={(event) =>
+              submit(withOpacityEasing(track, event.target.value as MotionEasing))}
+            data-easing="opacity"
+            aria-label="Opacity keyframe easing"
+            className="mt-1 w-full rounded border border-surface-3 bg-surface-1 px-1 py-0.5 text-[9px] text-text-secondary focus:border-accent focus:outline-none"
+          >
+            <option value="linear">Linear</option>
+            <option value="easeIn">Ease in</option>
+            <option value="easeOut">Ease out</option>
+            <option value="easeInOut">Ease in-out</option>
+          </select>
+        )}
+      </div>
+      {!animated && (
+        <p className="text-[10px] text-text-muted">
+          No keyframes — opacity follows the clip's static value. Add two or more to animate.
+        </p>
+      )}
     </div>
   );
 }
@@ -1462,43 +2506,53 @@ function MultiClipInspector() {
               />
             </div>
 
-            {/* Grade a whole selection with one named look (upstream #157). */}
-            <div className="flex flex-col gap-1">
-              <label className="text-2xs text-text-muted uppercase tracking-wide">Grade Preset</label>
-              <select
-                value=""
-                onChange={(event) => {
-                  const preset = [...GRADE_PRESETS, ...userPresets]
-                    .find((candidate) => candidate.id === event.target.value);
-                  if (preset) {
-                    applyGradePresetTo(controller, visualClips.map((item) => item.id), preset);
-                  }
-                }}
-                aria-label="Apply grade preset to the selected clips"
-                data-grade-preset-multi
-                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
-              >
-                <option value="" disabled>
-                  Apply to all {visualClips.length} clips…
-                </option>
-                <optgroup label="Built-in">
-                  {GRADE_PRESETS.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.label}
-                    </option>
-                  ))}
-                </optgroup>
-                {userPresets.length > 0 && (
-                  <optgroup label="My presets">
-                    {userPresets.map((preset) => (
+            {/* Grade a whole selection with one named look (upstream #157).
+                A shot-carrying row reframes every selected clip as well as
+                recoloring it — the option text says so. */}
+            {visualClips.length > 0 && visualClips.every((clip) => supportsMediaAdjustmentControls(clip.type)) && (
+              <div className="flex flex-col gap-1">
+                <label className="text-2xs text-text-muted uppercase tracking-wide">Grade Preset</label>
+                <select
+                  value=""
+                  onChange={(event) => {
+                    const preset = [...GRADE_PRESETS, ...userPresets]
+                      .find((candidate) => candidate.id === event.target.value);
+                    if (preset) {
+                      // Saved presets link the whole selection in the same one
+                      // undo step; a built-in clears the link (see
+                      // ColorGradeControls.applyPreset). The selection is
+                      // already explicit, so the opt-in propagation boxes live
+                      // in the single-clip block only.
+                      const isUserPreset = userPresets.some((candidate) => candidate.id === preset.id);
+                      applyGradePresetTo(controller, visualClips.map((item) => item.id), preset, isUserPreset);
+                    }
+                  }}
+                  aria-label="Apply grade preset to the selected clips"
+                  data-grade-preset-multi
+                  className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+                >
+                  <option value="" disabled>
+                    Apply to all {visualClips.length} clips…
+                  </option>
+                  <optgroup label="Built-in">
+                    {GRADE_PRESETS.map((preset) => (
                       <option key={preset.id} value={preset.id}>
                         {preset.label}
                       </option>
                     ))}
                   </optgroup>
-                )}
-              </select>
-            </div>
+                  {userPresets.length > 0 && (
+                    <optgroup label="My presets">
+                      {userPresets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {presetOptionLabel(preset)}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
+            )}
           </>
         )}
 
@@ -1881,12 +2935,109 @@ function ColorLabelPicker({ clipId, currentColor }: { clipId: string; currentCol
 }
 
 /**
- * Generation provenance display (upstream PR #570).
- * Shows provider, model, and cost when the clip was AI-generated.
+ * AI description for the clip's asset (#118 AI half).
+ * Explicit Describe only (button or `describe_media` tool) — never
+ * automatic. Shows the stored sentence when present, otherwise the
+ * provider/model that will be billed before submission (mirroring the
+ * Generated row's `provider / model` wording), with progress, failure,
+ * and retry states on the button itself.
  */
-function GenerationInfo({ clipId }: { clipId: string }) {
+function AssetDescription({ clipId }: { clipId: string }) {
   const asset = useTimelineStore((s) => {
-    const clip = s.project.timeline.clips.find((c) => c.id === clipId);
+    const clip = s.getScopeTimeline().clips.find((c) => c.id === clipId);
+    if (!clip) return undefined;
+    return s.project.media.find((m) => m.id === clip.assetId);
+  });
+  const controller = useTimelineStore((s) => s.controller);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [visionLabel, setVisionLabel] = useState('');
+
+  useEffect(() => {
+    if (visionLabel || asset?.type === 'audio') return;
+    void window.palmier.ai.getProviders().then((res) => {
+      const list = res as Array<{ name?: string; hasKey?: boolean; model?: string }> | undefined;
+      const usable = Array.isArray(list) ? list.find((p) => p.hasKey && p.model) : undefined;
+      if (usable?.name && usable?.model) setVisionLabel(`${usable.name} / ${usable.model}`);
+    }).catch(() => {});
+  }, [visionLabel, asset?.type]);
+
+  if (!asset || asset.type === 'audio') return null;
+  const description = asset.aiDescription ?? '';
+
+  async function handleDescribe() {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const res = await window.palmier.media.describe({
+        assetId: asset!.id,
+        assetPath: asset!.path,
+        assetType: asset!.type,
+        ...(asset!.thumbnailPath ? { thumbnailPath: asset!.thumbnailPath } : {}),
+        ...(typeof asset!.width === 'number' ? { assetWidth: asset!.width } : {}),
+        ...(typeof asset!.height === 'number' ? { assetHeight: asset!.height } : {}),
+      }) as { success: boolean; description?: string; provider?: string; model?: string; error?: string };
+      if (!res.success || typeof res.description !== 'string') {
+        setError(res.error ?? 'Description failed.');
+        return;
+      }
+      controller.setAssetDescription(asset!.id, res.description);
+      useProjectStore.getState().markDirty();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-white/10 pt-1">
+      <label className="text-2xs text-text-muted uppercase tracking-wide">Description</label>
+      {description ? (
+        <p className="text-[10px] leading-4 text-text-secondary" title={description}>
+          {description}
+        </p>
+      ) : (
+        <p className="text-[10px] text-text-muted">
+          No description — {visionLabel ? `uses ${visionLabel}, billed to your key.` : 'uses your AI provider, billed to your key.'}
+        </p>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void handleDescribe()}
+          disabled={busy}
+          title={
+            visionLabel
+              ? `Describe with ${visionLabel} — billed to your key (one vision request)`
+              : 'Describe with your AI provider — billed to your key (one vision request)'
+          }
+          className="rounded border border-white/15 px-2 py-0.5 text-[10px] text-text-secondary hover:bg-white/10 disabled:opacity-60"
+        >
+          {busy ? 'Describing…' : error ? 'Retry description' : description ? 'Refresh description' : 'Describe (AI)'}
+        </button>
+        {visionLabel && !description && (
+          <span className="text-[10px] tabular-nums text-text-muted">{visionLabel}</span>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="text-[10px] text-red-300">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Generation provenance display (upstream PR #570).
+ * Shows provider, model, cost, and the reference image the run was
+ * conditioned on, when the clip was AI-generated.
+ */
+export function GenerationInfo({ clipId }: { clipId: string }) {
+  const asset = useTimelineStore((s) => {
+    const clip = s.getScopeTimeline().clips.find((c) => c.id === clipId);
     if (!clip) return undefined;
     return s.project.media.find((m) => m.id === clip.assetId);
   });
@@ -1894,6 +3045,10 @@ function GenerationInfo({ clipId }: { clipId: string }) {
   if (!asset?.generatedBy) return null;
 
   const { provider, model, costCredits } = asset.generatedBy;
+  // Provenance stores the local path the generation read; the row shows the
+  // file name and keeps the full path in the tooltip, as other paths do here.
+  const reference = asset.generatedBy.referenceImagePath?.trim() ?? '';
+  const referenceName = reference ? reference.split(/[\\/]/).pop() : '';
 
   return (
     <div className="flex flex-col gap-1 border-t border-white/10 pt-1">
@@ -1905,6 +3060,11 @@ function GenerationInfo({ clipId }: { clipId: string }) {
         {typeof costCredits === "number" && (
           <span className="text-text-muted tabular-nums">
             {costCredits} cr
+          </span>
+        )}
+        {referenceName && (
+          <span className="max-w-[190px] truncate text-text-muted" title={reference}>
+            ref {referenceName}
           </span>
         )}
       </div>

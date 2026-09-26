@@ -16,7 +16,20 @@ import { expandImportPaths } from '../media/import-expansion';
 // import it without pulling Electron into unit tests.
 import { probeMedia } from '../media/probe';
 import { getTranscribeConfig, setTranscribeConfig } from '../media/transcribe-config';
+import {
+  DEFAULT_LOCAL_MODEL,
+  deleteLocalModel,
+  downloadLocalBinary,
+  downloadLocalModel,
+  getLocalSttStatus,
+  isKnownLocalModel,
+  normalizeSttEngine,
+  probeLocalBinary,
+  resolveLocalSttPaths,
+  resolveSttEngine,
+} from '../media/whisper-local';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
+import { validateLutFile } from '../media/lut-loader';
 import type { MediaProbeResult } from '../media/probe';
 export { probeMedia };
 export type { MediaProbeResult };
@@ -143,11 +156,21 @@ export function registerMediaHandlers(): void {
   });
 
   // Save-dialog + write; the renderer generates the XML from its live project.
+  // The exporter's omission notes ride along and come back untouched, so the
+  // panel reports what Final Cut XML could not carry instead of discarding it.
   ipcMain.handle('media:fcpxml-write', async (_event, payload: unknown) => {
-    const xml = (payload as { xml?: unknown } | null)?.xml;
+    const request = payload as { xml?: unknown; unsupported?: unknown } | null;
+    const xml = request?.xml;
     if (typeof xml !== 'string' || xml.length === 0) {
       return { success: false, error: 'Nothing to write.' };
     }
+    // Narrowed on read: the report is notes, so anything else is dropped rather
+    // than written into a message the panel has to render.
+    const unsupported = Array.isArray(request?.unsupported)
+      ? request.unsupported.filter(
+        (note): note is string => typeof note === 'string' && note.length > 0,
+      )
+      : [];
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showSaveDialog(win!, {
       title: 'Export Final Cut XML',
@@ -156,7 +179,7 @@ export function registerMediaHandlers(): void {
     });
     if (result.canceled || !result.filePath) return { success: false, canceled: true };
     await fs.writeFile(result.filePath, xml, 'utf8');
-    return { success: true, path: result.filePath };
+    return { success: true, path: result.filePath, unsupported };
   });
 
 
@@ -261,14 +284,31 @@ export function registerMediaHandlers(): void {
     return { success: true, config: setTranscribeConfig((patch ?? {}) as Record<string, string>) };
   });
 
+  // Active local transcription runs + model/binary downloads, keyed by the
+  // requesting window — the same registry shape as the generation manager's
+  // activeGenerations (start registers, settle unregisters, cancel aborts).
+  const activeLocalRuns = new Map<number, AbortController>();
+  const activeLocalDownloads = new Map<number, AbortController>();
+
+  function sendSafe(
+    sender: { isDestroyed(): boolean; send(channel: string, ...args: unknown[]): void },
+    channel: string,
+    payload: unknown,
+  ): void {
+    try {
+      if (!sender.isDestroyed()) sender.send(channel, payload);
+    } catch { /* window closed mid-run */ }
+  }
+
   // Electron-bound runtime resolution (decrypted AI provider keys) + the
-  // pure transport + planner run here; the returned cue plan is materialized
+  // pure transports + planner run here; the returned cue plan is materialized
   // by the renderer onto its own controller via shared/captions/apply.ts.
-  ipcMain.handle('media:transcribe', async (_event, payload: unknown) => {
+  ipcMain.handle('media:transcribe', async (event, payload: unknown) => {
     const req = (payload ?? {}) as {
       path?: unknown;
       language?: unknown;
       model?: unknown;
+      engine?: unknown;
       plan?: unknown;
     };
     if (typeof req.path !== 'string' || req.path.length === 0) {
@@ -276,11 +316,76 @@ export function registerMediaHandlers(): void {
     }
     const { getOpenAiCompatibleRuntime } = await import('../ai/ipc');
     const { getTranscribeConfig } = await import('../media/transcribe-config');
-    const override = getTranscribeConfig();
-    const runtime =
-      override.baseUrl && override.apiKey
-        ? { baseUrl: override.baseUrl, apiKey: override.apiKey }
-        : getOpenAiCompatibleRuntime();
+    const config = getTranscribeConfig();
+    const override = config.baseUrl && config.apiKey
+      ? { baseUrl: config.baseUrl, apiKey: config.apiKey }
+      : null;
+    // An explicit local job never consults cloud credentials at all.
+    const localOnly = normalizeSttEngine(req.engine ?? config.engine) === 'local';
+    const runtime = override ?? (localOnly ? null : getOpenAiCompatibleRuntime());
+
+    // Local availability (#39): binary + configured model on disk.
+    const userData = app.getPath('userData');
+    const localModelId = isKnownLocalModel(req.model)
+      ? req.model
+      : (config.localModel ?? DEFAULT_LOCAL_MODEL);
+    const probe = await probeLocalBinary({ userDataDir: userData, override: config.localBinaryPath });
+    const modelPath = resolveLocalSttPaths(userData).modelPath(localModelId);
+    const resolution = resolveSttEngine(
+      { requested: req.engine, language: req.language, cloudAvailable: !!runtime },
+      config,
+      {
+        binaryPresent: probe.found,
+        binaryMissingOverride: probe.missingOverride,
+        modelId: localModelId,
+        modelPresent: !!modelPath && fsSync.existsSync(modelPath),
+      },
+    );
+    if (resolution.kind === 'refusal') {
+      return { success: false, error: resolution.error };
+    }
+
+    const { normalizeCaptionPlanOptions, planCaptions } = await import('../../shared/captions/planner');
+    // User caption controls (#91) arrive here as a partial request; the
+    // normalizer narrows them, so a hand-edited or hostile value cannot
+    // reach the packing math.
+    const planOptions = normalizeCaptionPlanOptions(
+      (req.plan ?? undefined) as Parameters<typeof normalizeCaptionPlanOptions>[0],
+    );
+
+    if (resolution.kind === 'local') {
+      const controller = new AbortController();
+      activeLocalRuns.set(event.sender.id, controller);
+      try {
+        const { runLocalTranscription } = await import('../media/whisper-local');
+        const transcription = await runLocalTranscription({
+          userDataDir: userData,
+          binaryOverride: config.localBinaryPath,
+          modelId: resolution.modelId,
+          audioPath: req.path,
+          language: typeof req.language === 'string' && req.language.trim() ? req.language.trim() : undefined,
+          onProgress: (p) => sendSafe(event.sender, 'transcribe:progress', { engine: 'local', ...p }),
+          signal: controller.signal,
+        });
+        const cues = planCaptions(transcription.words, planOptions);
+        return {
+          success: true,
+          engine: 'local',
+          cues,
+          words: transcription.words.length,
+          text: transcription.text,
+          model: transcription.model,
+          planOptions,
+        };
+      } catch (err: unknown) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      } finally {
+        if (activeLocalRuns.get(event.sender.id) === controller) {
+          activeLocalRuns.delete(event.sender.id);
+        }
+      }
+    }
+
     if (!runtime) {
       return {
         success: false,
@@ -291,19 +396,13 @@ export function registerMediaHandlers(): void {
     try {
       const { transcribeAudio } = await import('../ai/transcribe');
       const transcription = await transcribeAudio(runtime, req.path, {
-        model: model ?? (override.baseUrl ? override.model : undefined),
+        model: model ?? (override ? config.model : undefined),
         language: typeof req.language === 'string' && req.language.trim() ? req.language.trim() : undefined,
       });
-      const { normalizeCaptionPlanOptions, planCaptions } = await import('../../shared/captions/planner');
-      // User caption controls (#91) arrive here as a partial request; the
-      // normalizer narrows them, so a hand-edited or hostile value cannot
-      // reach the packing math.
-      const planOptions = normalizeCaptionPlanOptions(
-        (req.plan ?? undefined) as Parameters<typeof normalizeCaptionPlanOptions>[0],
-      );
       const cues = planCaptions(transcription.words, planOptions);
       return {
         success: true,
+        engine: override ? 'custom' : 'cloud',
         cues,
         words: transcription.words.length,
         text: transcription.text,
@@ -314,6 +413,186 @@ export function registerMediaHandlers(): void {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
+
+  // Cancel the window's in-flight local transcription (kills the engine
+  // process; partial output is discarded, never placed).
+  ipcMain.handle('media:transcribe-cancel', (event) => {
+    const controller = activeLocalRuns.get(event.sender.id);
+    if (!controller) return { success: false, error: 'No local transcription is running.' };
+    controller.abort();
+    return { success: true };
+  });
+
+  // ─── Local STT setup (#39): status, on-demand downloads, removal ─────────
+  ipcMain.handle('media:get-local-stt-status', async () => {
+    const config = getTranscribeConfig();
+    const status = await getLocalSttStatus(app.getPath('userData'), {
+      override: config.localBinaryPath,
+    });
+    return {
+      success: true,
+      status,
+      config: {
+        engine: config.engine ?? 'auto',
+        localModel: config.localModel ?? DEFAULT_LOCAL_MODEL,
+        localBinaryPath: config.localBinaryPath ?? '',
+      },
+    };
+  });
+  ipcMain.handle('media:download-local-model', async (event, modelId: unknown) => {
+    if (!isKnownLocalModel(modelId)) {
+      return { success: false, error: `Unknown local model "${String(modelId)}".` };
+    }
+    const controller = new AbortController();
+    activeLocalDownloads.set(event.sender.id, controller);
+    try {
+      const out = await downloadLocalModel(app.getPath('userData'), modelId, {
+        signal: controller.signal,
+        onProgress: (p) => sendSafe(event.sender, 'local-stt:progress', { kind: 'model', modelId, ...p }),
+      });
+      return { success: true, ...out };
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      if (activeLocalDownloads.get(event.sender.id) === controller) {
+        activeLocalDownloads.delete(event.sender.id);
+      }
+    }
+  });
+  ipcMain.handle('media:download-local-binary', async (event) => {
+    const controller = new AbortController();
+    activeLocalDownloads.set(event.sender.id, controller);
+    try {
+      const out = await downloadLocalBinary(app.getPath('userData'), {
+        signal: controller.signal,
+        onProgress: (p) => sendSafe(event.sender, 'local-stt:progress', { kind: 'binary', ...p }),
+      });
+      return { success: true, ...out };
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      if (activeLocalDownloads.get(event.sender.id) === controller) {
+        activeLocalDownloads.delete(event.sender.id);
+      }
+    }
+  });
+  ipcMain.handle('media:cancel-local-download', (event) => {
+    const controller = activeLocalDownloads.get(event.sender.id);
+    if (!controller) return { success: false, error: 'No local download is running.' };
+    controller.abort();
+    return { success: true };
+  });
+  ipcMain.handle('media:delete-local-model', async (_event, modelId: unknown) => {
+    if (!isKnownLocalModel(modelId)) {
+      return { success: false, error: `Unknown local model "${String(modelId)}".` };
+    }
+    try {
+      await deleteLocalModel(app.getPath('userData'), modelId);
+      return { success: true };
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+  // ─── AI description (#118 AI half) ─────────────────────────────────────
+  // Explicit Describe only: the renderer sends the asset's paths, main
+  // resolves ONE lightweight frame image (tile thumbnail, the still itself,
+  // or a single capped decode — never the full video) and returns the
+  // vision-model sentence. The renderer stores it via
+  // controller.setAssetDescription (one undo step). User data goes to the
+  // user's own configured provider only; nothing is cached outside the
+  // project.
+  ipcMain.handle('media:describe', async (_event, payload: unknown) => {
+    const req = (payload ?? {}) as {
+      assetId?: unknown;
+      assetPath?: unknown;
+      assetType?: unknown;
+      thumbnailPath?: unknown;
+      assetWidth?: unknown;
+      assetHeight?: unknown;
+    };
+    if (typeof req.assetId !== 'string' || req.assetId.length === 0) {
+      return { success: false, error: 'No asset selected.' };
+    }
+    if (req.assetType === 'audio') {
+      return { success: false, error: 'Audio assets have no frames to describe.' };
+    }
+    if (typeof req.assetPath !== 'string' || req.assetPath.length === 0) {
+      return { success: false, error: 'No asset selected.' };
+    }
+    try {
+      const { getVisionRuntime } = await import('../ai/ipc-vision');
+      const runtime = await getVisionRuntime();
+      if (!runtime) {
+        return {
+          success: false,
+          error: 'No vision-capable provider with an API key is configured. Add one under AI Settings.',
+        };
+      }
+      let imagePath: string | null = null;
+      if (typeof req.thumbnailPath === 'string' && req.thumbnailPath.length > 0 && fsSync.existsSync(req.thumbnailPath)) {
+        imagePath = req.thumbnailPath;
+      } else if (req.assetType === 'image') {
+        imagePath = req.assetPath;
+      } else {
+        const { getFrameDecoder } = await import('../media/frame-decoder');
+        const width = 640;
+        const aW = typeof req.assetWidth === 'number' && Number.isFinite(req.assetWidth) ? req.assetWidth : 16;
+        const aH = typeof req.assetHeight === 'number' && Number.isFinite(req.assetHeight) ? req.assetHeight : 9;
+        const height = Math.max(90, Math.round((width / aW) * aH));
+        const decoded = await getFrameDecoder().getFrame({
+          assetPath: req.assetPath,
+          width,
+          height,
+          sourceSeconds: 1,
+        });
+        if (!decoded?.data) {
+          return { success: false, error: 'Could not decode a frame — check the source file is readable.' };
+        }
+        const { inspectFramePath, rgbaToPng } = await import('../media/frame-png');
+        const hash = crypto.createHash('sha1').update(`describe|${req.assetPath}|${width}`).digest('hex').slice(0, 12);
+        const outPath = inspectFramePath(app.getPath('userData'), hash);
+        await rgbaToPng(decoded.data, width, height, outPath);
+        imagePath = outPath;
+      }
+      const { describeImage } = await import('../ai/describe');
+      const out = await describeImage(runtime, imagePath);
+      return {
+        success: true,
+        assetId: req.assetId,
+        description: out.description,
+        provider: out.provider,
+        model: out.model,
+      };
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+  // ─── LUT file picker + validation (upstream #157 LUTs) ────────────────
+  // The Inspector's LUT row chooses through here so the file dialog and the
+  // strict .cube validation live in main; the returned ref (path, kind,
+  // size) is what the renderer commits to the clip.
+  ipcMain.handle('lut:choose', async () => {
+    const win = BrowserWindow.getFocusedWindow();
+    const result = await dialog.showOpenDialog(win!, {
+      title: 'Choose a .cube LUT file',
+      filters: [{ name: 'LUT (.cube)', extensions: ['cube'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { success: false, canceled: true };
+    const validation = validateLutFile(result.filePaths[0]);
+    if (!validation.ok) return { success: false, error: validation.error };
+    return { success: true, lut: validation.ref };
+  });
+  // Missing-file diagnostic for a clip's stored LUT path: the Inspector
+  // shows the returned reason instead of failing, and preview/export skip
+  // the stage.
+  ipcMain.handle('lut:validate', async (_event, lutPath: unknown) => {
+    if (typeof lutPath !== 'string' || lutPath.length === 0) return { success: true, valid: false };
+    const validation = validateLutFile(lutPath);
+    if (validation.ok) return { success: true, valid: true, lut: validation.ref };
+    return { success: true, valid: false, error: validation.error };
+  });
+
   ipcMain.handle('media:scan-relink', async (_event, filenames: unknown, folder: unknown) => {
     if (!Array.isArray(filenames) || typeof folder !== 'string' || folder.length === 0) {
       return { success: false, error: 'Invalid scan request', matches: {} };

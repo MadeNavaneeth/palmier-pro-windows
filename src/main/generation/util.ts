@@ -8,6 +8,31 @@ import { app } from 'electron';
 import https from 'https';
 import http from 'http';
 
+export class GenerationAbortedError extends Error {
+  constructor() {
+    super('Generation stopped');
+    this.name = 'GenerationAbortedError';
+  }
+}
+
+/** Poll delay that ends immediately when the local generation is terminal. */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new GenerationAbortedError());
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new GenerationAbortedError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 /**
  * Download a file from a URL to the local generation cache.
  * Returns the local file path.

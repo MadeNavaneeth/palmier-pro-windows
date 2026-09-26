@@ -11,6 +11,10 @@ import { ToolExecutor } from './executor';
 import { EditorController } from '../../shared/editor/controller';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
 
+// Real ffprobe calls are subprocess-bound; keep their timeout explicit so a
+// loaded parallel run does not inherit the 5 s default used by fast unit tests.
+const REAL_PROCESS_TIMEOUT_MS = 30_000;
+
 /** Minimal valid mono WAV so ffprobe accepts the fixture asset. */
 function makeWav(): Buffer {
   const sampleRate = 8000;
@@ -81,7 +85,7 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
     const imported = fresh.getClips().find((c) => c.trackId === audioTrack!.id)!;
     expect(imported.startFrame).toBe(30);
     expect(imported.durationFrames).toBe(30);
-  });
+  }, REAL_PROCESS_TIMEOUT_MS);
 
   it('reports offline assets and skips their clips without failing', async () => {
     const source = sourceProject();
@@ -99,7 +103,7 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
     expect(data.placedClips).toBe(0);
     expect(data.offline[0]).toContain('missing');
     expect(fresh.getMedia()).toHaveLength(0);
-  });
+  }, REAL_PROCESS_TIMEOUT_MS);
 
   it('exports the current timeline to an absolute path', async () => {
     const editor = sourceProject();
@@ -111,5 +115,71 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
     const written = await fs.readFile(outPath, 'utf8');
     expect(written).toContain('<fcpxml version="1.11">');
     expect(written).toContain('<spine>');
+    const data = result.data as {
+      path: string;
+      exportedClips: number;
+      skippedClips: number;
+      unsupported: string[];
+      unsupportedTotal: number;
+      unsupportedTruncated: boolean;
+    };
+    expect(data.path).toBe(outPath);
+    expect(data.exportedClips).toBe(1);
+    expect(data.skippedClips).toBe(0);
+    expect(data.unsupported).toEqual([]);
+    expect(data.unsupportedTotal).toBe(0);
+    expect(data.unsupportedTruncated).toBe(false);
+  });
+
+  it('surfaces skipped shape clips in the export receipt without changing the XML', async () => {
+    const editor = sourceProject();
+    const shapeId = editor.addShapeClip({ trackId: 'v1', shapeKind: 'rect', startFrame: 60, durationFrames: 30 });
+    expect(shapeId).not.toBe('');
+    const outPath = path.join(tmpDir, 'shape.fcpxml');
+
+    const result = await new ToolExecutor(editor).execute('export_fcpxml', { path: outPath });
+
+    expect(result.success).toBe(true);
+    const data = result.data as {
+      exportedClips: number;
+      skippedClips: number;
+      unsupported: string[];
+      unsupportedTotal: number;
+      unsupportedTruncated: boolean;
+    };
+    expect(data.exportedClips).toBe(1);
+    expect(data.skippedClips).toBe(1);
+    expect(data.unsupported).toHaveLength(1);
+    expect(data.unsupported[0]).toContain(shapeId);
+    expect(data.unsupportedTotal).toBe(1);
+    expect(data.unsupportedTruncated).toBe(false);
+
+    const written = await fs.readFile(outPath, 'utf8');
+    expect(written).toBe(exportFcpxml(editor.getProject()));
+    expect(written).not.toContain('__shape__');
+  });
+
+  it('truncates long export unsupported lists but keeps accurate totals', async () => {
+    const editor = new EditorController();
+    for (let i = 0; i < 25; i += 1) {
+      editor.addShapeClip({ trackId: 'v1', shapeKind: 'rect', startFrame: i * 10, durationFrames: 10 });
+    }
+    const outPath = path.join(tmpDir, 'many.fcpxml');
+
+    const result = await new ToolExecutor(editor).execute('export_fcpxml', { path: outPath });
+
+    expect(result.success).toBe(true);
+    const data = result.data as {
+      exportedClips: number;
+      skippedClips: number;
+      unsupported: string[];
+      unsupportedTotal: number;
+      unsupportedTruncated: boolean;
+    };
+    expect(data.skippedClips).toBe(25);
+    expect(data.unsupportedTotal).toBe(25);
+    expect(data.unsupported).toHaveLength(20);
+    expect(data.unsupportedTruncated).toBe(true);
+    expect(data.exportedClips).toBe(0);
   });
 });

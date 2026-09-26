@@ -169,3 +169,100 @@
     app-region: no-drag;
   }
 }
+
+/*
+ * Light theme (upstream PR #430's Theme half).
+ *
+ * The whole UI reads its colors from the `--color-*` variables above (Tailwind
+ * v4 emits `var()` references, including inside `color-mix` alpha mixes), so
+ * the theme is a token swap: redefining the variables under `html.light`
+ * re-skins every token-driven utility with no source changes. The block below
+ * is deliberately unlayered so it always beats the layered `@theme` defaults,
+ * and dark is untouched — removing the class restores today's pixels exactly.
+ *
+ * The light values invert the luminance roles of the dark tokens at the same
+ * hues (panel greys stay neutral-warm, the accent stays in the cream's hue
+ * family darkened until white text and tinted text both clear AA). Content
+ * that is dark in both themes — video and thumbnail surfaces, timeline clip
+ * bodies, modal scrims, status hues — is left alone; only the structural
+ * chrome (dividers, hovers, inputs, selection rings) is remapped, class by
+ * class, so a class that only ever appears on dark content has no rule here.
+ */
+html.light {
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f6f5f3;
+  --color-surface-2: #ebe9e6;
+  --color-surface-3: #dbd9d5;
+  --color-surface-4: #c9c7c2;
+  --color-accent: #6f5716;
+  --color-accent-hover: #54400e;
+  --color-accent-muted: #6f6656;
+  --color-timecode: #8a5203;
+  --color-text-primary: #161513;
+  --color-text-secondary: rgba(22, 21, 19, 0.8);
+  --color-text-muted: rgba(22, 21, 19, 0.6);
+
+  /* Native controls (select popups, checkboxes, scrollbars) follow the theme. */
+  color-scheme: light;
+}
+
+html.light .panel-divider {
+  border-color: rgba(0, 0, 0, 0.16);
+}
+
+html.light .panel-header {
+  border-bottom-color: rgba(0, 0, 0, 0.16);
+}
+
+html.light .icon-button:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+html.light .icon-button[data-active="true"] {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+html.light ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+html.light button:focus-visible,
+html.light input:focus-visible,
+html.light textarea:focus-visible,
+html.light select:focus-visible {
+  outline-color: var(--color-accent);
+}
+
+/*
+ * Structural white-ink utilities become dark ink in light mode. Each rule
+ * names one utility that only appears on theme-driven chrome (dividers,
+ * hover fills, input borders, selection rings, the curve graph's grid);
+ * white text and fills that sit on dark content (clip bodies, thumbnail
+ * badges, scrims) deliberately have no rule and stay as they are.
+ */
+html.light .border-white\/10 { border-color: rgb(0 0 0 / 0.1); }
+html.light .border-white\/12 { border-color: rgb(0 0 0 / 0.12); }
+html.light .border-white\/15 { border-color: rgb(0 0 0 / 0.15); }
+html.light .border-white\/60 { border-color: rgb(0 0 0 / 0.6); }
+html.light .border-white\/80 { border-color: rgb(0 0 0 / 0.8); }
+html.light .border-white\/\[0\.06\] { border-color: rgb(0 0 0 / 0.06); }
+html.light .border-white { border-color: rgb(0 0 0 / 0.85); }
+html.light .hover\:border-white\/25:hover { border-color: rgb(0 0 0 / 0.25); }
+html.light .hover\:border-white\/40:hover { border-color: rgb(0 0 0 / 0.4); }
+html.light .focus-within\:border-white\/30:focus-within { border-color: rgb(0 0 0 / 0.3); }
+html.light .bg-white\/10 { background-color: rgb(0 0 0 / 0.1); }
+html.light .bg-white\/12 { background-color: rgb(0 0 0 / 0.12); }
+html.light .bg-white\/60 { background-color: rgb(0 0 0 / 0.6); }
+html.light .hover\:bg-white\/10:hover { background-color: rgb(0 0 0 / 0.1); }
+html.light .hover\:bg-white\/15:hover { background-color: rgb(0 0 0 / 0.15); }
+html.light .hover\:bg-white\/\[0\.04\]:hover { background-color: rgb(0 0 0 / 0.04); }
+html.light .hover\:bg-white\/\[0\.06\]:hover { background-color: rgb(0 0 0 / 0.06); }
+html.light .hover\:bg-white\/\[0\.08\]:hover { background-color: rgb(0 0 0 / 0.08); }
+html.light .text-white\/10 { color: rgb(0 0 0 / 0.1); }
+html.light .text-white\/20 { color: rgb(0 0 0 / 0.2); }
+html.light .outline-white\/10 { outline-color: rgb(0 0 0 / 0.1); }
+html.light .group-hover\:outline-white\/30:is(:where(.group):hover *) { outline-color: rgb(0 0 0 / 0.3); }
+html.light .decoration-white\/25 {
+  -webkit-text-decoration-color: rgb(0 0 0 / 0.25);
+  text-decoration-color: rgb(0 0 0 / 0.25);
+}

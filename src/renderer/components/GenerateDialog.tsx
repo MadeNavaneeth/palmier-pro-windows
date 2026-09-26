@@ -1,13 +1,17 @@
 /**
- * GenerateDialog — launch a media generation from the library (PR #406
- * family). Type, prompt, provider/model, duration; progress streams from
- * generation:progress and a settled run is probed into the library like any
- * other import.
+ * GenerateDialog - launch a media generation from the library (PR #406
+ * family). Type, prompt, reference image, provider/model, duration; progress
+ * streams from generation:progress and a settled run is probed into the
+ * library like any other import.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
+import { nanoid } from 'nanoid';
 import type { MediaProbeResult } from '../../main/ipc/media';
+import type { MediaAsset } from '../../shared/types/project';
+import { secondsToProjectFrames } from '../../shared/media/source-time';
+import { useTimelineStore } from '../store/timeline';
 
 type GenType = 'image' | 'video' | 'audio';
 
@@ -16,6 +20,7 @@ interface ProviderInfo {
   name: string;
   supportedTypes: GenType[];
   configured: boolean;
+  cancellationSupport?: 'remote' | 'local-only';
   models: Record<GenType, string[]>;
 }
 
@@ -25,26 +30,94 @@ const TYPE_LABELS: Record<GenType, string> = {
   audio: 'Audio',
 };
 
+/** Complete a successful provider result into the same frame-valued model as ordinary imports. */
+export function generatedMediaAssetFromProbe(
+  probe: MediaProbeResult,
+  generatedBy: NonNullable<MediaAsset['generatedBy']>,
+  projectFps: number,
+): MediaAsset {
+  return {
+    id: nanoid(),
+    ...probe,
+    duration: Math.max(0, secondsToProjectFrames(probe.duration, projectFps)),
+    addedAt: new Date().toISOString(),
+    generatedBy: {
+      provider: generatedBy.provider,
+      model: generatedBy.model,
+      ...(typeof generatedBy.costCredits === 'number' && Number.isFinite(generatedBy.costCredits)
+        ? { costCredits: generatedBy.costCredits }
+        : {}),
+      ...(typeof generatedBy.referenceImagePath === 'string' && generatedBy.referenceImagePath.trim().length > 0
+        ? { referenceImagePath: generatedBy.referenceImagePath }
+        : {}),
+    },
+  };
+}
+
+/**
+ * Library assets offered as a generation reference, in library order. Only an
+ * image can be one, and the source path is what the provider receives — the
+ * same file the asset was imported from.
+ */
+export function referenceImageChoices(assets: MediaAsset[]): MediaAsset[] {
+  return assets.filter((asset) => asset.type === 'image');
+}
+
+/**
+ * The `generation:start` payload for the dialog's current state. A reference is
+ * only sent for image generation (the video/audio models read no image input),
+ * and an unselected reference is omitted entirely, so a text-to-image run sends
+ * exactly what it sent before the field existed.
+ */
+export function generationStartRequest(state: {
+  type: GenType;
+  prompt: string;
+  providerId: string;
+  modelId: string;
+  durationSeconds: number;
+  referenceImagePath: string;
+}): Record<string, unknown> {
+  const reference = state.type === 'image' ? state.referenceImagePath : '';
+  return {
+    type: state.type,
+    prompt: state.prompt,
+    provider: state.providerId || undefined,
+    extra: { model: state.modelId || undefined },
+    ...(state.type !== 'image' ? { durationSeconds: state.durationSeconds } : {}),
+    ...(reference ? { referenceImagePath: reference } : {}),
+  };
+}
+
 export function GenerateDialog({
+  projectFps,
   onClose,
   onImported,
 }: {
+  projectFps: number;
   onClose: () => void;
-  /** Called with the probed asset so the caller can import it. */
-  onImported: (asset: MediaProbeResult) => void;
+  /** Called with the completed, provenance-bearing library asset. */
+  onImported: (asset: MediaAsset) => void;
 }) {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [type, setType] = useState<GenType>('image');
   const [prompt, setPrompt] = useState('');
+  const [referenceId, setReferenceId] = useState('');
   const [providerId, setProviderId] = useState('');
   const [modelId, setModelId] = useState('');
   const [durationSeconds, setDurationSeconds] = useState(5);
   const [running, setRunning] = useState(false);
   const [requestId, setRequestId] = useState('');
+  const cancelWaiters = useRef(new Map<string, () => void>());
   const [progressPercent, setProgressPercent] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [error, setError] = useState('');
+
+  // Reference candidates come from the library: an image already in the bin is
+  // the one picture the user can point a generation at without a file dialog.
+  const media = useTimelineStore((state) => state.project.media);
+  const referenceChoices = useMemo(() => referenceImageChoices(media), [media]);
+  const referencePath = referenceChoices.find((asset) => asset.id === referenceId)?.path ?? '';
 
   // Configured providers only — an unconfigured row cannot produce output.
   useEffect(() => {
@@ -88,13 +161,14 @@ export function GenerateDialog({
     setProgressPercent(0);
     setProgressMessage('Submitting…');
 
-    const started = await window.palmier.generation.start({
+    const started = await window.palmier.generation.start(generationStartRequest({
       type,
       prompt,
-      provider: providerId || undefined,
-      extra: { model: modelId || undefined },
-      ...(type !== 'image' ? { durationSeconds } : {}),
-    }) as { success: boolean; id?: string; error?: string };
+      providerId,
+      modelId,
+      durationSeconds,
+      referenceImagePath: referencePath,
+    })) as { success: boolean; id?: string; error?: string };
 
     if (!started.success || !started.id) {
       setRunning(false);
@@ -102,20 +176,56 @@ export function GenerateDialog({
       setError(started.error ?? 'Generation failed to start.');
       return;
     }
-    setRequestId(started.id);
+    const startedId = started.id;
+    setRequestId(startedId);
 
-    const result = await new Promise<{ outputPath?: string; error?: string }>((resolve) => {
-      const unsub = window.palmier.on('generation:complete', (data: unknown) => {
-        const r = data as { id?: string; outputPath?: string; error?: string };
-        if (r.id !== started.id) return;
-        unsub();
-        resolve(r);
+    const result = await new Promise<{
+      outputPath?: string;
+      costCredits?: number;
+      error?: string;
+      cancelled?: boolean;
+    }>((resolve) => {
+      let settled = false;
+      let unsubProgress = () => {};
+      let unsubComplete = () => {};
+      const finish = (value: {
+        outputPath?: string;
+        costCredits?: number;
+        error?: string;
+        cancelled?: boolean;
+      }) => {
+        if (settled) return;
+        settled = true;
+        unsubProgress();
+        unsubComplete();
+        cancelWaiters.current.delete(startedId);
+        resolve(value);
+      };
+
+      // A timeout is a terminal local failure, not a late provider result.
+      unsubProgress = window.palmier.on('generation:progress', (data: unknown) => {
+        const p = data as { id?: string; status?: string; message?: string };
+        if (p.id !== startedId || p.status !== 'failed') return;
+        finish({ error: p.message ?? 'Generation timed out.' });
       });
+      unsubComplete = window.palmier.on('generation:complete', (data: unknown) => {
+        const r = data as {
+          id?: string;
+          outputPath?: string;
+          costCredits?: number;
+          error?: string;
+        };
+        if (r.id !== startedId) return;
+        finish(r);
+      });
+      cancelWaiters.current.set(startedId, () => finish({ cancelled: true }));
     });
 
     setRunning(false);
     setRequestId('');
     setProgressMessage('');
+
+    if (result.cancelled) return;
 
     if (!result.outputPath) {
       setError(result.error ?? 'Generation produced no output.');
@@ -129,13 +239,49 @@ export function GenerateDialog({
       setError(probed.error ?? 'Generated file could not be read.');
       return;
     }
-    onImported(probed.info);
+    onImported(generatedMediaAssetFromProbe(probed.info, {
+      provider: providerId,
+      model: modelId,
+      costCredits: result.costCredits,
+      referenceImagePath: referencePath,
+    }, projectFps));
     onClose();
-  }, [type, prompt, providerId, modelId, durationSeconds, onImported, onClose]);
+  }, [type, prompt, providerId, modelId, durationSeconds, referencePath, projectFps, onImported, onClose]);
 
   const cancel = useCallback(async () => {
-    if (requestId) await window.palmier.generation.cancel(requestId);
-  }, [requestId]);
+    if (!requestId) return;
+    // The dialog stops waiting immediately. The main process independently
+    // suppresses any late completion, so neither path can probe/import it.
+    cancelWaiters.current.get(requestId)?.();
+
+    const provider = providers.find((p) => p.id === providerId);
+    try {
+      const response = await window.palmier.generation.cancel(requestId) as {
+        success: boolean;
+        remoteCancellation?: 'confirmed' | 'unsupported' | 'pending' | 'failed' | 'not-found';
+        error?: string;
+      };
+      if (!response.success) {
+        setError(response.error ?? 'Generation cancellation failed.');
+      } else if (response.remoteCancellation === 'unsupported') {
+        setError(
+          `Stopped waiting, but ${provider?.name ?? 'The provider'} has no remote cancel API. `
+          + 'Its job may continue and incur provider charges.',
+        );
+      } else if (response.remoteCancellation === 'failed') {
+        setError(
+          `Stopped waiting, but remote cancellation was not confirmed${response.error ? `: ${response.error}` : '.'}`,
+        );
+      } else if (response.remoteCancellation === 'pending') {
+        setError('Stopped waiting. Remote cancellation is pending the provider job id.');
+      }
+    } catch {
+      setError('Stopped waiting, but the provider could not be contacted to cancel remotely.');
+    }
+  }, [providerId, providers, requestId]);
+
+  const remoteCancellationUnavailable = providers.find((p) => p.id === providerId)
+    ?.cancellationSupport === 'local-only';
 
   const canSubmit = loaded
     && !running
@@ -167,7 +313,12 @@ export function GenerateDialog({
                 <button
                   key={t}
                   disabled={running}
-                  onClick={() => setType(t)}
+                  onClick={() => {
+                    setType(t);
+                    // Only image models read a reference, so leaving the type
+                    // drops the selection rather than carrying it invisibly.
+                    if (t !== 'image') setReferenceId('');
+                  }}
                   className={`flex-1 rounded border px-2 py-1 text-[11px] transition ${
                     type === t
                       ? 'border-accent bg-accent/10 text-accent'
@@ -190,6 +341,21 @@ export function GenerateDialog({
               className="w-full resize-none rounded border border-surface-3 bg-surface-2 px-2 py-1.5 text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
             />
           </Field>
+
+          {type === 'image' && referenceChoices.length > 0 && (
+            <Field label="Reference image">
+              <select
+                value={referenceId}
+                onChange={(event) => setReferenceId(event.target.value)}
+                className="w-full rounded border border-surface-3 bg-surface-2 px-2 py-1 text-[11px] text-text-primary focus:border-accent focus:outline-none"
+              >
+                <option value="">None (text-to-image)</option>
+                {referenceChoices.map((asset) => (
+                  <option key={asset.id} value={asset.id} className="bg-surface-2">{asset.filename}</option>
+                ))}
+              </select>
+            </Field>
+          )}
 
           <Field label="Provider">
             <select
@@ -256,9 +422,12 @@ export function GenerateDialog({
           {running ? (
             <button
               onClick={() => void cancel()}
+              title={remoteCancellationUnavailable
+                ? 'This provider has no remote cancel API. The provider job may continue.'
+                : undefined}
               className="rounded border border-red-500/50 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10"
             >
-              Cancel Generation
+              {remoteCancellationUnavailable ? 'Stop Waiting' : 'Cancel Generation'}
             </button>
           ) : (
             <>

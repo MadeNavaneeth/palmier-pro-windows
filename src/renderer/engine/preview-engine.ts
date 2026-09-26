@@ -17,6 +17,7 @@ import { frameToSeconds } from '../../shared/utils/time';
 import { colorGradeOf, toCanvasFilter } from '../../shared/editor/color-grade';
 import { clampEdgeValue } from '../../shared/editor/edge-effects';
 import { drawTitle } from './title-render';
+import { drawShapeBox } from './shape-render';
 import { evaluateMotion } from '../../shared/media/motion';
 
 // â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -313,6 +314,10 @@ export class PreviewEngine {
         this.renderTitleLayer(clip);
         continue;
       }
+      if (clip.type === 'shape') {
+        this.renderShapeLayer(clip, frame);
+        continue;
+      }
       await this.renderLayer(clip, frame);
     }
   }
@@ -347,8 +352,25 @@ export class PreviewEngine {
       this.ctx.filter = toCanvasFilter(grade);
     }
 
-    // Transform: translate to position, rotate, scale — all driven by
-    // motion keyframes when present, falling back to static clip values.
+    this.applyBoxTransform(clip, currentFrame);
+
+    // Draw with optional edge rounding / softness (#369).
+    const hasEdgeEffects = clampEdgeValue(clip.edgeRounding) > 0 || clampEdgeValue(clip.edgeSoftness) > 0;
+    if (hasEdgeEffects) {
+      this.drawWithEdgeEffects(bitmap, clip.width, clip.height, clip.edgeRounding ?? 0, clip.edgeSoftness ?? 0);
+    } else {
+      this.ctx.drawImage(bitmap, 0, 0, clip.width, clip.height);
+    }
+    this.ctx.restore();
+  }
+
+  /**
+   * Box transform shared by decoded layers and shape layers: translate to
+   * position, rotate, scale — all driven by motion keyframes when present,
+   * falling back to static clip values. Shapes ride the identical transform
+   * so a motion preset previews exactly where export composites it.
+   */
+  private applyBoxTransform(clip: Clip, currentFrame: Frame): void {
     const mx = evaluateMotion(clip.motionX, currentFrame) ?? clip.x;
     const my = evaluateMotion(clip.motionY, currentFrame) ?? clip.y;
     const mRot = evaluateMotion(clip.motionRot, currentFrame) ?? clip.rotation;
@@ -365,14 +387,18 @@ export class PreviewEngine {
     }
     this.ctx.scale(sx, sy);
     this.ctx.translate(-clip.anchorX, -clip.anchorY);
+  }
 
-    // Draw with optional edge rounding / softness (#369).
-    const hasEdgeEffects = clampEdgeValue(clip.edgeRounding) > 0 || clampEdgeValue(clip.edgeSoftness) > 0;
-    if (hasEdgeEffects) {
-      this.drawWithEdgeEffects(bitmap, clip.width, clip.height, clip.edgeRounding ?? 0, clip.edgeSoftness ?? 0);
-    } else {
-      this.ctx.drawImage(bitmap, 0, 0, clip.width, clip.height);
-    }
+  /**
+   * Draws a shape clip's vector box under the same transform a decoded
+   * frame gets. No decode, grade, or edge effects: shapes carry their own
+   * style and export composites the same box content.
+   */
+  private renderShapeLayer(clip: Clip, currentFrame: Frame): void {
+    this.ctx.save();
+    this.ctx.globalAlpha = clip.opacity;
+    this.applyBoxTransform(clip, currentFrame);
+    drawShapeBox(this.ctx, clip);
     this.ctx.restore();
   }
 

@@ -164,4 +164,24 @@ describe('clipboard copy/paste (R1)', () => {
       .toBeGreaterThan(0);
     void canUndoBefore;
   });
+
+  it('carries variable-font axes across copy/paste (#50)', () => {
+    // The clipboard snapshots whole clips, so title styling — including the
+    // variation axes — rides along with no per-field transfer list.
+    const ctrl = controllerWithMaterial();
+    const sourceId = ctrl.addTitleClip({ trackId: 'v1', text: 'Heavy', startFrame: 0, durationFrames: 30 });
+    ctrl.applyClipProperties([sourceId], 'Style', (d) => {
+      d.titleVariationWght = 800;
+      d.titleVariationSlnt = -12;
+      return true;
+    });
+    ctrl.copyClips([sourceId]);
+    ctrl.setPlayhead(200);
+
+    const newIds = ctrl.pasteClips();
+    expect(newIds).toHaveLength(1);
+    const pasted = ctrl.getClips().find((c) => c.id === newIds[0])!;
+    expect(pasted.titleVariationWght).toBe(800);
+    expect(pasted.titleVariationSlnt).toBe(-12);
+  });
 });

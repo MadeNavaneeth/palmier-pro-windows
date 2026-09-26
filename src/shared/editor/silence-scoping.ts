@@ -12,6 +12,7 @@
 import type { Clip } from '../types/project';
 import type { SilentRange } from '../audio/silence-detector';
 import type { RippleRange } from './ripple';
+import { timelineFrameForSourceSeconds } from '../media/source-time';
 
 export interface SilenceTrackScope {
   /** The anchor track the ranges are cut and rippled on. */
@@ -93,25 +94,82 @@ export function resolveSilenceScope(
 }
 
 /**
+ * A detected span that produced no cut, kept so it can be reported rather than
+ * disappear between the detector and the ripple.
+ */
+export interface OmittedSilenceRange extends SilentRange {
+  /**
+   * `outside-clip`: the span meets no part of this clip's timeline window — the
+   * detector reports the whole asset, the clip shows a trimmed part of it.
+   * `invalid-range`: the seconds are not finite, so the span has no position in
+   * the source window at all.
+   */
+  reason: 'outside-clip' | 'invalid-range';
+}
+
+/** Source-second spans resolved against one clip. */
+export interface SilenceRangeMapping {
+  /** Ranges to cut, ascending, one per span that meets the clip. */
+  ranges: RippleRange[];
+  /** Spans that meet no part of the clip. Never silently dropped. */
+  omitted: OmittedSilenceRange[];
+}
+
+/**
  * Map source-second silence ranges onto TIMELINE frames for one clip, so
- * ranges detected per asset can be cut together on the anchor track. Ranges
- * outside the clip's trimmed window are clamped or dropped. Assumes speed 1,
- * like the existing single-clip removal path.
+ * ranges detected per asset can be cut together on the anchor track.
+ *
+ * The mapping is the shared source-time model's, including the `speed` term: a
+ * clip playing at 2x reaches source 2.0s at timeline frame 60, not 120, and a
+ * mapper that ignores speed cuts real speech and leaves the silence in place.
+ * `speed` reaches audio clips through `setClipSpeed`, which refuses audio only
+ * as a direct target, so an ordinary linked A/V pair is enough to get here.
+ *
+ * A span overlapping the clip is clamped to the clip's window, because that
+ * part of the span really is inside the clip. A span that overlaps no part is
+ * omitted and reported: clamping it to the nearest edge would cut audio the
+ * detector never called silent, and the inspector/agent must not report the
+ * omission as "no silence found".
+ */
+export function mapSilenceRangesToTimeline(
+  clip: Clip,
+  fps: number,
+  rangesSec: readonly SilentRange[],
+): SilenceRangeMapping {
+  const clipStart = clip.startFrame;
+  const clipEnd = clip.startFrame + clip.durationFrames;
+  const ranges: RippleRange[] = [];
+  const omitted: OmittedSilenceRange[] = [];
+  for (const range of rangesSec) {
+    // Non-finite seconds resolve to source 0, which would place the span at
+    // the head of the clip; there is no window for it to overlap.
+    if (!Number.isFinite(range.startSec) || !Number.isFinite(range.endSec)) {
+      omitted.push({ ...range, reason: 'invalid-range' });
+      continue;
+    }
+    const t0 = Math.max(clipStart, timelineFrameForSourceSeconds(clip, range.startSec, fps));
+    const t1 = Math.min(clipEnd, timelineFrameForSourceSeconds(clip, range.endSec, fps));
+    if (t1 > t0) ranges.push({ start: t0, end: t1 });
+    else omitted.push({ ...range, reason: 'outside-clip' });
+  }
+  ranges.sort((a, b) => a.start - b.start);
+  return { ranges, omitted };
+}
+
+/**
+ * The cut ranges for one clip, without the omission report.
+ *
+ * Callers that cut through this are safe to use directly; callers that report
+ * to a user (the Inspector, the Agent receipt) want
+ * `mapSilenceRangesToTimeline` so an omitted span is not reported as an
+ * absence of silence.
  */
 export function timelineSilenceRanges(
   clip: Clip,
   fps: number,
   rangesSec: readonly SilentRange[],
 ): RippleRange[] {
-  const clipStart = clip.startFrame;
-  const clipEnd = clip.startFrame + clip.durationFrames;
-  const out: RippleRange[] = [];
-  for (const range of rangesSec) {
-    const t0 = Math.max(clipStart, clip.startFrame + Math.round(range.startSec * fps) - clip.inPoint);
-    const t1 = Math.min(clipEnd, clip.startFrame + Math.round(range.endSec * fps) - clip.inPoint);
-    if (t1 > t0) out.push({ start: t0, end: t1 });
-  }
-  return out.sort((a, b) => a.start - b.start);
+  return mapSilenceRangesToTimeline(clip, fps, rangesSec).ranges;
 }
 
 /** A detected span drawn inside one clip's body, in body-local pixels. */

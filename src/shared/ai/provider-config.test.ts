@@ -14,6 +14,7 @@ import {
   presetById,
   resolveEndpoint,
   validateBaseUrl,
+  validateBinaryPathShape,
   validateProviderConfig,
 } from './provider-config';
 
@@ -269,5 +270,97 @@ describe('endpointLeavesMachine', () => {
 
   it('assumes data leaves when the URL is unusable', () => {
     expect(endpointLeavesMachine({ kind: 'anthropic', baseUrl: 'nonsense', model: 'm' })).toBe(true);
+  });
+
+  it('treats the Codex CLI as leaving the machine', () => {
+    // The CLI answers through the user's own Codex account, not locally.
+    expect(endpointLeavesMachine({ kind: 'codex-cli', model: '' })).toBe(true);
+  });
+});
+
+describe('codex-cli provider (upstream #142)', () => {
+  it('lists alongside the HTTP providers without altering them', () => {
+    const codex = presetById('codex-cli');
+    expect(codex?.kind).toBe('codex-cli');
+    expect(codex?.requiresApiKey).toBe(false);
+    expect(codex?.defaultModel).toBe('');
+
+    // Pinned snapshot of every pre-existing preset: adding the CLI entry
+    // must not change a single byte of the HTTP registry's behavior.
+    expect(PROVIDER_PRESETS.filter((preset) => preset.id !== 'codex-cli').map((preset) => ({
+      id: preset.id,
+      kind: preset.kind,
+      baseUrl: preset.baseUrl,
+      defaultModel: preset.defaultModel,
+      requiresApiKey: preset.requiresApiKey,
+    }))).toEqual([
+      { id: 'anthropic', kind: 'anthropic', baseUrl: undefined, defaultModel: 'claude-sonnet-4-20250514', requiresApiKey: true },
+      { id: 'openai', kind: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o', requiresApiKey: true },
+      { id: 'openrouter', kind: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'anthropic/claude-sonnet-4', requiresApiKey: true },
+      { id: 'openrouter-free', kind: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'openrouter/free', requiresApiKey: true },
+      { id: 'groq', kind: 'openai-compatible', baseUrl: 'https://api.groq.com/openai/v1', defaultModel: 'llama-3.3-70b-versatile', requiresApiKey: true },
+      { id: 'together', kind: 'openai-compatible', baseUrl: 'https://api.together.xyz/v1', defaultModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', requiresApiKey: true },
+      { id: 'gemini', kind: 'openai-compatible', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', defaultModel: 'gemini-2.5-flash', requiresApiKey: true },
+      { id: 'mistral', kind: 'openai-compatible', baseUrl: 'https://api.mistral.ai/v1', defaultModel: 'mistral-small-latest', requiresApiKey: true },
+      { id: 'cerebras', kind: 'openai-compatible', baseUrl: 'https://api.cerebras.ai/v1', defaultModel: 'llama-3.3-70b', requiresApiKey: true },
+      { id: 'ollama', kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:11434/v1', defaultModel: 'llama3.1', requiresApiKey: false },
+      { id: 'lmstudio', kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', defaultModel: 'local-model', requiresApiKey: false },
+      { id: 'custom', kind: 'openai-compatible', baseUrl: undefined, defaultModel: '', requiresApiKey: true },
+    ]);
+  });
+
+  it('accepts an empty model — the CLI default applies', () => {
+    expect(validateProviderConfig({ kind: 'codex-cli', model: '' })).toEqual({
+      ok: true,
+      config: { kind: 'codex-cli', model: '' },
+    });
+    expect(validateProviderConfig({ kind: 'codex-cli', model: '  gpt-5-codex  ' })).toEqual({
+      ok: true,
+      config: { kind: 'codex-cli', model: 'gpt-5-codex' },
+    });
+  });
+
+  it('accepts a binary override only as an absolute path', () => {
+    const ok = validateProviderConfig({ kind: 'codex-cli', model: '', binaryPath: 'C:\\Tools\\codex.exe' });
+    expect(ok).toEqual({
+      ok: true,
+      config: { kind: 'codex-cli', model: '', binaryPath: 'C:\\Tools\\codex.exe' },
+    });
+    const bad = validateProviderConfig({ kind: 'codex-cli', model: '', binaryPath: 'codex' });
+    expect(bad.ok).toBe(false);
+    expect(!bad.ok && bad.reason).toMatch(/absolute/i);
+  });
+
+  it('still rejects an absurdly long model name', () => {
+    const result = validateProviderConfig({ kind: 'codex-cli', model: 'x'.repeat(500) });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.reason).toMatch(/too long/i);
+  });
+
+  it('ignores HTTP-only fields on a CLI config', () => {
+    // A base URL on a CLI config is meaningless; it must not be carried
+    // into the stored config where a reader could mistake it for an endpoint.
+    const result = validateProviderConfig({
+      kind: 'codex-cli',
+      baseUrl: 'https://api.openai.com/v1',
+      model: '',
+    });
+    expect(result).toEqual({ ok: true, config: { kind: 'codex-cli', model: '' } });
+  });
+});
+
+describe('validateBinaryPathShape', () => {
+  it('accepts absolute Windows and POSIX paths', () => {
+    expect(validateBinaryPathShape('C:\\Tools\\codex.exe')).toEqual({ ok: true, path: 'C:\\Tools\\codex.exe' });
+    expect(validateBinaryPathShape('  /usr/local/bin/codex  ')).toEqual({ ok: true, path: '/usr/local/bin/codex' });
+    expect(validateBinaryPathShape('\\\\server\\share\\codex.exe').ok).toBe(true);
+  });
+
+  it('refuses relative paths, blanks, and NUL bytes', () => {
+    for (const raw of ['codex', '.\\codex.exe', '', '   ', undefined, null, 42]) {
+      const result = validateBinaryPathShape(raw);
+      expect(result.ok, String(raw)).toBe(false);
+    }
+    expect(validateBinaryPathShape('C:\\bin\0codex').ok).toBe(false);
   });
 });

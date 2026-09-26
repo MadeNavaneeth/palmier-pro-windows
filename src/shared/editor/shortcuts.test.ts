@@ -1,15 +1,22 @@
 /**
- * Regression coverage for the keyboard shortcut catalogue (upstream issue #164).
+ * Regression coverage for the keyboard shortcut catalogue (upstream issue #164)
+ * and its selectable presets (upstream issue #579).
  *
  * The point of these tests is that a shortcut regression is loud. Two commands
  * claiming one chord, or a binding that fires while an unrequested modifier is
  * held, are the failure modes that are invisible in review and obvious to a
- * user mid-edit.
+ * user mid-edit. Every rule that used to hold for the single catalogue now has
+ * to hold for every preset, or picking "Final Cut Pro" could silently shadow a
+ * command.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
+  DEFAULT_SHORTCUT_PRESET,
   SHORTCUTS,
+  SHORTCUT_PRESETS,
+  SHORTCUT_PRESET_INFO,
+  asShortcutPresetId,
   formatShortcut,
   matchShortcut,
   matchesBinding,
@@ -17,22 +24,41 @@ import {
   shortcutChord,
   shortcutConflicts,
   shortcutsByCategory,
+  shortcutsForPreset,
   type ShortcutId,
 } from './shortcuts';
 
 describe('catalogue integrity', () => {
-  it('binds no chord to two different commands', () => {
-    expect(shortcutConflicts()).toEqual([]);
+  it('binds no chord to two different commands in any preset', () => {
+    for (const preset of SHORTCUT_PRESETS) {
+      expect(shortcutConflicts(shortcutsForPreset(preset)), preset).toEqual([]);
+    }
   });
 
-  it('gives every command a unique id, a label and at least one binding', () => {
+  it('covers the same command set in every preset, from the catalogue', () => {
+    const catalogueIds = SHORTCUTS.map((definition) => definition.id);
+    const byId = new Map(SHORTCUTS.map((definition) => [definition.id, definition]));
+    for (const preset of SHORTCUT_PRESETS) {
+      const resolved = shortcutsForPreset(preset);
+      expect(resolved.map((definition) => definition.id), preset).toEqual(catalogueIds);
+      for (const definition of resolved) {
+        const source = byId.get(definition.id);
+        // Labels and categories are the catalogue's, never a preset's.
+        expect(definition.label, definition.id).toBe(source?.label);
+        expect(definition.category, definition.id).toBe(source?.category);
+        expect(definition.label.length, definition.id).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('gives every command a unique id and at least one default binding', () => {
     const ids = new Set<ShortcutId>();
-    for (const definition of SHORTCUTS) {
+    for (const definition of shortcutsForPreset(DEFAULT_SHORTCUT_PRESET)) {
       expect(ids.has(definition.id)).toBe(false);
       ids.add(definition.id);
-      expect(definition.label.length).toBeGreaterThan(0);
       expect(definition.bindings.length).toBeGreaterThan(0);
     }
+    expect(ids.size).toBe(SHORTCUTS.length);
   });
 
   it('detects a conflict when one is introduced', () => {
@@ -41,6 +67,110 @@ describe('catalogue integrity', () => {
       { id: 'redo', label: 'Redo', category: 'Editing', bindings: [{ key: 'Z', ctrl: true }] },
     ]);
     expect(conflicts).toEqual([{ chord: 'ctrl+z', ids: ['undo', 'redo'] }]);
+  });
+});
+
+describe('shortcut presets (#579)', () => {
+  it('keeps the default preset identical to the catalogue', () => {
+    // Identity, not a copy: the default preset is today's table, so it cannot
+    // drift by someone forgetting to mirror a binding.
+    expect(shortcutsForPreset('default')).toBe(SHORTCUTS);
+  });
+
+  it('names every preset', () => {
+    expect(SHORTCUT_PRESET_INFO.map((entry) => entry.id)).toEqual([...SHORTCUT_PRESETS]);
+    for (const entry of SHORTCUT_PRESET_INFO) {
+      expect(entry.label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('narrows an untrusted value to a known preset', () => {
+    expect(asShortcutPresetId('default')).toBe('default');
+    expect(asShortcutPresetId('fcp')).toBe('fcp');
+    for (const raw of ['FCP', 'final-cut', 'fcp ', '', 'null', 7, null, undefined, {}]) {
+      expect(asShortcutPresetId(raw), String(raw)).toBeNull();
+    }
+  });
+
+  it('rebinds the blade to Ctrl+B and frees the default chords', () => {
+    const fcp = shortcutsForPreset('fcp');
+    expect(matchShortcut({ key: 'b', ctrlKey: true }, fcp)?.id).toBe('splitAtPlayhead');
+    // Bare C blades on the default table; in FCP it selects the clip under the
+    // pointer, a command this catalogue does not model, so it must be free.
+    expect(matchShortcut({ key: 'c' }, fcp)).toBeUndefined();
+  });
+
+  it('matches the Final Cut Pro defaults we model', () => {
+    const fcp = shortcutsForPreset('fcp');
+    const cases: [string, Parameters<typeof matchShortcut>[0], ShortcutId][] = [
+      ['N toggles snapping', { key: 'n' }, 'toggleSnap'],
+      ['Shift+Z fits the timeline', { key: 'z', shiftKey: true }, 'fitToWindow'],
+      ['Ctrl+- zooms out', { key: '-', ctrlKey: true }, 'zoomOut'],
+      ['Ctrl+Shift+= zooms in', { key: '+', ctrlKey: true, shiftKey: true }, 'zoomIn'],
+      ['Ctrl+Shift+Z redoes', { key: 'z', ctrlKey: true, shiftKey: true }, 'redo'],
+      ['Ctrl+Shift+A deselects all', { key: 'a', ctrlKey: true, shiftKey: true }, 'deselectAll'],
+      ['Escape still dismisses overlays', { key: 'Escape' }, 'deselectAll'],
+      ["Ctrl+' goes to the next marker", { key: "'", ctrlKey: true }, 'nextMarker'],
+      ['Ctrl+; goes to the previous marker', { key: ';', ctrlKey: true }, 'previousMarker'],
+      ['Alt+X clears the marked range', { key: 'x', altKey: true }, 'clearMarkedRange'],
+      ['Delete ripples', { key: 'Delete' }, 'rippleDeleteSelected'],
+      ['Shift+Delete lifts', { key: 'Delete', shiftKey: true }, 'deleteSelected'],
+      ['Ctrl+E exports', { key: 'e', ctrlKey: true }, 'exportProject'],
+      ['Ctrl+B blades', { key: 'b', ctrlKey: true }, 'splitAtPlayhead'],
+    ];
+    for (const [name, event, expected] of cases) {
+      expect(matchShortcut(event, fcp)?.id, name).toBe(expected);
+    }
+    // Defaults FCP does not share (S is skimming, Ctrl+Y is Windows-only redo,
+    // Ctrl+M minimizes, Ctrl+0 and backslash are Palmier's own fit chords).
+    expect(matchShortcut({ key: 's' }, fcp)).toBeUndefined();
+    expect(matchShortcut({ key: 'y', ctrlKey: true }, fcp)).toBeUndefined();
+    expect(matchShortcut({ key: 'm', ctrlKey: true }, fcp)).toBeUndefined();
+    expect(matchShortcut({ key: '0', ctrlKey: true }, fcp)).toBeUndefined();
+    expect(matchShortcut({ key: '\\' }, fcp)).toBeUndefined();
+  });
+
+  it('leaves commands FCP has no chord for unbound', () => {
+    const fcp = shortcutsForPreset('fcp');
+    const unbound: ShortcutId[] = [
+      'compactTake',
+      'extractMarkedRange',
+      'toggleThirds',
+      'toggleSafeAreas',
+      'layoutDefault',
+      'layoutMedia',
+      'layoutVertical',
+      'saveProject',
+      'showShortcuts',
+      'showCommandPalette',
+    ];
+    for (const id of unbound) {
+      const definition = fcp.find((candidate) => candidate.id === id);
+      expect(definition, id).toBeDefined();
+      expect(definition?.bindings, id).toEqual([]);
+    }
+    for (const [name, event] of [
+      ['F1', { key: 'F1' }],
+      ['Ctrl+K', { key: 'k', ctrlKey: true }],
+      ['Ctrl+S', { key: 's', ctrlKey: true }],
+      ['Ctrl+1', { key: '1', ctrlKey: true }],
+      ['G', { key: 'g' }],
+    ] as [string, Parameters<typeof matchShortcut>[0]][]) {
+      expect(matchShortcut(event, fcp), name).toBeUndefined();
+    }
+  });
+
+  it('keeps the FCP navigation chords that already match the defaults', () => {
+    const fcp = shortcutsForPreset('fcp');
+    for (const [name, event, expected] of [
+      ['Up steps to the previous edit', { key: 'ArrowUp' }, 'previousEdit'],
+      ['Down steps to the next edit', { key: 'ArrowDown' }, 'nextEdit'],
+      ['Shift+Right steps ten frames', { key: 'ArrowRight', shiftKey: true }, 'stepForwardMany'],
+      ['I marks in', { key: 'i' }, 'setInPoint'],
+      ['Shift+O seeks out', { key: 'o', shiftKey: true }, 'goToOutPoint'],
+    ] as [string, Parameters<typeof matchShortcut>[0], ShortcutId][]) {
+      expect(matchShortcut(event, fcp)?.id, name).toBe(expected);
+    }
   });
 });
 

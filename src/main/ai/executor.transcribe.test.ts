@@ -124,7 +124,7 @@ describe('transcribe_audio', () => {
     const result = await executor.execute('transcribe_audio', { assetId: 'speech' });
 
     expect(result.success).toBe(false);
-    expect((result as { error?: string }).error).toMatch(/no OpenAI-compatible/i);
+    expect((result as { error?: string }).error).toMatch(/No transcription engine is ready/);
     expect(editor.getTracks().filter((t) => t.type === 'video')).toHaveLength(1); // default only
   });
 

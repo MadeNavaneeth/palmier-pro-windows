@@ -2,7 +2,8 @@
  * TimelineClip — a single clip rendered on a track lane.
  * Supports: selection, drag-to-move, trim handles (left/right edges),
  * and a context menu whose entries are gated individually (Save as audio,
- * Duplicate, speed, settings copy/paste, link management #462).
+ * Duplicate, nest/flatten/open #155, speed, settings copy/paste, link
+ * management #462).
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -69,6 +70,9 @@ export function TimelineClip({ clip }: TimelineClipProps) {
   const setClipSpeed = useTimelineStore((s) => s.setClipSpeed);
   const setClipPan = useTimelineStore((s) => s.setClipPan);
   const duplicateSelected = useTimelineStore((s) => s.duplicateSelected);
+  const nestSelected = useTimelineStore((s) => s.nestSelected);
+  const flattenCompound = useTimelineStore((s) => s.flattenCompound);
+  const openCompoundClip = useTimelineStore((s) => s.openCompoundClip);
   const selectedCount = selectedClipIds.size;
 
   // ─── Armed media swap (#500 surface) ──────────────────────────────────────
@@ -86,7 +90,8 @@ export function TimelineClip({ clip }: TimelineClipProps) {
     if (!isArmedForSwap || !armedSwap) return;
     const current = useTimelineStore
       .getState()
-      .project.timeline.clips.find((candidate) => candidate.id === clip.id);
+      .getScopeTimeline()
+      .clips.find((candidate) => candidate.id === clip.id);
     if (!current) {
       cancelMediaSwap();
       return;
@@ -152,6 +157,35 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       // Upstream's refusal messages do not belong in a toast on right-click.
     }
   }, [controller, selectedClipIds]);
+
+  // ─── Nest / flatten (#155 slice 1) ────────────────────────────────────────
+  // Same refusal policy as link management above: a nest/flatten that cannot
+  // run (locked track, unknown id) selects nothing instead of toasting.
+  const handleNestSelected = useCallback(() => {
+    setMenuPos(null);
+    nestSelected();
+  }, [nestSelected]);
+
+  const handleFlattenCompound = useCallback(() => {
+    setMenuPos(null);
+    flattenCompound(clip.id);
+  }, [flattenCompound, clip.id]);
+
+  // Double-click drills into a compound clip (#155 slice 2): the same
+  // "double-click opens clip content" gesture titles already use for text
+  // editing. Titles keep their editor; compounds have no text to edit.
+  // A dangling compound refuses silently here — the explicit menu entry
+  // below is the discoverable path, this is the fast one.
+  const handleDoubleClick = useCallback((event: React.MouseEvent) => {
+    if (clip.type !== 'compound') return;
+    event.stopPropagation();
+    openCompoundClip(clip.id);
+  }, [clip.type, clip.id, openCompoundClip]);
+
+  const handleOpenNested = useCallback(() => {
+    setMenuPos(null);
+    openCompoundClip(clip.id);
+  }, [openCompoundClip, clip.id]);
 
   // ─── Audio waveform (R1 lane states) ─────────────────────────────────────
   const WAVEFORM_BUCKETS = 256;
@@ -443,6 +477,7 @@ export function TimelineClip({ clip }: TimelineClipProps) {
       data-offline={isOffline || undefined}
       onMouseDown={handleMouseDown}
       onClick={handleClick}
+      onDoubleClick={clip.type === 'compound' ? handleDoubleClick : undefined}
       onContextMenu={handleContextMenu}
       onMouseEnter={() => setHoveredClip(clip.id)}
       onMouseLeave={() => setHoveredClip(null)}
@@ -679,6 +714,33 @@ export function TimelineClip({ clip }: TimelineClipProps) {
             >
               Duplicate
             </button>
+            {clip.type === 'compound' && (
+              <button
+                role="menuitem"
+                onClick={handleOpenNested}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Open nested timeline
+              </button>
+            )}
+            {selectedCount > 0 && (
+              <button
+                role="menuitem"
+                onClick={handleNestSelected}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Nest selected into sequence
+              </button>
+            )}
+            {clip.type === 'compound' && (
+              <button
+                role="menuitem"
+                onClick={handleFlattenCompound}
+                className="block w-full px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-white/10"
+              >
+                Flatten compound clip
+              </button>
+            )}
             {canSaveAudio && (
               <button
                 role="menuitem"

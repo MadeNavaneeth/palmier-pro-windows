@@ -6,6 +6,9 @@
 import type { BlendMode } from './blend-mode';
 import type { ClipTransition } from '../editor/transition';
 import type { TimelineMarker } from '../editor/markers';
+import type { GradeCurve, GradeWheels, HueCurves, LutRef } from '../editor/color-grade';
+import type { Glow, Grain, Vignette } from '../editor/effects';
+import type { MotionTrack } from '../media/motion';
 
 // ─── Core time type ──────────────────────────────────────────────────────────
 
@@ -49,12 +52,44 @@ export interface MediaAsset {
     provider: string;
     model: string;
     costCredits?: number;
+    /**
+     * Local reference image the generation was conditioned on, when one was
+     * supplied (image generation only). Recorded next to the provider and model
+     * so the Inspector's provenance row can show what the result came from.
+     */
+    referenceImagePath?: string;
   };
+  /**
+   * On-demand vision-model description for library search (upstream #118,
+   * AI half). Written only by an explicit Describe action (media tile/panel
+   * button or the `describe_media` agent tool) via sanitizeAiDescription and
+   * narrowed on load via narrowAiDescription; absent means undescribed.
+   * Stored in the project only — never cached elsewhere — and sent to the
+   * user's own configured provider only, at describe time.
+   */
+  aiDescription?: string;
+  /**
+   * Media-library folder membership (upstream issue #156 slice). Absent or
+   * an unknown id means the asset sits at the library root; narrowed on
+   * load via narrowMediaFolders so a dangling id degrades to root rather
+   * than breaking the project.
+   */
+  folderId?: string;
+}
+
+/**
+ * A flat media-library folder (upstream issue #156 slice). One level only
+ * — no nesting — so cycles are impossible by construction and the grid's
+ * drill-in UI matches the model.
+ */
+export interface MediaFolder {
+  id: string;
+  name: string;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
-export type ClipType = 'video' | 'audio' | 'image' | 'title' | 'generated';
+export type ClipType = 'video' | 'audio' | 'image' | 'title' | 'generated' | 'shape' | 'compound';
 
 export interface Clip {
   id: string;
@@ -83,8 +118,21 @@ export interface Clip {
   scaleX: number;
   scaleY: number;
   opacity: number; // 0-1
+  /**
+   * Optional absolute-timeline opacity automation. Values are 0..1 and use the
+   * shared motion-point shape/easing; an active track overrides `opacity`.
+   * This is independent of the separate fadeInFrames/fadeOutFrames ramps.
+   */
+  opacityTrack?: MotionTrack;
   anchorX: number;
   anchorY: number;
+
+  /**
+   * ID of the named grade/shot preset that last produced this clip's look.
+   * Metadata only: manual edits may make the link stale, and a deleted preset
+   * leaves it inert. Narrowed on project load by the shared preset contract.
+   */
+  gradePresetId?: string;
 
   /**
    * Layer blend mode. Undefined = 'normal' (source-over), kept optional for
@@ -133,6 +181,13 @@ export interface Clip {
     releaseMs: number;
     makeupDb: number;
   };
+  /**
+   * Noise reduction strength in percent, 0-100 (upstream #165). Absent/0 =
+   * off. Export runs FFmpeg `afftdn`; preview approximates with a highpass
+   * and highshelf pair — see shared/audio/denoise.ts for the mapping.
+   * Audio clips only.
+   */
+  noiseReduction?: number;
 
   // Metadata
   label?: string;
@@ -200,7 +255,7 @@ export interface Clip {
   };
   /**
    * Position motion tracks (keyframes v1): linear x/y over the timeline.
-   * Video/image clips only; titles are static in v1. Absent = static x/y.
+   * Video/image/shape clips only; titles are static in v1. Absent = static x/y.
    */
   motionX?: Array<{ frame: number; value: number }>;
   motionY?: Array<{ frame: number; value: number }>;
@@ -222,12 +277,53 @@ export interface Clip {
   /** Outline stroke color. */
   titleStrokeColor?: string;
   /**
+   * Variable-font axes (upstream issue #50; original design — no upstream
+   * implementation at b4b1333). Applied via CSS `font-variation-settings`
+   * in the shared canvas title renderer, so preview and the export bake
+   * agree; non-variable fonts ignore unknown axes. Absent = the font's
+   * default for that axis (wght 400, wdth 100, slnt 0, ital 0), which is
+   * why defaults are never stored. Sanitized on write and on read via
+   * shared/editor/title.ts; a title with any axis present takes the bake
+   * pipeline because drawtext cannot express axes. No fonts are bundled —
+   * the axes apply to whatever variable font the user has (system or
+   * project-referenced), falling back silently like any unknown family.
+   */
+  titleVariationWght?: number;
+  titleVariationWdth?: number;
+  titleVariationSlnt?: number;
+  titleVariationItal?: number;
+  /**
+   * Shape clip kind (tutorial-overlay annotations). Only meaningful when
+   * `type` is `'shape'`; sanitized via shared/editor/shape.ts, rendered by
+   * the shared shape renderer in preview and baked into exports as RGBA.
+   * Absent = 'rect'.
+   */
+  shapeKind?: 'rect' | 'ellipse' | 'line' | 'arrow';
+  /** Shape stroke color as #rrggbb. Default white. */
+  shapeStrokeColor?: string;
+  /** Shape stroke width in px at project resolution. 0/absent = no stroke. */
+  shapeStrokeWidth?: number;
+  /**
+   * Shape fill color as #rrggbbaa. Absent = no fill (transparent). Lines and
+   * arrows are stroke-only and ignore this field.
+   */
+  shapeFillColor?: string;
+  /**
    * Constant playback speed (R4 groundwork): 1 = normal, 2 = twice as fast.
    * Timeline duration is unchanged -- the clip consumes speed× more of its
    * source per timeline frame, expressed via outPoint and applied in the
    * shared source-time mapping. Visual clips only.
    */
   speed?: number;
+  /**
+   * Nested-sequence reference (upstream issue #155, slice 1). Only meaningful
+   * when `type` is `'compound'`; the id keys `Project.timelines`. The clip's
+   * own `inPoint`/`outPoint`/`durationFrames` are the source window into that
+   * timeline — the same contract media clips use against an asset — so trim,
+   * split, move, and the shared source-time mapping work unchanged. The
+   * referenced timeline stores project frames (no per-timeline fps).
+   */
+  compoundTimelineId?: string;
   // ─── Color grading basics (R4) ──────────────────────────────────────────
   /** Brightness adjustment, -1 (black) to 1 (white overlay). Default 0. */
   brightness?: number;
@@ -282,6 +378,59 @@ export interface Clip {
    * preserving alpha, producing a flash/negative look. Default false.
    */
   invertColors?: boolean;
+  /**
+   * Tone curves (upstream #157 Curves): master Rec.709 luma plus per-channel
+   * R/G/B control points in [0,1], applied after the scalar grade and before
+   * hue/invert. Sanitized on write and on read via
+   * shared/editor/color-grade.ts; absent or identity = no curve.
+   */
+  curves?: GradeCurve;
+  /**
+   * Lift/gamma/gain color wheels (upstream #157 Wheels): pad positions plus
+   * master scalars per zone, applied after the scalar grade and before the
+   * tone curves. Sanitized on write and on read via
+   * shared/editor/color-grade.ts; absent or identity = no wheels.
+   */
+  wheels?: GradeWheels;
+  /**
+   * Hue-vs-hue/saturation/luminance curves (upstream #157 Hue Curves):
+   * hue-selective adjustments sampled at the pixel's display-space hue,
+   * applied after the tone curves. Sanitized on write and on read via
+   * shared/editor/color-grade.ts; absent or neutral = no hue curves.
+   */
+  hueCurves?: HueCurves;
+  /**
+   * .cube LUT reference (upstream #157 LUTs): the file applied after the
+   * hue curves, blended by `intensity` (0..1, default 1). References the
+   * user's file in place — validated on use, so a moved file degrades to
+   * ungraded with a diagnostic instead of failing the load. Sanitized on
+   * write and on read via shared/editor/color-grade.ts; absent = no LUT.
+   */
+  lut?: LutRef;
+  /**
+   * Gaussian blur radius in px, 0..100 (upstream #157 `blur.gaussian`).
+   * Applied after the full color grade; absent or 0 = sharp. Sanitized via
+   * shared/editor/effects.ts.
+   */
+  blurRadius?: number;
+  /**
+   * Vignette (upstream #157 `stylize.vignette`): edge gain plus shape,
+   * applied after the color grade. Sanitized via shared/editor/effects.ts;
+   * absent or amount 0 = no vignette.
+   */
+  vignette?: Vignette;
+  /**
+   * Film grain (upstream #157 `stylize.grain`): animated monochromatic
+   * noise, applied after the color grade. Sanitized via
+   * shared/editor/effects.ts; absent or amount 0 = no grain.
+   */
+  grain?: Grain;
+  /**
+   * Glow / halation (upstream #157 `stylize.glow`): blurred highlights
+   * screen-blended back, applied after the color grade. Sanitized via
+   * shared/editor/effects.ts; absent or intensity 0 = no glow.
+   */
+  glow?: Glow;
 }
 
 export type TrackType = 'video' | 'audio';
@@ -309,6 +458,11 @@ export interface Timeline {
   inFrame?: Frame;
   outFrame?: Frame;
   /**
+   * Display name for a nested sequence (`Project.timelines`). Optional so
+   * older projects decode unchanged; the main timeline never needs one.
+   */
+  name?: string;
+  /**
    * Review notes anchored to timeline frames (upstream PR #542). Optional so
    * projects saved before markers existed decode unchanged; always sorted by
    * (startFrame, id) when written.
@@ -334,6 +488,18 @@ export interface Project {
   settings: ProjectSettings;
   media: MediaAsset[];
   timeline: Timeline;
+  /**
+   * Nested sequences by id (upstream issue #155, slice 1). Absent for
+   * projects saved before compound clips existed; a `compound` clip's
+   * `compoundTimelineId` keys this record.
+   */
+  timelines?: Record<string, Timeline>;
+  /**
+   * Flat media-library folders (upstream issue #156 slice). Absent for
+   * projects saved before folders existed; `MediaAsset.folderId` points
+   * into this list and degrades to root when the id is unknown.
+   */
+  mediaFolders?: MediaFolder[];
   createdAt: string;
   updatedAt: string;
 }

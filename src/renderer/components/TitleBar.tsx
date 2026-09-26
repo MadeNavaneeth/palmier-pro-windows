@@ -8,10 +8,12 @@ import {
   PanelsTopLeft,
   Save,
   Share2,
+  SunMoon,
 } from 'lucide-react';
 import { useAiStore } from '../store/ai';
 import { useProjectStore } from '../store/project';
 import { useUiStore } from '../store/ui';
+import { dispatchShortcut } from '../lib/shortcut-dispatcher';
 import {
   isDetachablePanel,
   type DetachablePanel,
@@ -27,6 +29,11 @@ import {
   layoutPresetInfo,
   type LayoutPreset,
 } from '../../shared/ui/workspace-layout';
+import {
+  APPEARANCE_INFO,
+  appearanceInfo,
+  type Appearance,
+} from '../lib/appearance';
 
 interface TitleBarProps {
   mediaVisible?: boolean;
@@ -50,7 +57,7 @@ export function TitleBar({
   onToggleAgent,
   onToggleExport,
 }: TitleBarProps) {
-  const { name, hasUnsavedChanges, isLoaded, save } = useProjectStore();
+  const { name, hasUnsavedChanges, isLoaded } = useProjectStore();
 
   return (
     <header className="drag-region relative flex h-11 shrink-0 items-center border-b border-white/10 bg-surface-1 px-3">
@@ -91,7 +98,7 @@ export function TitleBar({
       <div className="no-drag ml-auto flex items-center gap-1.5">
         {isLoaded && (
           <button
-            onClick={() => save()}
+            onClick={() => dispatchShortcut('saveProject')}
             className="icon-button"
             title="Save project (Ctrl+S)"
             aria-label="Save project"
@@ -111,6 +118,7 @@ export function TitleBar({
           </button>
         )}
         <LayoutSwitcher />
+        <ThemeSwitcher />
         <PanelArrangementMenu />
         {onToggleExport && (
           <button
@@ -162,6 +170,41 @@ function LayoutSwitcher() {
         {LAYOUT_PRESET_INFO.map((entry) => (
           <option key={entry.id} value={entry.id} className="bg-surface-2 text-text-primary">
             {entry.label} (Ctrl+{entry.digit})
+          </option>
+        ))}
+      </select>
+    </span>
+  );
+}
+
+/**
+ * Theme picker (upstream PR #430's AppearancePane, Theme group).
+ *
+ * Same shape as the workspace switcher beside it: a native select so keyboard
+ * navigation, type-ahead and screen reader semantics come free. System follows
+ * the OS live; Light and Dark pin the override. The store narrows the value,
+ * so a stale choice from a previous build cannot become the active theme.
+ */
+function ThemeSwitcher() {
+  const appearance = useUiStore((s) => s.appearance);
+  const setAppearance = useUiStore((s) => s.setAppearance);
+
+  return (
+    <span
+      className="flex h-7 items-center gap-1 rounded-md px-1.5 text-[11px] text-text-secondary hover:bg-white/[0.08] hover:text-text-primary"
+      data-theme-switcher
+    >
+      <SunMoon size={14} strokeWidth={1.7} aria-hidden="true" />
+      <select
+        value={appearance}
+        onChange={(event) => setAppearance(event.target.value as Appearance)}
+        aria-label="Appearance"
+        title={appearanceInfo(appearance).description}
+        className="cursor-pointer bg-transparent text-[11px] text-inherit outline-none"
+      >
+        {APPEARANCE_INFO.map((entry) => (
+          <option key={entry.id} value={entry.id} className="bg-surface-2 text-text-primary">
+            {entry.label}
           </option>
         ))}
       </select>

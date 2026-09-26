@@ -15,12 +15,26 @@
 
 import { app } from 'electron';
 import Store from 'electron-store';
+import { isKnownLocalModel, normalizeSttEngine, type SttEngine } from './whisper-local';
+
+export { normalizeSttEngine, type SttEngine };
 
 export interface TranscribeConfig {
   /** OpenAI-compatible base URL, e.g. http://localhost:8080/v1 */
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  /**
+   * Engine choice (#39 local half): `auto` prefers the local whisper.cpp
+   * engine when its binary + model are present, then the custom endpoint,
+   * then cloud BYOK. An explicit engine never falls back — it refuses with
+   * an actionable message instead. Absent = `auto`.
+   */
+  engine?: SttEngine;
+  /** Local whisper.cpp model id (catalog in ./whisper-local). Absent = base. */
+  localModel?: string;
+  /** Custom whisper-cli binary path override (e.g. win-arm64 own build). */
+  localBinaryPath?: string;
 }
 
 const STORE_KEY = 'transcription';
@@ -43,6 +57,16 @@ function normalize(input: Partial<TranscribeConfig> | undefined | null): Transcr
   if (apiKey.length > 0) out.apiKey = apiKey;
   const model = typeof input?.model === 'string' ? input.model.trim().slice(0, 64) : '';
   if (model.length > 0) out.model = model;
+  // Local-STT settings (#39) narrow the same way: unknown engine values and
+  // model ids fall back to the defaults rather than reaching the runner, and
+  // the binary override stays a short string (existence is checked at probe
+  // time so the refusal can name the missing path).
+  const engine = normalizeSttEngine(input?.engine);
+  if (engine !== 'auto') out.engine = engine;
+  const localModel = typeof input?.localModel === 'string' ? input.localModel.trim() : '';
+  if (localModel && isKnownLocalModel(localModel)) out.localModel = localModel;
+  const localBinaryPath = typeof input?.localBinaryPath === 'string' ? input.localBinaryPath.trim().slice(0, 512) : '';
+  if (localBinaryPath.length > 0) out.localBinaryPath = localBinaryPath;
   return out;
 }
 

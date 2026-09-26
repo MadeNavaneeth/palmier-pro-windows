@@ -111,7 +111,7 @@ export function Timeline({ fill = false, height }: { fill?: boolean; height?: nu
   // Follow-playhead (R2): keep the playhead visible during playback by
   // adjusting scrollFrame when it approaches either edge of the viewport.
   const isPlaying = useTimelineStore((s) => s.isPlaying);
-  const playheadFrame = useTimelineStore((s) => s.project.timeline.playheadFrame);
+  const playheadFrame = useTimelineStore((s) => s.getScopeTimeline().playheadFrame);
   useEffect(() => {
     if (!isPlaying) return;
     const container = tracksContainerRef.current;

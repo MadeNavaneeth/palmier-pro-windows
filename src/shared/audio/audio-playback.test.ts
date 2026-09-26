@@ -30,8 +30,37 @@ describe('computeAudioPlan (preview audio)', () => {
     });
     // inPoint 30f (1s) + 1s into the clip = 2s of source.
     expect(entries).toEqual([
-      { path: 'C:/m/a.mp3', sourceTimeSec: 2, volume: 1, pan: 0, eq: null, compressor: null },
+      {
+        path: 'C:/m/a.mp3', sourceTimeSec: 2, volume: 1, pan: 0, eq: null,
+        compressor: null, noiseReduction: null,
+      },
     ]);
+  });
+
+  it('carries noise reduction when set (#165), null when off or hostile', () => {
+    const active = computeAudioPlan({
+      ...base,
+      clips: [clip({ noiseReduction: 60 })],
+      playhead: 320,
+    });
+    expect(active[0].noiseReduction).toBe(60);
+
+    const off = computeAudioPlan({ ...base, clips: [clip()], playhead: 320 });
+    expect(off[0].noiseReduction).toBeNull();
+
+    const zero = computeAudioPlan({
+      ...base,
+      clips: [clip({ noiseReduction: 0 })],
+      playhead: 320,
+    });
+    expect(zero[0].noiseReduction).toBeNull();
+
+    const hostile = computeAudioPlan({
+      ...base,
+      clips: [clip({ noiseReduction: 150 as never })],
+      playhead: 320,
+    });
+    expect(hostile[0].noiseReduction).toBeNull();
   });
 
   it('carries a compressor when active (#158), null at ratio 1', () => {

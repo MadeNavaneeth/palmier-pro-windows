@@ -6,6 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { ToolExecutor } from './executor';
+import { parseToolArguments } from './openai-compatible';
 import { EditorController } from '../../shared/editor/controller';
 
 function executorWithClips() {
@@ -70,6 +71,19 @@ describe('copy_clip_settings tool (#515)', () => {
     // Only the other video clip on v1; the audio clip never matches.
     expect(data.changedClipIds).not.toContain(source);
     void audioId;
+  });
+
+  it('accepts a provider-normalized null for an omitted nested range', async () => {
+    const { editor, executor, source } = executorWithClips();
+    editor.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 2000 });
+
+    const args = parseToolArguments(JSON.stringify({
+      sourceClipId: source,
+      targetTrack: { trackId: 'v1', range: null },
+    }));
+    const result = await executor.execute('copy_clip_settings', args);
+
+    expect(result.success).toBe(true);
   });
 
   it('enforces exactly one targeting mode', async () => {
@@ -144,6 +158,32 @@ describe('copy_clip_settings tool (#515)', () => {
       thresholdDb: -20,
       ratio: 5,
     });
+  });
+
+  it('carries noise reduction onto audio targets (#165)', async () => {
+    const { editor, executor } = executorWithClips();
+    editor.addMedia({
+      id: 'asset-a',
+      path: '/test/a.mp3',
+      filename: 'a.mp3',
+      type: 'audio',
+      duration: 5000,
+      fileSize: 1,
+      addedAt: new Date().toISOString(),
+    });
+    const source = editor.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 0 });
+    const target = editor.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 100 });
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.noiseReduction = 70;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [target],
+    });
+
+    expect(editor.getClips().find((c) => c.id === target)?.noiseReduction).toBe(70);
   });
 
   it('leaves a target EQ alone when the audio source is neutral', async () => {
@@ -255,6 +295,103 @@ describe('copy_clip_settings tool (#515)', () => {
     });
 
     expect(editor.getClips().find((c) => c.id === t1)?.vibrance).toBe(0.5);
+  });
+
+  it('carries tone curves with the color grade', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    const curves = {
+      master: [{ x: 0, y: 0.06 }, { x: 1, y: 0.95 }],
+      red: [],
+      green: [],
+      blue: [{ x: 0, y: 0.1 }, { x: 1, y: 0.9 }],
+    };
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.curves = curves;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [t1],
+    });
+
+    expect(editor.getClips().find((c) => c.id === t1)?.curves).toEqual(curves);
+  });
+
+  it('carries wheels with the color grade', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    const wheels = {
+      lift: { x: 0.5, y: -0.5, m: 0.1 },
+      gamma: { x: 0, y: 0, m: 1 },
+      gain: { x: 0, y: 0, m: 1.2 },
+    };
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.wheels = wheels;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [t1],
+    });
+
+    expect(editor.getClips().find((c) => c.id === t1)?.wheels).toEqual(wheels);
+  });
+
+  it('carries hue curves with the color grade', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    const hueCurves = {
+      hueVsHue: [],
+      hueVsSat: [{ x: 0, y: 0.8 }, { x: 0.15, y: 0.5 }],
+      hueVsLum: [],
+    };
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.hueCurves = hueCurves;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [t1],
+    });
+
+    expect(editor.getClips().find((c) => c.id === t1)?.hueCurves).toEqual(hueCurves);
+  });
+
+  it('carries the LUT reference with the color grade', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    const lut = { path: 'C:\\luts\\warm.cube', intensity: 0.5, kind: '3d' as const, size: 33 };
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.lut = lut;
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [t1],
+    });
+
+    expect(editor.getClips().find((c) => c.id === t1)?.lut).toEqual(lut);
+  });
+
+  it('carries effect stages with the color grade', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.blurRadius = 8;
+      d.vignette = { amount: -0.5, midpoint: 0.5, roundness: 0, feather: 0.5 };
+      d.grain = { amount: 0.5, size: 2 };
+      return true;
+    });
+
+    await executor.execute('copy_clip_settings', {
+      sourceClipId: source,
+      targetClipIds: [t1],
+    });
+
+    const target = editor.getClips().find((c) => c.id === t1)!;
+    expect(target.blurRadius).toBe(8);
+    expect(target.vignette?.amount).toBe(-0.5);
+    expect(target.grain).toEqual({ amount: 0.5, size: 2 });
   });
 
   it('refuses cross-kind targets with the domain message', async () => {

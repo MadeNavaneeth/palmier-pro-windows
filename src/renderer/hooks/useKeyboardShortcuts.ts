@@ -11,7 +11,7 @@
 
 import { useEffect, useCallback } from 'react';
 import { dispatchShortcut } from '../lib/shortcut-dispatcher';
-import { matchShortcut, type ShortcutId } from '../../shared/editor/shortcuts';
+import { matchShortcut, shortcutsForPreset, type ShortcutId } from '../../shared/editor/shortcuts';
 
 /**
  * Commands that stay live while a modal is open.
@@ -60,11 +60,13 @@ export function useKeyboardShortcuts() {
       if (event.key !== 'Escape') return;
     }
 
-    const shortcut = matchShortcut(event);
-    if (!shortcut) return;
-
     const { useUiStore } = require('../store/ui');
     const ui = useUiStore.getState() as ReturnType<typeof useUiStore.getState>;
+
+    // The preset is resolved per event rather than cached, so a switch takes
+    // effect on the next keypress without re-binding the listener.
+    const shortcut = matchShortcut(event, shortcutsForPreset(ui.shortcutPreset));
+    if (!shortcut) return;
 
     // The export surface is a workspace panel (#166), not a modal: shortcuts
     // stay live while it is open, which is the point of being able to adjust

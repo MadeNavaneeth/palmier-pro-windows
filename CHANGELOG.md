@@ -70,8 +70,8 @@ This project follows a lightweight form of Keep a Changelog and uses semantic ve
   branch (commit `46b297e`, never merged to `main` before the source freeze;
   tracked in the PR #438 ledger row): one call moves the start and/or end edges
   of one or many clips to absolute project frames — end-exclusive, matching
-  `get_timeline` — as a single undo step, via a new `CommandHistory.squashLast`
-  composite-command fold. `ripple: true` rides the shared ripple-trim domain
+  `get_timeline` — as a single undo step, via a `CommandHistory` transaction
+  that folds the batch into one composite command. `ripple: true` rides the shared ripple-trim domain
   path so downstream clips and sync-locked tracks keep the timeline closed.
   Non-ripple extends overwrite overlapped neighbors through the same span
   clearing overwrite placement uses (covered clips removed or split with

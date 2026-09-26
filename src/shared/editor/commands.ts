@@ -10,6 +10,41 @@ import type { Project, Clip, Track, Frame, MediaAsset } from '../types/project';
 import type { TimelineMarker } from './markers';
 import type { Timeline } from '../types/project';
 
+// ─── Timeline scope lens ─────────────────────────────────────────────────────
+
+/**
+ * Editing scope for timeline-mutating commands (upstream issue #155 slice 2):
+ * `null` addresses the main timeline, otherwise a `Project.timelines` id.
+ *
+ * Commands that replace clips/tracks/markers carry the scope they ran in, so
+ * undo restores the edit exactly where it happened even if the user navigated
+ * elsewhere since. The controller coerces its ambient scope after every
+ * commit, so a stored scope almost always resolves; when the scope's timeline
+ * is gone anyway (flattened away between execute and undo), the command is a
+ * no-op rather than resurrecting deleted state.
+ */
+export type TimelineScopeId = string | null;
+
+/** Read one timeline by scope, assuming the id resolves (controller coerces). */
+export function scopeTimeline(project: Project, scope: TimelineScopeId): Timeline {
+  if (scope === null) return project.timeline;
+  return project.timelines?.[scope] ?? project.timeline;
+}
+
+/** True when a scoped write has a live target (main always does). */
+export function scopeTimelineExists(project: Project, scope: TimelineScopeId): boolean {
+  return scope === null || project.timelines?.[scope] !== undefined;
+}
+
+/** Replant one timeline into its scope slot. */
+export function replaceScopeTimeline(project: Project, scope: TimelineScopeId, next: Timeline): Project {
+  if (scope === null) return { ...project, timeline: next };
+  return {
+    ...project,
+    timelines: { ...(project.timelines ?? {}), [scope]: next },
+  };
+}
+
 // ─── Command interface ───────────────────────────────────────────────────────
 
 export interface Command {
@@ -22,38 +57,102 @@ export interface Command {
 
 // ─── Command History (undo/redo stack) ───────────────────────────────────────
 
+/** One open transaction scope and the commands it has collected so far. */
+interface TransactionScope {
+  label: string;
+  commands: Command[];
+}
+
 export class CommandHistory {
   private undoStack: Command[] = [];
   private redoStack: Command[] = [];
   private maxSize: number;
+  /** Open transaction scopes, outermost first. */
+  private scopes: TransactionScope[] = [];
 
   constructor(maxSize = 200) {
     this.maxSize = maxSize;
   }
 
+  /**
+   * Execute one command. Outside a transaction it becomes one history entry;
+   * inside the innermost open scope it is collected for that scope to publish.
+   */
   execute(command: Command, project: Project): Project {
     const result = command.execute(project);
-    this.undoStack.push(command);
+    const scope = this.scopes[this.scopes.length - 1];
+    if (scope) scope.commands.push(command);
+    else this.publish(command);
+    return result;
+  }
+
+  /**
+   * Open a scope that collects every command executed until it commits and
+   * publishes them as ONE history entry named `label`. A transaction groups by
+   * construction, so nothing that happens between the grouped commands can
+   * change which commands belong to it.
+   *
+   * Opening a scope while one is already open nests: the inner scope joins the
+   * outer one and publishes no entry of its own (see commitTransaction).
+   */
+  beginTransaction(label: string): void {
+    this.scopes.push({ label, commands: [] });
+  }
+
+  /**
+   * Close the innermost scope.
+   *
+   * - Outermost scope: its commands become one entry. A scope that collected
+   *   NOTHING adds no entry, so a no-op, a refusal, or a fully-clamped action
+   *   leaves history untouched. A scope that collected exactly ONE command
+   *   publishes that command as-is, because a transaction labels a grouped
+   *   action and must not relabel a single domain operation.
+   * - Nested scope: joins the outer one. Its commands fold into the parent's
+   *   collection, so the user still gets a single undo step, and its own label
+   *   is dropped — the outer action names the step.
+   */
+  commitTransaction(): void {
+    const scope = this.scopes.pop();
+    if (!scope) return;
+    const outer = this.scopes[this.scopes.length - 1];
+    if (outer) {
+      outer.commands.push(...scope.commands);
+      return;
+    }
+    if (scope.commands.length === 0) return;
+    this.publish(
+      scope.commands.length === 1
+        ? scope.commands[0]
+        : new CompositeCommand(scope.commands, scope.label),
+    );
+  }
+
+  /**
+   * Close the innermost scope and publish nothing. Returns the discarded
+   * commands in execution order so the caller can restore the project it had
+   * before the scope by undoing them in reverse. History is left exactly as it
+   * was — no entry, no redo truncation — because nothing was committed.
+   *
+   * Aborting a nested scope discards only that scope's commands; the outer
+   * scope keeps whatever it collected before and after.
+   */
+  abortTransaction(): Command[] {
+    const scope = this.scopes.pop();
+    if (!scope) return [];
+    const outer = this.scopes[this.scopes.length - 1];
+    if (outer) outer.commands.push(...scope.commands);
+    return scope.commands;
+  }
+
+  /** Publish one committed history entry, clearing redo and trimming the cap. */
+  private publish(entry: Command): void {
+    this.undoStack.push(entry);
     this.redoStack = []; // clear redo on new action
 
     // Trim if over max size
     if (this.undoStack.length > this.maxSize) {
       this.undoStack.shift();
     }
-
-    return result;
-  }
-
-  /**
-   * Fold the newest `count` entries into a single composite history entry
-   * named `name`, so a multi-part tool call undoes in one step. No-op unless
-   * at least two entries are on the stack.
-   */
-  squashLast(count: number, name: string): boolean {
-    if (count <= 1 || this.undoStack.length < count) return false;
-    const removed = this.undoStack.splice(this.undoStack.length - count, count);
-    this.undoStack.push(new CompositeCommand(removed, name));
-    return true;
   }
 
   undo(project: Project): Project | null {
@@ -93,26 +192,28 @@ export class CommandHistory {
 
 export class AddClipCommand implements Command {
   readonly name = 'addClip';
-  constructor(private clip: Clip) {}
+  constructor(private clip: Clip, private scopeId: TimelineScopeId = null) {}
 
   execute(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
     return {
-      ...project,
-      timeline: {
-        ...project.timeline,
-        clips: [...project.timeline.clips, this.clip],
-      },
+      ...replaceScopeTimeline(project, this.scopeId, {
+        ...timeline,
+        clips: [...timeline.clips, this.clip],
+      }),
       updatedAt: new Date().toISOString(),
     };
   }
 
   undo(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
     return {
-      ...project,
-      timeline: {
-        ...project.timeline,
-        clips: project.timeline.clips.filter((c) => c.id !== this.clip.id),
-      },
+      ...replaceScopeTimeline(project, this.scopeId, {
+        ...timeline,
+        clips: timeline.clips.filter((c) => c.id !== this.clip.id),
+      }),
       updatedAt: new Date().toISOString(),
     };
   }
@@ -133,6 +234,7 @@ export class AddMediaAndClipsCommand implements Command {
     private clips: Clip[],
     private label: string,
     private tracks: Track[] = [],
+    private scopeId: TimelineScopeId = null,
   ) {
     this.mediaIds = new Set(media.map((asset) => asset.id));
     this.clipIds = new Set(clips.map((clip) => clip.id));
@@ -140,36 +242,40 @@ export class AddMediaAndClipsCommand implements Command {
   }
 
   execute(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
+    const scoped = replaceScopeTimeline(project, this.scopeId, {
+      ...timeline,
+      tracks: [
+        ...timeline.tracks.filter((track) => !this.trackIds.has(track.id)),
+        ...this.tracks,
+      ],
+      clips: [
+        ...timeline.clips.filter((clip) => !this.clipIds.has(clip.id)),
+        ...this.clips,
+      ],
+    });
     return {
-      ...project,
+      ...scoped,
       media: [
         ...project.media.filter((asset) => !this.mediaIds.has(asset.id)),
         ...this.media,
       ],
-      timeline: {
-        ...project.timeline,
-        tracks: [
-          ...project.timeline.tracks.filter((track) => !this.trackIds.has(track.id)),
-          ...this.tracks,
-        ],
-        clips: [
-          ...project.timeline.clips.filter((clip) => !this.clipIds.has(clip.id)),
-          ...this.clips,
-        ],
-      },
       updatedAt: new Date().toISOString(),
     };
   }
 
   undo(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
+    const scoped = replaceScopeTimeline(project, this.scopeId, {
+      ...timeline,
+      tracks: timeline.tracks.filter((track) => !this.trackIds.has(track.id)),
+      clips: timeline.clips.filter((clip) => !this.clipIds.has(clip.id)),
+    });
     return {
-      ...project,
+      ...scoped,
       media: project.media.filter((asset) => !this.mediaIds.has(asset.id)),
-      timeline: {
-        ...project.timeline,
-        tracks: project.timeline.tracks.filter((track) => !this.trackIds.has(track.id)),
-        clips: project.timeline.clips.filter((clip) => !this.clipIds.has(clip.id)),
-      },
       updatedAt: new Date().toISOString(),
     };
   }
@@ -293,83 +399,30 @@ export class TrimClipCommand implements Command {
   }
 }
 
-export class SplitClipCommand implements Command {
-  readonly name = 'splitClip';
-  private originalClip: Clip | null = null;
-  private newClipId: string = '';
-
-  constructor(
-    private clipId: string,
-    private splitFrame: Frame,
-    private generateId: () => string,
-  ) {}
-
-  execute(project: Project): Project {
-    const clip = project.timeline.clips.find((c) => c.id === this.clipId);
-    if (!clip) return project;
-    this.originalClip = { ...clip };
-
-    const relativeFrame = this.splitFrame - clip.startFrame;
-    if (relativeFrame <= 0 || relativeFrame >= clip.durationFrames) return project;
-
-    this.newClipId = this.generateId();
-
-    const leftClip: Clip = {
-      ...clip,
-      durationFrames: relativeFrame,
-      outPoint: clip.inPoint + relativeFrame,
-    };
-
-    const rightClip: Clip = {
-      ...clip,
-      id: this.newClipId,
-      startFrame: this.splitFrame,
-      durationFrames: clip.durationFrames - relativeFrame,
-      inPoint: clip.inPoint + relativeFrame,
-    };
-
-    const clips = project.timeline.clips
-      .filter((c) => c.id !== this.clipId)
-      .concat([leftClip, rightClip]);
-
-    return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };
-  }
-
-  undo(project: Project): Project {
-    if (!this.originalClip) return project;
-    const clips = project.timeline.clips
-      .filter((c) => c.id !== this.clipId && c.id !== this.newClipId)
-      .concat([this.originalClip]);
-    return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };
-  }
-
-  describe(): string {
-    return `Split clip at frame ${this.splitFrame}`;
-  }
-}
-
 export class AddTrackCommand implements Command {
   readonly name = 'addTrack';
-  constructor(private track: Track) {}
+  constructor(private track: Track, private scopeId: TimelineScopeId = null) {}
 
   execute(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
     return {
-      ...project,
-      timeline: {
-        ...project.timeline,
-        tracks: [...project.timeline.tracks, this.track],
-      },
+      ...replaceScopeTimeline(project, this.scopeId, {
+        ...timeline,
+        tracks: [...timeline.tracks, this.track],
+      }),
       updatedAt: new Date().toISOString(),
     };
   }
 
   undo(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
     return {
-      ...project,
-      timeline: {
-        ...project.timeline,
-        tracks: project.timeline.tracks.filter((t) => t.id !== this.track.id),
-      },
+      ...replaceScopeTimeline(project, this.scopeId, {
+        ...timeline,
+        tracks: timeline.tracks.filter((t) => t.id !== this.track.id),
+      }),
       updatedAt: new Date().toISOString(),
     };
   }
@@ -427,11 +480,14 @@ export class SetClipPropertiesCommand implements Command {
   constructor(
     private nextClips: Map<string, Clip>,
     private label: string,
+    private scopeId: TimelineScopeId = null,
   ) {}
 
   execute(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
     if (!this.captured) {
-      for (const clip of project.timeline.clips) {
+      for (const clip of timeline.clips) {
         if (this.nextClips.has(clip.id)) this.previousClips.set(clip.id, clip);
       }
       this.captured = true;
@@ -440,14 +496,15 @@ export class SetClipPropertiesCommand implements Command {
   }
 
   undo(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
     return this.replace(project, this.previousClips);
   }
 
   private replace(project: Project, source: Map<string, Clip>): Project {
-    const clips = project.timeline.clips.map((clip) => source.get(clip.id) ?? clip);
+    const timeline = scopeTimeline(project, this.scopeId);
+    const clips = timeline.clips.map((clip) => source.get(clip.id) ?? clip);
     return {
-      ...project,
-      timeline: { ...project.timeline, clips },
+      ...replaceScopeTimeline(project, this.scopeId, { ...timeline, clips }),
       updatedAt: new Date().toISOString(),
     };
   }
@@ -501,24 +558,27 @@ export class ReplaceClipsCommand implements Command {
   constructor(
     private nextClips: Clip[],
     private label: string,
+    private scopeId: TimelineScopeId = null,
   ) {}
 
   execute(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
     if (!this.captured) {
-      this.previousClips = project.timeline.clips;
+      this.previousClips = scopeTimeline(project, this.scopeId).clips;
       this.captured = true;
     }
+    const timeline = scopeTimeline(project, this.scopeId);
     return {
-      ...project,
-      timeline: { ...project.timeline, clips: this.nextClips },
+      ...replaceScopeTimeline(project, this.scopeId, { ...timeline, clips: this.nextClips }),
       updatedAt: new Date().toISOString(),
     };
   }
 
   undo(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
     return {
-      ...project,
-      timeline: { ...project.timeline, clips: this.previousClips },
+      ...replaceScopeTimeline(project, this.scopeId, { ...timeline, clips: this.previousClips }),
       updatedAt: new Date().toISOString(),
     };
   }
@@ -540,24 +600,27 @@ export class ReplaceTracksCommand implements Command {  readonly name = 'replace
   constructor(
     private nextTracks: Track[],
     private label: string,
+    private scopeId: TimelineScopeId = null,
   ) {}
 
   execute(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
     if (!this.captured) {
-      this.previousTracks = project.timeline.tracks;
+      this.previousTracks = scopeTimeline(project, this.scopeId).tracks;
       this.captured = true;
     }
+    const timeline = scopeTimeline(project, this.scopeId);
     return {
-      ...project,
-      timeline: { ...project.timeline, tracks: this.nextTracks },
+      ...replaceScopeTimeline(project, this.scopeId, { ...timeline, tracks: this.nextTracks }),
       updatedAt: new Date().toISOString(),
     };
   }
 
   undo(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
     return {
-      ...project,
-      timeline: { ...project.timeline, tracks: this.previousTracks },
+      ...replaceScopeTimeline(project, this.scopeId, { ...timeline, tracks: this.previousTracks }),
       updatedAt: new Date().toISOString(),
     };
   }
@@ -659,26 +722,28 @@ export class ReplaceMarkersCommand implements Command {
   constructor(
     private nextMarkers: TimelineMarker[],
     private label: string,
+    private scopeId: TimelineScopeId = null,
   ) {}
 
   execute(project: Project): Project {
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline = scopeTimeline(project, this.scopeId);
     if (!this.captured) {
-      this.previousMarkers = project.timeline.markers;
+      this.previousMarkers = timeline.markers;
       this.captured = true;
     }
     return {
-      ...project,
-      timeline: { ...project.timeline, markers: this.nextMarkers },
+      ...replaceScopeTimeline(project, this.scopeId, { ...timeline, markers: this.nextMarkers }),
       updatedAt: new Date().toISOString(),
     };
   }
 
   undo(project: Project): Project {
-    const timeline: Timeline = { ...project.timeline, markers: this.previousMarkers };
+    if (!scopeTimelineExists(project, this.scopeId)) return project;
+    const timeline: Timeline = { ...scopeTimeline(project, this.scopeId), markers: this.previousMarkers };
     if (this.previousMarkers === undefined) delete timeline.markers;
     return {
-      ...project,
-      timeline,
+      ...replaceScopeTimeline(project, this.scopeId, timeline),
       updatedAt: new Date().toISOString(),
     };
   }

@@ -63,6 +63,265 @@ describe('transferClipSettings (R1, #515)', () => {
     expect(after.outPoint).toBe(targetBefore.outPoint);
   });
 
+  it('carries tone curves with the color grade, and a neutral source leaves them', () => {
+    const ctrl = controllerWithClips();
+    const curves = {
+      master: [{ x: 0, y: 0.06 }, { x: 1, y: 0.95 }],
+      red: [],
+      green: [],
+      blue: [{ x: 0, y: 0.1 }, { x: 1, y: 0.9 }],
+    };
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.curves = curves;
+      return true;
+    });
+
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    expect(ctrl.transferClipSettings(source, [targetId]).changedClipIds).toEqual([targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.curves).toEqual(curves);
+    // The transferred points are a copy, not the source's array.
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.curves).not.toBe(
+      ctrl.getClips().find((c) => c.id === source)?.curves,
+    );
+
+    // A neutral source transfers nothing, so it must not wipe the target's curve.
+    const neutral = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 600 });
+    ctrl.transferClipSettings(neutral, [targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.curves).toEqual(curves);
+
+    // An identical transfer reports unchanged and adds no history: the undo
+    // stack still ends with the neutral clip's add, then the original transfer.
+    const repeat = ctrl.transferClipSettings(source, [targetId]);
+    expect(repeat).toEqual({ changedClipIds: [], unchangedClipIds: [targetId] });
+    expect(ctrl.undo()).toBe(true); // removes the neutral clip
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.curves).toEqual(curves);
+    expect(ctrl.undo()).toBe(true); // removes the original transfer
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.curves).toBeUndefined();
+  });
+
+  it('replaces the target curve wholesale when the graded source has none', () => {
+    const ctrl = controllerWithClips();
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.brightness = 0.2;
+      return true;
+    });
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    ctrl.applyClipProperties([targetId], 'Set', (draft) => {
+      draft.curves = { master: [{ x: 0, y: 0.1 }, { x: 1, y: 0.9 }], red: [], green: [], blue: [] };
+      return true;
+    });
+
+    ctrl.transferClipSettings(source, [targetId]);
+
+    // The source's grade replaces the target's wholesale, exactly like the
+    // scalar grade fields: a graded source without curves clears them.
+    const target = ctrl.getClips().find((c) => c.id === targetId);
+    expect(target?.brightness).toBe(0.2);
+    expect(target?.curves).toBeUndefined();
+  });
+
+  it('carries wheels with the color grade, and a neutral source leaves them', () => {
+    const ctrl = controllerWithClips();
+    const wheels = {
+      lift: { x: 0.5, y: -0.5, m: 0.1 },
+      gamma: { x: 0, y: 0, m: 1 },
+      gain: { x: 0, y: 0, m: 1.2 },
+    };
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.wheels = wheels;
+      return true;
+    });
+
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    expect(ctrl.transferClipSettings(source, [targetId]).changedClipIds).toEqual([targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.wheels).toEqual(wheels);
+    // The transferred zones are a copy, not the source's object.
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.wheels).not.toBe(
+      ctrl.getClips().find((c) => c.id === source)?.wheels,
+    );
+
+    // A neutral source transfers nothing, so it must not wipe the target's wheels.
+    const neutral = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 600 });
+    ctrl.transferClipSettings(neutral, [targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.wheels).toEqual(wheels);
+
+    // An identical transfer reports unchanged and adds no history.
+    const repeat = ctrl.transferClipSettings(source, [targetId]);
+    expect(repeat).toEqual({ changedClipIds: [], unchangedClipIds: [targetId] });
+    expect(ctrl.undo()).toBe(true); // removes the neutral clip
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.wheels).toEqual(wheels);
+    expect(ctrl.undo()).toBe(true); // removes the original transfer
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.wheels).toBeUndefined();
+  });
+
+  it('replaces the target wheels wholesale when the graded source has none', () => {
+    const ctrl = controllerWithClips();
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.brightness = 0.2;
+      return true;
+    });
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    ctrl.applyClipProperties([targetId], 'Set', (draft) => {
+      draft.wheels = { lift: { x: 0, y: 0, m: 0.2 }, gamma: { x: 0, y: 0, m: 1 }, gain: { x: 0, y: 0, m: 1 } };
+      return true;
+    });
+
+    ctrl.transferClipSettings(source, [targetId]);
+
+    // The source's grade replaces the target's wholesale: a graded source
+    // without wheels clears them.
+    const target = ctrl.getClips().find((c) => c.id === targetId);
+    expect(target?.brightness).toBe(0.2);
+    expect(target?.wheels).toBeUndefined();
+  });
+
+  it('carries hue curves with the color grade, and a neutral source leaves them', () => {
+    const ctrl = controllerWithClips();
+    const hueCurves = {
+      hueVsHue: [],
+      hueVsSat: [{ x: 0, y: 0.8 }, { x: 0.15, y: 0.5 }],
+      hueVsLum: [],
+    };
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.hueCurves = hueCurves;
+      return true;
+    });
+
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    expect(ctrl.transferClipSettings(source, [targetId]).changedClipIds).toEqual([targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.hueCurves).toEqual(hueCurves);
+    // The transferred points are a copy, not the source's array.
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.hueCurves).not.toBe(
+      ctrl.getClips().find((c) => c.id === source)?.hueCurves,
+    );
+
+    // A neutral source transfers nothing, so it must not wipe the target's hue curves.
+    const neutral = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 600 });
+    ctrl.transferClipSettings(neutral, [targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.hueCurves).toEqual(hueCurves);
+
+    // An identical transfer reports unchanged and adds no history.
+    const repeat = ctrl.transferClipSettings(source, [targetId]);
+    expect(repeat).toEqual({ changedClipIds: [], unchangedClipIds: [targetId] });
+    expect(ctrl.undo()).toBe(true); // removes the neutral clip
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.hueCurves).toEqual(hueCurves);
+    expect(ctrl.undo()).toBe(true); // removes the original transfer
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.hueCurves).toBeUndefined();
+  });
+
+  it('replaces the target hue curves wholesale when the graded source has none', () => {
+    const ctrl = controllerWithClips();
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.brightness = 0.2;
+      return true;
+    });
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    ctrl.applyClipProperties([targetId], 'Set', (draft) => {
+      draft.hueCurves = { hueVsHue: [], hueVsSat: [{ x: 0, y: 0.8 }, { x: 0.15, y: 0.5 }], hueVsLum: [] };
+      return true;
+    });
+
+    ctrl.transferClipSettings(source, [targetId]);
+
+    // The source's grade replaces the target's wholesale: a graded source
+    // without hue curves clears them.
+    const target = ctrl.getClips().find((c) => c.id === targetId);
+    expect(target?.brightness).toBe(0.2);
+    expect(target?.hueCurves).toBeUndefined();
+  });
+
+  it('carries the LUT reference with the color grade, and a neutral source leaves it', () => {
+    const ctrl = controllerWithClips();
+    const lut = { path: 'C:\\luts\\warm.cube', intensity: 0.5, kind: '3d' as const, size: 33 };
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.lut = lut;
+      return true;
+    });
+
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    expect(ctrl.transferClipSettings(source, [targetId]).changedClipIds).toEqual([targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.lut).toEqual(lut);
+    // The transferred ref is a copy, not the source's object.
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.lut).not.toBe(
+      ctrl.getClips().find((c) => c.id === source)?.lut,
+    );
+
+    // A neutral source transfers nothing, so it must not wipe the target's LUT.
+    const neutral = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 600 });
+    ctrl.transferClipSettings(neutral, [targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.lut).toEqual(lut);
+
+    // An identical transfer reports unchanged and adds no history.
+    const repeat = ctrl.transferClipSettings(source, [targetId]);
+    expect(repeat).toEqual({ changedClipIds: [], unchangedClipIds: [targetId] });
+    expect(ctrl.undo()).toBe(true); // removes the neutral clip
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.lut).toEqual(lut);
+    expect(ctrl.undo()).toBe(true); // removes the original transfer
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.lut).toBeUndefined();
+  });
+
+  it('replaces the target LUT wholesale when the graded source has none', () => {
+    const ctrl = controllerWithClips();
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.brightness = 0.2;
+      return true;
+    });
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    ctrl.applyClipProperties([targetId], 'Set', (draft) => {
+      draft.lut = { path: 'C:\\luts\\warm.cube', intensity: 1, kind: '3d', size: 33 };
+      return true;
+    });
+
+    ctrl.transferClipSettings(source, [targetId]);
+
+    // The source's grade replaces the target's wholesale: a graded source
+    // without a LUT clears it.
+    const target = ctrl.getClips().find((c) => c.id === targetId);
+    expect(target?.brightness).toBe(0.2);
+    expect(target?.lut).toBeUndefined();
+  });
+
+  it('carries effect stages with the grade, clearing the ones the source lacks', () => {
+    const ctrl = controllerWithClips();
+    const source = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.blurRadius = 8;
+      draft.vignette = { amount: -0.5, midpoint: 0.5, roundness: 0, feather: 0.5 };
+      return true;
+    });
+
+    const targetId = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 300 });
+    ctrl.applyClipProperties([targetId], 'Set', (draft) => {
+      draft.glow = { intensity: 0.5, radius: 20, threshold: 0.6, warmth: 0 };
+      return true;
+    });
+    expect(ctrl.transferClipSettings(source, [targetId]).changedClipIds).toEqual([targetId]);
+    const target = ctrl.getClips().find((c) => c.id === targetId)!;
+    expect(target.blurRadius).toBe(8);
+    expect(target.vignette?.amount).toBe(-0.5);
+    // The source carries no glow, so the target's clears wholesale.
+    expect(target.glow).toBeUndefined();
+    // The transferred stages are copies, not shared objects.
+    expect(target.vignette).not.toBe(ctrl.getClips().find((c) => c.id === source)?.vignette);
+
+    // An identical transfer reports unchanged and adds no history.
+    const repeat = ctrl.transferClipSettings(source, [targetId]);
+    expect(repeat).toEqual({ changedClipIds: [], unchangedClipIds: [targetId] });
+
+    // A fully neutral source leaves the target's effects alone.
+    const neutral = ctrl.addClip({ assetId: 'asset-v', trackId: 'v1', startFrame: 600 });
+    ctrl.transferClipSettings(neutral, [targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.blurRadius).toBe(8);
+  });
+
   it('transfers volume for audio and refuses cross-kind targets', () => {
     const ctrl = controllerWithClips();
     const audioSource = ctrl.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 0 });
@@ -79,6 +338,28 @@ describe('transferClipSettings (R1, #515)', () => {
     expect(() => ctrl.transferClipSettings(audioSource, [videoId])).toThrow(
       /copied settings require audio clips/i,
     );
+  });
+
+  it('transfers noise reduction for audio, and a neutral source leaves it (#165)', () => {
+    const ctrl = controllerWithClips();
+    const source = ctrl.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 0 });
+    ctrl.applyClipProperties([source], 'Set', (draft) => {
+      draft.noiseReduction = 75;
+      return true;
+    });
+
+    const targetId = ctrl.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 100 });
+    expect(ctrl.transferClipSettings(source, [targetId]).changedClipIds).toEqual([targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.noiseReduction).toBe(75);
+
+    // An identical transfer reports unchanged: settingsDiffer reads the field.
+    const repeat = ctrl.transferClipSettings(source, [targetId]);
+    expect(repeat).toEqual({ changedClipIds: [], unchangedClipIds: [targetId] });
+
+    // A neutral source transfers nothing, so it must not wipe the target's.
+    const neutral = ctrl.addClip({ assetId: 'asset-a', trackId: 'a1', startFrame: 200 });
+    ctrl.transferClipSettings(neutral, [targetId]);
+    expect(ctrl.getClips().find((c) => c.id === targetId)?.noiseReduction).toBe(75);
   });
 
   it('reports unchanged targets and skips history when everything matched', () => {

@@ -7,7 +7,7 @@ import React from 'react';
 import { useTimelineStore } from '../../store/timeline';
 
 export function PlayheadIndicator() {
-  const playheadFrame = useTimelineStore((s) => s.project.timeline.playheadFrame);
+  const playheadFrame = useTimelineStore((s) => s.getScopeTimeline().playheadFrame);
   const viewport = useTimelineStore((s) => s.viewport);
 
   const x = (playheadFrame - viewport.scrollFrame) * viewport.pixelsPerFrame;

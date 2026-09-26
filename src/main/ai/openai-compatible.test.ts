@@ -114,20 +114,42 @@ describe('parseToolArguments', () => {
   });
 
   it('drops keys sent as explicit null so omission keeps its meaning (#471)', () => {
-    // Every tool schema expresses optionality with optional(), so a null can
-    // only be a provider artifact for "the model omitted this". It must reach
-    // the executor as absent — e.g. remove_silence treats an omitted argument
-    // as "follow the saved controls" — not as a validation failure.
+    // For ordinary optional fields, a null can only be a provider artifact
+    // for "the model omitted this". It must reach the executor as absent —
+    // e.g. remove_silence treats an omitted argument as "follow the saved
+    // controls" — not as a validation failure.
     expect(parseToolArguments('{"clipId":null,"thresholdDb":-35}')).toEqual({
       thresholdDb: -35,
     });
     expect(parseToolArguments('{"a":null,"b":null}')).toEqual({});
   });
 
-  it('leaves nested objects untouched', () => {
-    // Only top-level keys are normalized; deeper stripping could mask a
-    // provider actually sending malformed structure.
-    expect(parseToolArguments('{"opts":{"x":null},"n":1}')).toEqual({ opts: { x: null }, n: 1 });
+  it('drops explicit null optionals recursively', () => {
+    expect(parseToolArguments(JSON.stringify({
+      targetTrack: { trackId: 'v1', range: null },
+      entries: [{ x: null, y: 10 }, null],
+    }))).toEqual({
+      targetTrack: { trackId: 'v1' },
+      entries: [{ y: 10 }],
+    });
+  });
+
+  it('keeps explicit nulls for the root fields whose schemas are nullable', () => {
+    // set_title_text.backgroundColor, set_shape_style.fillColor, and
+    // manage_media_folders.folderId use null as an action, not as omission.
+    expect(parseToolArguments(JSON.stringify({
+      backgroundColor: null,
+      fillColor: null,
+      folderId: null,
+    }))).toEqual({
+      backgroundColor: null,
+      fillColor: null,
+      folderId: null,
+    });
+    // The same names in nested optional objects are not nullable in those
+    // schemas, so recursive normalization still removes their nulls.
+    expect(parseToolArguments('{"entries":[{"backgroundColor":null,"fillColor":null}]}'))
+      .toEqual({ entries: [{}] });
   });
 });
 

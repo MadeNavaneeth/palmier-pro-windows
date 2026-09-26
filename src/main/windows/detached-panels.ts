@@ -1,16 +1,21 @@
 /**
  * Detached panel windows (upstream #286).
  *
- * One window per panel, created on demand and destroyed on attach or on window
- * close, with the detached set broadcast to every window so the main workspace
- * can suppress a panel that now lives elsewhere (and show it again when the
- * window is closed from its own chrome).
+ * One window per panel per session, created on demand and destroyed on attach
+ * or on window close, with the detached set broadcast to the session's windows
+ * so the main workspace can suppress a panel that now lives elsewhere (and show
+ * it again when the window is closed from its own chrome).
  *
  * Electron-free on purpose: the window factory and the broadcaster are
  * injected, so the whole lifecycle is unit-testable in node and this module
  * never imports Electron. Project-state fan-out needs nothing new — the editor
- * sync layer already broadcasts to every window, and per-window streams target
- * the requesting web contents.
+ * sync layer broadcasts to the owning session's windows (#137), and per-window
+ * streams target the requesting web contents.
+ *
+ * One manager instance per session (application.ts owns those): the detached
+ * set is not process-wide, so two workspaces can detach the same panel
+ * independently. This module does not know that — its injected `broadcast`
+ * decides who hears about changes.
  */
 
 import type { DetachablePanel } from '../../shared/ui/detached-panels';

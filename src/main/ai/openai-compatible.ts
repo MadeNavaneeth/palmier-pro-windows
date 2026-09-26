@@ -116,15 +116,36 @@ export function toOpenAiTools(
 /**
  * Parse tool arguments, treating malformed JSON as an empty argument set.
  *
- * Keys the model sent as explicit `null` are dropped before validation
- * (upstream #471): every tool schema expresses optionality with `optional()`,
- * so `null` can never be a meaningful value — it is what strict-normalizing
- * providers emit for an argument the model meant to omit. Dropping it here
- * keeps "omitted" meaning "use the default" (the silence-removal contract, the
- * optional clip targeting, and so on) instead of failing validation.
- * Nested objects are left untouched: the schemas are flat, and stripping
- * deeply could mask a provider actually sending malformed structure.
+ * Explicit `null` is what strict-normalizing providers commonly emit for an
+ * optional argument the model meant to omit (upstream #471). Drop those values
+ * recursively so omission survives inside nested objects and arrays. The three
+ * currently nullable fields are all top-level tool arguments, and their `null`
+ * values are commands (clear a title background/fill, or move media to the
+ * library root), so they must remain explicit at the root.
  */
+const NULLABLE_ROOT_ARGUMENTS = new Set(['backgroundColor', 'fillColor', 'folderId']);
+
+function stripOptionalNulls(value: unknown, preserveNullableRoot = false): unknown {
+  if (value === null) return undefined;
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => stripOptionalNulls(entry))
+      .filter((entry) => entry !== undefined);
+  }
+  if (typeof value !== 'object') return value;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (child === null && preserveNullableRoot && NULLABLE_ROOT_ARGUMENTS.has(key)) {
+      result[key] = null;
+      continue;
+    }
+    const normalized = stripOptionalNulls(child);
+    if (normalized !== undefined) result[key] = normalized;
+  }
+  return result;
+}
+
 export function parseToolArguments(argumentsJson: string): Record<string, unknown> {
   if (!argumentsJson || argumentsJson.trim().length === 0) return {};
   try {
@@ -133,12 +154,7 @@ export function parseToolArguments(argumentsJson: string): Record<string, unknow
     // validates each field anyway, so an empty object produces a clean error
     // instead of a crash inside argument access.
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const args: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (value === null) continue;
-      args[key] = value;
-    }
-    return args;
+    return stripOptionalNulls(parsed, true) as Record<string, unknown>;
   } catch {
     return {};
   }

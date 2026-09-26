@@ -9,9 +9,20 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
 import { ToolExecutor } from './executor';
+import { parseToolArguments } from './openai-compatible';
 import { EditorController } from '../../shared/editor/controller';
+import { DEFAULT_TITLE_STYLE } from '../../shared/editor/title';
 import type { GenerationProvider } from '../../main/generation/types';
 import { setGenerationProviders } from '../../main/generation/manager';
+import {
+  assetDurationSeconds,
+  isSourceSeekable,
+  sourceSecondsForTimelineFrame,
+} from '../../shared/media/source-time';
+
+// Real ffprobe calls are subprocess-bound; keep their timeout explicit so a
+// loaded parallel run does not inherit the 5 s default used by fast unit tests.
+const REAL_PROCESS_TIMEOUT_MS = 30_000;
 
 function executorWithTracks() {
   const editor = new EditorController();
@@ -108,7 +119,9 @@ describe('set_title_text tool (R3)', () => {
     expect(added.titleBackgroundPadding).toBe(24);
 
     const id = editor.addTitleClip({ trackId: 'v1', text: 'Adjust', startFrame: 100, durationFrames: 30 });
-    await executor.execute('set_title_text', { clipId: id, backgroundColor: null, backgroundPadding: 0 });
+    await executor.execute('set_title_text', parseToolArguments(JSON.stringify({
+      clipId: id, backgroundColor: null, backgroundPadding: 0,
+    })));
     const updated = editor.getClips().find((c) => c.id === id)!;
     expect(updated.titleBackgroundColor).toBeUndefined();
     expect(updated.titleBackgroundPadding).toBe(0);
@@ -181,6 +194,167 @@ describe('set_title_text tool (R3)', () => {
     const cleared = editor.getClips().find((c) => c.id === id)!;
     expect(cleared.titleTiltXDeg).toBeUndefined();
     expect(cleared.titleTiltYDeg).toBeUndefined();
+  });
+
+  it('carries variable-font axes with default-clears semantics (#50)', async () => {
+    const { editor, executor } = executorWithTracks();
+    const added = await executor.execute('add_texts', {
+      entries: [{
+        trackId: 'v1', startFrame: 0, durationFrames: 30, text: 'Heavy',
+        variationWght: 800, variationWdth: 75, variationSlnt: -12, variationItal: 1,
+      }],
+    });
+    expect(added.success).toBe(true);
+    const clip = editor.getClips().find((c) => c.type === 'title')!;
+    expect(clip.titleVariationWght).toBe(800);
+    expect(clip.titleVariationWdth).toBe(75);
+    expect(clip.titleVariationSlnt).toBe(-12);
+    expect(clip.titleVariationItal).toBe(1);
+
+    // The style edit is one undo step reporting the updated clip.
+    const updated = await executor.execute('set_title_text', { clipId: clip.id, variationWght: 600 });
+    expect(updated.success).toBe(true);
+    expect(updated.data).toEqual({ updated: clip.id });
+    expect(editor.getClips().find((c) => c.id === clip.id)!.titleVariationWght).toBe(600);
+    expect(editor.undo()).toBe(true);
+    expect(editor.getClips().find((c) => c.id === clip.id)!.titleVariationWght).toBe(800);
+
+    // Defaults clear back to absent, like blur/tilt zeros.
+    await executor.execute('set_title_text', {
+      clipId: clip.id,
+      variationWght: 400, variationWdth: 100, variationSlnt: 0, variationItal: 0,
+    });
+    const cleared = editor.getClips().find((c) => c.id === clip.id)!;
+    expect(cleared.titleVariationWght).toBeUndefined();
+    expect(cleared.titleVariationWdth).toBeUndefined();
+    expect(cleared.titleVariationSlnt).toBeUndefined();
+    expect(cleared.titleVariationItal).toBeUndefined();
+  });
+
+  it('refuses out-of-range axes and changes nothing (#50)', async () => {
+    const { editor, executor } = executorWithTracks();
+    await executor.execute('add_texts', {
+      entries: [{ trackId: 'v1', startFrame: 0, durationFrames: 30, text: 'Plain' }],
+    });
+    const clip = editor.getClips().find((c) => c.type === 'title')!;
+
+    expect((await executor.execute('set_title_text', { clipId: clip.id, variationWght: 2000 })).success)
+      .toBe(false);
+    expect((await executor.execute('set_title_text', { clipId: clip.id, variationWdth: 10 })).success)
+      .toBe(false);
+    expect((await executor.execute('set_title_text', { clipId: clip.id, variationSlnt: 120 })).success)
+      .toBe(false);
+    expect((await executor.execute('set_title_text', { clipId: clip.id, variationItal: 2 })).success)
+      .toBe(false);
+    const untouched = editor.getClips().find((c) => c.id === clip.id)!;
+    expect(untouched.titleVariationWght).toBeUndefined();
+    expect(untouched.titleVariationWdth).toBeUndefined();
+    expect(untouched.titleVariationSlnt).toBeUndefined();
+    expect(untouched.titleVariationItal).toBeUndefined();
+  });
+
+  // ─── Clip resolution, truthful receipts, and one-call-one-undo ─────────────
+
+  /**
+   * Undo everything left and report how many steps that took. Placement
+   * (addTitleClip/addClip) is itself a history entry, so the counts below are
+   * "one more than the placements" when a call published, and exactly the
+   * placements when it did not.
+   */
+  function undoStepsLeft(editor: EditorController): number {
+    let steps = 0;
+    while (editor.undo()) steps += 1;
+    return steps;
+  }
+
+  it('refuses a non-title clip whether or not text is passed', async () => {
+    const { editor, executor } = executorWithTracks();
+    editor.addClip({ assetId: 'x', trackId: 'v1', startFrame: 0 });
+    const id = editor.getClips()[0].id;
+
+    // Style-only used to reach the mutator with no guard: the batch skipped the
+    // clip and the tool still answered success:true with nothing changed.
+    const styleOnly = await executor.execute('set_title_text', { clipId: id, color: '#ff0000' });
+    expect(styleOnly.success).toBe(false);
+    expect((styleOnly as { error?: string }).error).toMatch(/only title clips/i);
+
+    const withText = await executor.execute('set_title_text', { clipId: id, text: 'Nope' });
+    expect(withText.success).toBe(false);
+    expect((withText as { error?: string }).error).toMatch(/only title clips/i);
+
+    expect(editor.getClips()[0].titleColor).toBeUndefined();
+    // Both refusals published nothing: only the placement is left to undo.
+    expect(undoStepsLeft(editor)).toBe(1);
+  });
+
+  it('refuses a missing clip with a clip-specific message', async () => {
+    const { executor } = executorWithTracks();
+    const result = await executor.execute('set_title_text', { clipId: 'ghost', color: '#ff0000' });
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toBe('Clip not found.');
+  });
+
+  it('reports changed:false when the style batch lands nothing', async () => {
+    const { editor, executor } = executorWithTracks();
+    const id = editor.addTitleClip({ trackId: 'v1', text: 'Same', startFrame: 0, durationFrames: 30 });
+
+    const result = await executor.execute('set_title_text', { clipId: id, text: 'Same' });
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual({ updated: id, changed: false });
+
+    // A style field that matches the current value is the same no-op.
+    const styled = await executor.execute('set_title_text', {
+      clipId: id, color: editor.getClips()[0].titleColor,
+    });
+    expect(styled.success).toBe(true);
+    expect(styled.data).toEqual({ updated: id, changed: false });
+
+    // Neither call published anything: only the placement is left to undo.
+    expect(undoStepsLeft(editor)).toBe(1);
+  });
+
+  it('publishes text and style as one undo step', async () => {
+    const { editor, executor } = executorWithTracks();
+    const id = editor.addTitleClip({ trackId: 'v1', text: 'Before', startFrame: 0, durationFrames: 30 });
+
+    const result = await executor.execute('set_title_text', {
+      clipId: id, text: 'After', color: '#00ff00', fontSize: 90,
+    });
+    expect(result.success).toBe(true);
+    const updated = editor.getClips().find((c) => c.id === id)!;
+    expect(updated.text).toBe('After');
+    expect(updated.titleColor).toBe('#00ff00');
+    expect(updated.titleSizeRatio).toBeCloseTo(90 / 1080, 4);
+
+    // ONE undo reverts both edits …
+    expect(editor.undo()).toBe(true);
+    const reverted = editor.getClips().find((c) => c.id === id)!;
+    expect(reverted.text).toBe('Before');
+    expect(reverted.titleColor).toBe(DEFAULT_TITLE_STYLE.colorHex);
+    expect(reverted.titleSizeRatio).toBeCloseTo(DEFAULT_TITLE_STYLE.sizeRatio, 4);
+    // … and only the placement remains, so the call was a single step.
+    expect(undoStepsLeft(editor)).toBe(1);
+  });
+
+  it('keeps a text-only call on its existing single history step', async () => {
+    const { editor, executor } = executorWithTracks();
+    const id = editor.addTitleClip({ trackId: 'v1', text: 'Solo', startFrame: 0, durationFrames: 30 });
+
+    await executor.execute('set_title_text', { clipId: id, text: 'Solo 2' });
+    expect(editor.undo()).toBe(true);
+    expect(editor.getClips().find((c) => c.id === id)!.text).toBe('Solo');
+    expect(undoStepsLeft(editor)).toBe(1);
+  });
+
+  it('keeps a style-only call on its existing single history step', async () => {
+    const { editor, executor } = executorWithTracks();
+    const id = editor.addTitleClip({ trackId: 'v1', text: 'Solo', startFrame: 0, durationFrames: 30 });
+
+    await executor.execute('set_title_text', { clipId: id, color: '#123456' });
+    expect(editor.getClips().find((c) => c.id === id)!.titleColor).toBe('#123456');
+    expect(editor.undo()).toBe(true);
+    expect(editor.getClips().find((c) => c.id === id)!.titleColor).toBe(DEFAULT_TITLE_STYLE.colorHex);
+    expect(undoStepsLeft(editor)).toBe(1);
   });
 });
 
@@ -264,13 +438,50 @@ describe('generate_media tool (PR #406 registry wiring)', () => {
     expect(assets).toHaveLength(1);
     expect(assets[0].path).toBe(wavPath);
     expect(assets[0].type).toBe('audio');
+    expect(assets[0].duration).toBe(30);
+    expect(assets[0].generatedBy).toEqual({ provider: 'fakegen', model: 'fake-model' });
+    expect(assets[0].generatedBy).not.toHaveProperty('costCredits');
     // Provenance reaches the model so it can reference the asset later.
     expect(result.data).toMatchObject({
       assetId: assets[0].id,
       provider: 'fakegen',
       model: 'fake-model',
     });
-  });
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('converts a 5-second probe to project frames so its default clip plays fully', async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'palmier-gen-'));
+    const wavPath = path.join(tmpDir, 'five-seconds.wav');
+    await fs.writeFile(wavPath, makeWav(5));
+
+    const editor = new EditorController();
+    const executor = new ToolExecutor(editor);
+    setGenerationProviders([providerReturning(wavPath)]);
+
+    const result = await executor.execute('generate_media', {
+      type: 'audio',
+      prompt: 'five second tone',
+      providerId: 'fakegen',
+      durationSeconds: 5,
+    });
+    expect(result.success).toBe(true);
+
+    const fps = editor.getProject().settings.fps;
+    const asset = editor.getMedia()[0];
+    expect(asset.duration).toBe(5 * fps);
+    expect(assetDurationSeconds(asset, fps)).toBe(5);
+
+    const clipId = editor.addClip({ assetId: asset.id, trackId: 'a1', startFrame: 0 });
+    const clip = editor.getClips().find((candidate) => candidate.id === clipId)!;
+    expect(clip.durationFrames).toBe(asset.duration);
+    expect(clip.outPoint).toBe(asset.duration);
+    const lastFrameSeconds = sourceSecondsForTimelineFrame(
+      clip,
+      clip.startFrame + clip.durationFrames - 1,
+      fps,
+    );
+    expect(isSourceSeekable(lastFrameSeconds, assetDurationSeconds(asset, fps))).toBe(true);
+  }, REAL_PROCESS_TIMEOUT_MS);
 
   it('populates generatedBy with provider, model, and costCredits on the asset (upstream #570)', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'palmier-gen-'));
@@ -316,7 +527,7 @@ describe('generate_media tool (PR #406 registry wiring)', () => {
       model: 'costly-model-v2',
       costCredits: 42,
     });
-  });
+  }, REAL_PROCESS_TIMEOUT_MS);
 
   it('surfaces a provider failure as a failed tool call', async () => {
     const editor = new EditorController();
@@ -331,6 +542,29 @@ describe('generate_media tool (PR #406 registry wiring)', () => {
 
     expect(result.success).toBe(false);
     expect((result as { error?: string }).error).toContain('GPU quota exhausted');
+    expect(editor.getMedia()).toHaveLength(0);
+  });
+
+  it('does not import a cancelled generation', async () => {
+    const editor = new EditorController();
+    const executor = new ToolExecutor(editor);
+    setGenerationProviders([
+      providerWith({
+        id: 'cancelledgen',
+        generate: async (request) => ({
+          id: request.id,
+          status: 'cancelled',
+          error: 'Generation cancelled',
+        }),
+      }),
+    ]);
+
+    const result = await executor.execute('generate_media', {
+      type: 'image', prompt: 'discarded', providerId: 'cancelledgen',
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain('cancelled');
     expect(editor.getMedia()).toHaveLength(0);
   });
 

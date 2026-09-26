@@ -10,9 +10,11 @@ import { ChatPanel, SettingsPanel } from './components/ai';
 import { Inspector } from './components/Inspector';
 import { ExportPanel } from './components/ExportDialog';
 import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
+import { RecoveryPrompt } from './components/RecoveryPrompt';
 import { CommandPalette } from './components/CommandPalette';
 import { useProjectStore } from './store/project';
 import { useUiStore, SPLITS_DEFAULTS, type PanelVisibility } from './store/ui';
+import { useMediaPanelStore } from './store/media-panel';
 import {
   PANEL_LABELS,
   dockedMembers,
@@ -26,6 +28,7 @@ import {
 import type { LayoutPreset } from '../shared/ui/workspace-layout';
 import { initAiListeners } from './store/ai';
 import { useAutosave } from './hooks/useAutosave';
+import { useAppearanceTheme } from './hooks/useAppearanceTheme';
 import {
   useDetachedChatSession,
   useDetachedPanels,
@@ -49,7 +52,32 @@ function readDetachedPanel(): DetachablePanel | null {
 
 const DETACHED_PANEL = readDetachedPanel();
 
+/**
+ * The user-facing notice for an unavailable GPU compositor, or null when the
+ * addon loaded and initialized.
+ *
+ * `system:gpu-init` used to be awaited with its reply thrown away, so a missing
+ * or broken native addon produced no signal at all and the preview's degraded
+ * fallback was indistinguishable from a working GPU. Narrowing the reply is the
+ * whole job here; the wording is what the notice shows.
+ *
+ * Exported because the mapping from an untyped IPC reply to a message is the
+ * part worth pinning.
+ */
+export function gpuUnavailableNotice(result: unknown): string | null {
+  const reply = (result ?? {}) as { success?: unknown; error?: unknown };
+  if (reply.success === true) return null;
+  const detail = typeof reply.error === 'string' && reply.error.length > 0
+    ? ` (${reply.error})`
+    : '';
+  return `GPU compositing unavailable${detail}. Layered preview and marker thumbnails may be missing.`;
+}
+
 export function App() {
+  // Theme class on <html> for this window (main and detached alike): the
+  // stylesheet re-skins itself from it, so every window reads the same stored
+  // preference through the same hook.
+  useAppearanceTheme();
   // One window, one panel: a detached window renders only its own panel, never
   // the workspace. Each branch is its own component so hooks stay
   // unconditional.
@@ -60,7 +88,12 @@ export function App() {
       <DetachedPanelWindow panel={DETACHED_PANEL} />
     );
   }
-  return <MainWorkspace />;
+  return (
+    <>
+      <MainWorkspace />
+      <RecoveryPrompt />
+    </>
+  );
 }
 
 /**
@@ -251,7 +284,12 @@ function MainWorkspace() {
         if (!ffmpeg.available) {
           console.warn('FFmpeg not found on PATH â€” media features will be limited.');
         }
-        await window.palmier.system.gpuInit();
+        // The compositor is a progressive enhancement, so a failure here is not
+        // fatal -- but it has to be visible, or the preview's degraded fallback
+        // is indistinguishable from a working GPU. Routed through the existing
+        // notice surface rather than a new visual.
+        const notice = gpuUnavailableNotice(await window.palmier.system.gpuInit());
+        if (notice) useMediaPanelStore.getState().setNotice(notice);
       } catch (err) {
         console.warn('System init partial failure:', err);
       }

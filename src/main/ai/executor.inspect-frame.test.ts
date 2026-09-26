@@ -14,6 +14,10 @@ import { EditorController } from '../../shared/editor/controller';
 
 const execFileAsync = promisify(execFile);
 
+// Real encodes are subprocess-bound; keep their timeout explicit so a loaded
+// parallel run does not inherit the 5 s default used by fast unit tests.
+const REAL_PROCESS_TIMEOUT_MS = 30_000;
+
 let tmpDir = '';
 let clipPath = '';
 
@@ -26,7 +30,7 @@ beforeAll(async () => {
     '-i', 'testsrc=duration=2:size=320x240:rate=10',
     '-pix_fmt', 'yuv420p', clipPath,
   ]);
-});
+}, REAL_PROCESS_TIMEOUT_MS);
 
 afterAll(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -60,7 +64,7 @@ describe('inspect_frame (#565)', () => {
     const magic = Buffer.from(await fs.readFile(data.path)).subarray(0, 4);
     expect([...magic]).toEqual([0x89, 0x50, 0x4e, 0x47]);
     expect(data.imageBase64).toMatch(/^iVBOR/); // base64 of the same magic
-  });
+  }, REAL_PROCESS_TIMEOUT_MS);
 
   it('refuses audio assets and missing assets without touching ffmpeg', async () => {
     const editor = new EditorController();
@@ -83,7 +87,7 @@ describe('inspect_frame (#565)', () => {
     });
     expect(result.success).toBe(false);
     expect((result as { error?: string }).error).toMatch(/decode|offset/i);
-  });
+  }, REAL_PROCESS_TIMEOUT_MS);
 });
 
 

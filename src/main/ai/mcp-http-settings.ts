@@ -11,7 +11,7 @@
 import { app, safeStorage } from 'electron';
 import Store from 'electron-store';
 import crypto from 'crypto';
-import { createMcpHttpServer, type McpHttpHandle } from './mcp-http';
+import { createMcpHttpServer, type McpHttpHandle, type McpHttpOptions } from './mcp-http';
 import { mcpHttpConfig } from './mcp-server';
 import type { ToolExecutorDeps } from './executor';
 import type { EditorController } from '../../shared/editor/controller';
@@ -124,16 +124,23 @@ function status(): McpHttpStatus {
   };
 }
 
-async function start(controller: EditorController, deps?: ToolExecutorDeps): Promise<void> {
+async function start(
+  controller: EditorController,
+  deps?: ToolExecutorDeps,
+  resolveController?: McpHttpOptions['resolveController'],
+): Promise<void> {
   if (handle) return;
   const settings = loadSettings();
   // A port that is taken must not disable the feature; walk a small range
-  // and remember where the listener actually landed.
+  // and remember where the listener actually landed. Token and port stay
+  // process-wide — one listener — while `resolveController` (Slice 2, #137)
+  // binds each incoming request to a session's editor.
   let lastError: unknown = null;
   for (let attempt = 0; attempt < PORT_ATTEMPTS; attempt++) {
     try {
       const created = await createMcpHttpServer({
         controller,
+        ...(resolveController ? { resolveController } : {}),
         token: settings.token,
         port: settings.port + attempt,
         deps,
@@ -160,11 +167,17 @@ async function stop(): Promise<void> {
 /**
  * Apply a settings change (or just reconcile on startup) and return the
  * resulting status.
+ *
+ * `controller` is the requesting window's fallback binding; the optional
+ * `resolveController` (#137 Slice 2) is what the running listener uses per
+ * request so tools address a specific session (or the active one) instead of
+ * whoever first toggled the endpoint.
  */
 export async function applyMcpHttpSettings(
   controller: EditorController,
   update?: { enabled?: boolean; port?: number },
   deps?: ToolExecutorDeps,
+  resolveController?: McpHttpOptions['resolveController'],
 ): Promise<McpHttpStatus> {
   const settings = loadSettings();
   const requestedPort = update?.port;
@@ -185,7 +198,7 @@ export async function applyMcpHttpSettings(
   }
   const next = loadSettings();
   if (next.enabled) {
-    await start(controller, deps);
+    await start(controller, deps, resolveController);
   } else {
     await stop();
   }

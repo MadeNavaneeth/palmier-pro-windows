@@ -185,7 +185,10 @@ describe('project round-trip: all fields survive save/load', () => {
     ctrl.addMedia({
       id: 'asset-gen', path: '/gen/image.png', filename: 'image.png',
       type: 'image', duration: 0, fileSize: 1, addedAt: new Date().toISOString(),
-      generatedBy: { provider: 'fal', model: 'fal-ai/flux/dev', costCredits: 0.03 },
+      generatedBy: {
+        provider: 'fal', model: 'fal-ai/flux/dev', costCredits: 0.03,
+        referenceImagePath: '/refs/still.png',
+      },
     });
     ctrl.addMedia({
       id: 'asset-plain', path: '/vid/cam.mp4', filename: 'cam.mp4',
@@ -196,7 +199,12 @@ describe('project round-trip: all fields survive save/load', () => {
     const restored = new EditorController(JSON.parse(json));
 
     const genAsset = restored.getMedia().find((m) => m.id === 'asset-gen')!;
-    expect(genAsset.generatedBy).toEqual({ provider: 'fal', model: 'fal-ai/flux/dev', costCredits: 0.03 });
+    expect(genAsset.generatedBy).toEqual({
+      provider: 'fal',
+      model: 'fal-ai/flux/dev',
+      costCredits: 0.03,
+      referenceImagePath: '/refs/still.png',
+    });
 
     const plainAsset = restored.getMedia().find((m) => m.id === 'asset-plain')!;
     expect(plainAsset.generatedBy).toBeUndefined();
@@ -253,5 +261,38 @@ describe('project round-trip: all fields survive save/load', () => {
     // A second round-trip must be byte-stable (no serialization drift).
     const second = JSON.parse(restored.serialize());
     expect(second).toEqual(JSON.parse(json));
+  });
+
+  it('round-trips variable-font axes and narrows hostile values on load (#50)', () => {
+    const ctrl = new EditorController();
+    const titleId = ctrl.addTitleClip({
+      trackId: 'v1', text: 'Heavy', startFrame: 0, durationFrames: 60,
+    });
+    ctrl.applyClipProperties([titleId], 'Style', (d) => {
+      d.titleVariationWght = 800;
+      d.titleVariationWdth = 75;
+      d.titleVariationSlnt = -12;
+      d.titleVariationItal = 1;
+      return true;
+    });
+
+    const json = ctrl.serialize();
+    const restored = new EditorController(JSON.parse(json));
+    const restoredTitle = restored.getClips().find((c) => c.id === titleId)!;
+    expect(restoredTitle.titleVariationWght).toBe(800);
+    expect(restoredTitle.titleVariationWdth).toBe(75);
+    expect(restoredTitle.titleVariationSlnt).toBe(-12);
+    expect(restoredTitle.titleVariationItal).toBe(1);
+
+    // Hostile or default-valued axes degrade to absent on load, never throw.
+    const hostile = JSON.parse(json) as ReturnType<EditorController['getProject']>;
+    const hostileTitle = hostile.timeline.clips.find((c) => c.id === titleId)!;
+    hostileTitle.titleVariationWght = 9999;
+    hostileTitle.titleVariationWdth = 100;
+    const narrowed = new EditorController(hostile);
+    const narrowedTitle = narrowed.getClips().find((c) => c.id === titleId)!;
+    expect(narrowedTitle.titleVariationWght).toBeUndefined();
+    expect(narrowedTitle.titleVariationWdth).toBeUndefined();
+    expect(narrowedTitle.titleVariationSlnt).toBe(-12);
   });
 });

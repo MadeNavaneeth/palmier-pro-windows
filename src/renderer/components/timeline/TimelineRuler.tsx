@@ -37,15 +37,15 @@ export function TimelineRuler({ width }: TimelineRulerProps) {
   const fps = useTimelineStore((s) => s.getProjectFps());
   const setPlayhead = useTimelineStore((s) => s.setPlayhead);
   const startDrag = useTimelineStore((s) => s.startDrag);
-  const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
-  const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
+  const inFrame = useTimelineStore((s) => s.getScopeTimeline().inFrame);
+  const outFrame = useTimelineStore((s) => s.getScopeTimeline().outFrame);
   const rangeStart = inFrame !== undefined && outFrame !== undefined
     ? Math.min(inFrame, outFrame)
     : undefined;
   const rangeEnd = inFrame !== undefined && outFrame !== undefined
     ? Math.max(inFrame, outFrame)
     : undefined;
-  const markers = useTimelineStore((s) => s.project.timeline.markers);
+  const markers = useTimelineStore((s) => s.getScopeTimeline().markers);
   const selectedMarkerIds = useTimelineStore((s) => s.selectedMarkerIds);
   const selectMarker = useTimelineStore((s) => s.selectMarker);
   const updateMarker = useTimelineStore((s) => s.updateMarker);

@@ -30,7 +30,9 @@ export interface ImportExpansionIo {
 }
 
 const defaultIo: ImportExpansionIo = {
-  stat: (filePath) => fs.stat(filePath),
+  // Top-level entries must be classified without following a link. `stat`
+  // would turn a dropped junction into its target before the walker sees it.
+  stat: (filePath) => fs.lstat(filePath),
   readdir: (dirPath) => fs.readdir(dirPath, { withFileTypes: true }),
 };
 
@@ -80,6 +82,8 @@ export async function expandImportPaths(
       if (!fileKindOf(filePath)) {
         state.errors.push(`${path.basename(filePath)} is not a supported media file`);
       }
+    } else if (info.isSymbolicLink()) {
+      state.errors.push(`${path.basename(filePath)} is a symbolic link or junction and was skipped`);
     } else if (info.isDirectory()) {
       await walkFolder(filePath, 0, io, state);
     } else if (info.isFile() && fileKindOf(filePath)) {

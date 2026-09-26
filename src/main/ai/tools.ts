@@ -10,6 +10,10 @@ import { z } from 'zod';
 import { MAX_FRAME } from '../../shared/utils/safe-number';
 import { BLEND_MODES } from '../../shared/types/blend-mode';
 import { MAX_CANVAS_EDGE, QUALITY_PRESETS } from '../../shared/project/aspect-ratio';
+import { COLOR_GRADE_CURVE_LIMITS, COLOR_GRADE_HUE_CURVE_LIMITS } from '../../shared/editor/color-grade';
+import { GRADE_PRESET_NAME_MAX, GRADE_PRESET_PROPAGATE_MODES } from '../../shared/editor/grade-preset-store';
+import { MAX_LUT_PATH_CHARS } from '../../shared/editor/lut';
+import { MEDIA_FOLDER_NAME_MAX_LENGTH } from '../../shared/media/folders';
 
 // â”€â”€â”€ Shared numeric schemas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Every frame-typed argument is bounded: finite, integer, non-negative, and
@@ -32,6 +36,57 @@ const durationSchema = z
   .min(1)
   .max(MAX_FRAME);
 
+/** One tone-curve control point: normalized input/output in [0, 1]. */
+const curvePointSchema = z.object({
+  x: z.number().finite().min(0).max(1).describe('Input position, 0-1.'),
+  y: z.number().finite().min(0).max(1).describe('Output value, 0-1.'),
+});
+
+/** One curve channel: control points with strictly ascending x. */
+const curveChannelSchema = z
+  .array(curvePointSchema)
+  .max(COLOR_GRADE_CURVE_LIMITS.maxPointsPerChannel);
+
+/** One hue-curve channel: hue-indexed control points with strictly ascending x. */
+const hueCurveChannelSchema = z
+  .array(curvePointSchema)
+  .max(COLOR_GRADE_HUE_CURVE_LIMITS.maxPointsPerChannel);
+
+/** One wheel pad position plus its master scalar; each component is optional (omitted stays). */
+const liftZoneSchema = z.object({
+  x: z.number().finite().min(-1).max(1).optional().describe('Lift pad x, -1 to 1. 0 = centered.'),
+  y: z.number().finite().min(-1).max(1).optional().describe('Lift pad y, -1 to 1. 0 = centered.'),
+  m: z.number().finite().min(-0.5).max(0.5).optional().describe('Lift master offset, -0.5 to 0.5. 0 = unchanged.'),
+});
+
+/** Gamma (midtones) wheel zone: pad x/y plus the gamma master multiplier. */
+const gammaZoneSchema = z.object({
+  x: z.number().finite().min(-1).max(1).optional().describe('Gamma pad x, -1 to 1. 0 = centered.'),
+  y: z.number().finite().min(-1).max(1).optional().describe('Gamma pad y, -1 to 1. 0 = centered.'),
+  m: z.number().finite().min(0.5).max(2).optional().describe('Gamma master multiplier, 0.5 to 2. 1 = unchanged.'),
+});
+
+/** Gain (highlights) wheel zone: pad x/y plus the gain master multiplier. */
+const gainZoneSchema = z.object({
+  x: z.number().finite().min(-1).max(1).optional().describe('Gain pad x, -1 to 1. 0 = centered.'),
+  y: z.number().finite().min(-1).max(1).optional().describe('Gain pad y, -1 to 1. 0 = centered.'),
+  m: z.number().finite().min(0.5).max(1.5).optional().describe('Gain master multiplier, 0.5 to 1.5. 1 = unchanged.'),
+});
+
+// ─── Reference image (generate_media) ────────────────────────────────────────
+// A generation can be conditioned on an existing picture. The path itself is
+// checked in the main process (the executor, where the filesystem is), but the
+// accepted file types and the size cap are part of the published contract, so
+// they live beside the schema the model reads.
+
+/** Image types accepted as a reference — the same set the importer treats as images. */
+export const REFERENCE_IMAGE_EXTENSIONS: readonly string[] = [
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp',
+];
+
+/** Largest reference image accepted, refused before any provider call. A still, not a frame dump. */
+export const MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024;
+
 // â”€â”€â”€ Tool Definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const tools = {
@@ -39,7 +94,9 @@ export const tools = {
   getTimeline: {
     name: 'get_timeline',
     description: 'Read the current timeline state: tracks, clips, playhead position, and project settings.',
-    parameters: z.object({}),
+    parameters: z.object({
+      scopeTimelineId: z.string().optional().describe('Nested timeline id to read instead of the main timeline. Omit for the main timeline.'),
+    }),
   },
 
   getClips: {
@@ -47,6 +104,7 @@ export const tools = {
     description: 'List all clips on the timeline with their properties (position, duration, track, transforms).',
     parameters: z.object({
       trackId: z.string().optional().describe('Filter clips to a specific track ID.'),
+      scopeTimelineId: z.string().optional().describe('Nested timeline id to list clips from. Omit for the main timeline.'),
     }),
   },
 
@@ -180,6 +238,27 @@ export const tools = {
     parameters: z.object({
       clipId: z.string().describe('The clip to split.'),
       atFrame: frameSchema.describe('Timeline frame at which to split.'),
+    }),
+  },
+
+  nestClips: {
+    name: 'nest_clips',
+    description:
+      'Group timeline clips into a nested sequence: the clips move into a new sub-timeline, replaced on the main timeline by one compound clip, as a single undoable edit. Linked partners nest together automatically. Trim, split, and move work on the compound clip afterwards; call flatten_compound to restore its content.',
+    parameters: z.object({
+      clipIds: z.array(z.string().min(1)).min(1).describe('Clip IDs to group into the nested sequence.'),
+      name: z.string().max(120).optional().describe('Name for the nested sequence. Defaults to "Compound N".'),
+      scopeTimelineId: z.string().optional().describe('Nested timeline id holding the clips. Omit for the main timeline.'),
+    }),
+  },
+
+  flattenCompound: {
+    name: 'flatten_compound',
+    description:
+      'Restore one compound clip\'s nested content to the main timeline (one level; inner nested sequences stay nested), as a single undoable edit.',
+    parameters: z.object({
+      clipId: z.string().describe('The compound clip to flatten.'),
+      scopeTimelineId: z.string().optional().describe('Nested timeline id holding the compound clip. Omit for the main timeline.'),
     }),
   },
 
@@ -332,9 +411,10 @@ export const tools = {
     name: 'copy_clip_settings',
     description:
       'Copy one clip\'s presentation settings onto other clips of the same media kind — '
-      + 'audio: volume, pan, and a non-default EQ or compressor; visual: opacity, position, '
-      + 'rotation, scale, blend mode, and a non-default color grade. Timing, trims and source '
-      + 'stay untouched. Provide exactly one of targetClipIds or targetTrack.',
+      + 'audio: volume, pan, and a non-default EQ, compressor, or noise reduction; visual: opacity, position, '
+      + 'rotation, scale, blend mode, and a non-default color grade (shape-to-shape also '
+      + 'carries kind, stroke, and fill). Timing, trims and source stay untouched. Provide '
+      + 'exactly one of targetClipIds or targetTrack.',
     parameters: z.object({
       sourceClipId: z.string().describe('Clip whose settings are copied.'),
       targetClipIds: z.array(z.string().min(1)).optional()
@@ -421,6 +501,14 @@ export const tools = {
           .describe('Perspective tilt around the vertical axis, in degrees. Default 0.'),
         tiltY: z.number().finite().min(-89).max(89).optional()
           .describe('Perspective tilt around the horizontal axis, in degrees. Default 0.'),
+        variationWght: z.number().int().min(1).max(1000).optional()
+          .describe('Variable-font weight axis (wght 1-1000, default 400). Applies to variable fonts via font-variation-settings; other fonts ignore it. Non-default values export through the title bake path.'),
+        variationWdth: z.number().int().min(50).max(200).optional()
+          .describe('Variable-font width axis (wdth 50-200%, default 100). Same behavior as variationWght.'),
+        variationSlnt: z.number().finite().min(-90).max(90).optional()
+          .describe('Variable-font slant axis (slnt -90..90 degrees, default 0). Same behavior as variationWght.'),
+        variationItal: z.number().finite().min(0).max(1).optional()
+          .describe('Variable-font italic axis (ital 0-1, default 0). Same behavior as variationWght.'),
       })).min(1).describe('Titles to add.'),
     }),
   },
@@ -477,12 +565,81 @@ export const tools = {
         .describe('Perspective tilt around the vertical axis, in degrees. 0 clears.'),
       tiltY: z.number().finite().min(-89).max(89).optional()
         .describe('Perspective tilt around the horizontal axis, in degrees. 0 clears.'),
+      variationWght: z.number().int().min(1).max(1000).optional()
+        .describe('Variable-font weight axis (wght 1-1000). 400 clears.'),
+      variationWdth: z.number().int().min(50).max(200).optional()
+        .describe('Variable-font width axis (wdth 50-200%). 100 clears.'),
+      variationSlnt: z.number().finite().min(-90).max(90).optional()
+        .describe('Variable-font slant axis (slnt -90..90 degrees). 0 clears.'),
+      variationItal: z.number().finite().min(0).max(1).optional()
+        .describe('Variable-font italic axis (ital 0-1). 0 clears.'),
     }).refine(
       (op) => op.text !== undefined || op.fontSize !== undefined || op.color !== undefined
         || op.bold !== undefined || op.fontFamily !== undefined || op.backgroundColor !== undefined
         || op.backgroundPadding !== undefined || op.lineSpacing !== undefined
         || op.fontCase !== undefined || op.fillMode !== undefined || op.blurRadius !== undefined
-        || op.tiltX !== undefined || op.tiltY !== undefined,
+        || op.tiltX !== undefined || op.tiltY !== undefined
+        || op.variationWght !== undefined || op.variationWdth !== undefined
+        || op.variationSlnt !== undefined || op.variationItal !== undefined,
+      { message: 'Pass at least one field to update.' },
+    ),
+  },
+
+  addShapes: {
+    name: 'add_shapes',
+    description:
+      'Add one or more vector shape clips (rect/ellipse/line/arrow tutorial overlays) to the timeline. '
+      + 'Shapes render in preview and export from the same box geometry. Each entry needs trackId, '
+      + 'startFrame, durationFrames and kind; geometry (x/y/width/height in canvas pixels) defaults to a '
+      + 'centered half-canvas box. An optional animation preset composes the existing position/scale/rotation '
+      + 'keyframes (draw-on, slide-in-left, slide-in-right, slide-in-up, pop, spin, pulse); there is no '
+      + 'opacity preset — use fades for that. One call is one undo step.',
+    parameters: z.object({
+      entries: z.array(z.object({
+        trackId: z.string().describe('Target video track ID.'),
+        startFrame: frameSchema.describe('Frame position where the shape should start.'),
+        durationFrames: frameSchema.describe('Duration in frames.'),
+        kind: z.enum(['rect', 'ellipse', 'line', 'arrow']).optional()
+          .describe('Shape kind. Defaults to rect. Lines and arrows run corner to corner and ignore fill.'),
+        x: z.number().finite().optional()
+          .describe('Box left in canvas pixels. Defaults to horizontally centered.'),
+        y: z.number().finite().optional()
+          .describe('Box top in canvas pixels. Defaults to vertically centered.'),
+        width: z.number().finite().min(1).max(MAX_CANVAS_EDGE).optional()
+          .describe('Box width in canvas pixels. Defaults to half the canvas width.'),
+        height: z.number().finite().min(1).max(MAX_CANVAS_EDGE).optional()
+          .describe('Box height in canvas pixels. Defaults to half the canvas height.'),
+        strokeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional()
+          .describe('Outline color as #RRGGBB. Defaults to white.'),
+        strokeWidth: z.number().int().min(0).max(64).optional()
+          .describe('Outline width in pixels. Defaults to 4; 0 means no stroke.'),
+        fillColor: z.string().regex(/^#[0-9a-fA-F]{8}$/).optional()
+          .describe('Fill color as #RRGGBBAA. Omit for no fill; ignored by lines and arrows.'),
+        preset: z.enum(['draw-on', 'slide-in-left', 'slide-in-right', 'slide-in-up', 'pop', 'spin', 'pulse']).optional()
+          .describe('Animation preset applied as motion keyframes at creation.'),
+      })).min(1).describe('Shapes to add.'),
+    }),
+  },
+
+  setShapeStyle: {
+    name: 'set_shape_style',
+    description:
+      'Update the kind and/or style of an existing shape clip, and optionally apply an animation preset '
+      + '(draw-on, slide-in-left, slide-in-right, slide-in-up, pop, spin, pulse) as motion keyframes. '
+      + 'Timing and geometry stay untouched.',
+    parameters: z.object({
+      clipId: z.string().describe('The shape clip to update.'),
+      kind: z.enum(['rect', 'ellipse', 'line', 'arrow']).optional().describe('New shape kind.'),
+      strokeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().describe('New outline color as #RRGGBB.'),
+      strokeWidth: z.number().int().min(0).max(64).optional()
+        .describe('New outline width in pixels. 0 clears the stroke.'),
+      fillColor: z.string().regex(/^#[0-9a-fA-F]{8}$/).nullable().optional()
+        .describe('New fill color (#RRGGBBAA) or null to remove the fill.'),
+      preset: z.enum(['draw-on', 'slide-in-left', 'slide-in-right', 'slide-in-up', 'pop', 'spin', 'pulse']).optional()
+        .describe('Animation preset applied as motion keyframes.'),
+    }).refine(
+      (op) => op.kind !== undefined || op.strokeColor !== undefined || op.strokeWidth !== undefined
+        || op.fillColor !== undefined || op.preset !== undefined,
       { message: 'Pass at least one field to update.' },
     ),
   },
@@ -575,6 +732,25 @@ export const tools = {
     }),
   },
 
+  manageMediaFolders: {
+    name: 'manage_media_folders',
+    description:
+      'Organize the media library into flat one-level folders: list them, create one, rename one, delete one, '
+      + 'or move assets between them. Every mutating call is one undoable step. Deleting a folder never deletes '
+      + 'media — its assets move to the library root. Call list first to get folder ids (they also appear as '
+      + 'folderId on assets from get_media).',
+    parameters: z.object({
+      action: z.enum(['list', 'create', 'rename', 'delete', 'move_assets'])
+        .describe('Which folder operation to perform.'),
+      folderId: z.string().min(1).nullable().optional()
+        .describe('Folder id. Required for rename and delete. For move_assets, omit it (or pass null) to move assets to the library root.'),
+      name: z.string().max(MEDIA_FOLDER_NAME_MAX_LENGTH).optional()
+        .describe(`Folder name (max ${MEDIA_FOLDER_NAME_MAX_LENGTH} chars). Required for create and rename.`),
+      assetIds: z.array(z.string().min(1)).min(1).optional()
+        .describe('Library asset ids to move. Required for move_assets.'),
+    }),
+  },
+
   updatePlan: {
     name: 'update_plan',
     description:
@@ -596,7 +772,8 @@ export const tools = {
       'Read-only structural audit of the project — no mutation, so it never needs an undo. '
       + 'Reports zero-length clips, clips reading past their source, overlapping clips, missing or offline media, '
       + 'orphaned link groups, fades longer than the clip, empty titles, and invalid markers, each with a severity, '
-      + 'a code, and the owning clip/marker id. Call it after any destructive batch (ripple delete, silence removal, '
+      + 'a code, and the owning clip/marker id. Nested timelines are audited too (dangling references, cycles, '
+      + 'and over-deep chains surface as compound-invalid errors), so no scope argument is needed — it checks everything. Call it after any destructive batch (ripple delete, silence removal, '
       + 'batch trim, project settings change) before telling the user the edit is done.',
     parameters: z.object({
       limit: z.number().int().min(1).max(200).optional()
@@ -634,12 +811,16 @@ export const tools = {
   exportProject: {
     name: 'export_project',
     description:
-      'Render the timeline to a video or audio file with FFmpeg — the same exporter the delivery panel uses, with identical grade/effects/eligibility rules. '
+      'Render the timeline to a video or audio file with FFmpeg. The same exporter the delivery panel uses: the same clip eligibility, geometry, trim/motion mapping, grade, effects, transitions, and audio mix. '
+      + 'It cannot render two layer types, because baking them needs the renderer and this tool has no window: SHAPE clips are left out of the video entirely, and ADVANCED TITLES (footage/inverted fill, blur, perspective tilt, variable-font axes) fall back to plain solid text. Every affected clip is named in the receipt\'s "warnings", so check them and report them to the user; for those layers, use the delivery panel. '
+      + 'Pass hdr "hlg" or "pq" for a 10-bit BT.2020 HDR delivery (HEVC Main10, MP4/MOV only); omit it for the normal SDR export. '
       + 'Returns when the file is written (long timelines take minutes). outputPath must be absolute; the parent folder must exist.',
     parameters: z.object({
       outputPath: z.string().min(1).describe('Absolute output file path.'),
       format: z.enum(['mp4', 'mov', 'webm', 'audio']).default('mp4').describe('Container format. "audio" writes an M4A mix.'),
       quality: z.enum(['draft', 'normal', 'high']).default('normal').describe('Encoding quality preset.'),
+      hdr: z.enum(['sdr', 'hlg', 'pq']).optional()
+        .describe('HDR delivery profile (upstream #59). Omit or "sdr" keeps the Rec.709 8-bit path; "hlg" or "pq" encodes HEVC Main10 (yuv420p10le) with BT.2020 primaries/matrix and the HLG or PQ transfer, converting the SDR-graded timeline at the end. MP4/MOV only; hardware H.264 encoders are refused because they are 8-bit.'),
     }),
   },
 
@@ -647,7 +828,7 @@ export const tools = {
   generateMedia: {
     name: 'generate_media',
     description:
-      'Generate an image, video, or audio asset from a text prompt using a configured generation provider (fal.ai, Replicate, or HiggsField â€” whichever has an API key set; pass providerId to choose). The finished file is imported into the project media library and its asset id is returned. Video generations can take a few minutes.',
+      'Generate an image, video, or audio asset from a text prompt using a configured generation provider (fal.ai, Replicate, or HiggsField â€” whichever has an API key set; pass providerId to choose). The finished file is imported into the project media library and its asset id is returned. Video generations can take a few minutes. Pass referenceImagePath to generate from an existing picture.',
     parameters: z.object({
       type: z.enum(['image', 'video', 'audio']).describe('Type of media to generate.'),
       prompt: z.string().min(1).max(2000).describe('Generation prompt.'),
@@ -657,17 +838,25 @@ export const tools = {
       durationSeconds: z.number().finite().min(1).max(60).optional().describe('Duration for video/audio generation.'),
       width: z.number().int().min(256).max(4096).optional().describe('Output width in pixels.'),
       height: z.number().int().min(256).max(4096).optional().describe('Output height in pixels.'),
+      referenceImagePath: z.string().min(1).max(MAX_LUT_PATH_CHARS).optional().describe(
+        'Absolute path to a local image file (png, jpg, jpeg, webp, gif, bmp) to condition an '
+        + 'image generation on: the provider generates from that picture instead of from the prompt '
+        + 'alone. It is refused for video and audio generation, whose models take no image input on '
+        + 'this build, and a path that is missing, relative, another file type, or over '
+        + `${MAX_REFERENCE_IMAGE_BYTES / (1024 * 1024)} MB refuses the call before any provider is contacted.`,
+      ),
     }),
   },
 
   transcribeAudio: {
     name: 'transcribe_audio',
     description:
-      'Transcribe a library audio/video asset to text with word-level timestamps, then lay the result onto a video track as caption clips snapped to word boundaries (#39/#91). Requires an OpenAI-compatible provider with an API key (OpenAI, Groq — endpoints serving /audio/transcriptions). Pass language as an ISO-639-1 hint like "en" or leave it for auto-detection. Optional planning controls: maxWordsPerCue, maxCharsPerLine, maxLines, pauseBreakSec (omitted fields use broadcast defaults).',
+      'Transcribe a library audio/video asset to text with word-level timestamps, then lay the result onto a video track as caption clips snapped to word boundaries (#39/#91). Engines ("engine", default "auto"): local whisper.cpp runs fully offline when its binary + model are downloaded and never sends audio anywhere; custom uses the saved OpenAI-compatible server; cloud uses a BYOK provider serving /audio/transcriptions (OpenAI, Groq); auto prefers local, then custom, then cloud. An explicit engine never falls back — it refuses with a setup message instead (local in particular never spends cloud credit). Pass language as an ISO-639-1 hint like "en" or leave it for auto-detection; it reaches the engine as a model language selection, not the system locale, and unsupported codes are refused. Optional planning controls: maxWordsPerCue, maxCharsPerLine, maxLines, pauseBreakSec (omitted fields use broadcast defaults).',
     parameters: z.object({
       assetId: z.string().describe('Library asset containing speech.'),
       language: z.string().max(12).optional().describe('ISO-639-1 language hint, e.g. "en".'),
-      model: z.string().optional().describe('Transcription model id. Default "whisper-1" (Groq: "whisper-large-v3").'),
+      model: z.string().optional().describe('Transcription model id. Cloud default "whisper-1" (Groq: "whisper-large-v3"); local honours a downloaded model id (tiny/base/small/medium/large-v3-turbo).'),
+      engine: z.enum(['auto', 'local', 'custom', 'cloud']).optional().describe('Transcription engine. Default "auto" (local when ready, else custom server, else cloud).'),
       maxWordsPerCue: z.number().int().min(1).max(20).optional()
         .describe('Maximum words per caption. Omit for no word ceiling.'),
       maxCharsPerLine: z.number().int().min(10).max(80).optional()
@@ -754,7 +943,13 @@ export const tools = {
     description:
       'Grade a video/image clip\'s color (upstream #157\'s effect stack) — preview and export apply the exact same values. '
       + 'Omitted fields stay untouched; passing a field its default (0, 1, 1, 0, 0, 6500, 0, 0, 0, 0, 0, 0) clears just that field, '
-      + 'and clear: true resets the whole grade back to neutral.',
+      + 'and clear: true resets the whole grade back to neutral. `curves` adds piecewise-linear master luma and per-channel tone curves. '
+      + '`wheels` adds lift/gamma/gain color wheels (shadows/midtones/highlights): each zone is a pad position (x, y in -1..1) plus a master (m). '
+      + '`hueCurves` adds hue-vs-hue/saturation/luminance curves: each channel is a list of {x, y} points in 0-1 with strictly ascending x, sampled at the pixel hue. '
+      + '`lutPath` applies a .cube LUT file (validated at the boundary — missing or invalid files refuse the call); `lutIntensity` blends it 0..1 (default 1). '
+      + 'An empty lutPath clears the LUT. `blurRadius` (0-100px gaussian blur), `vignette` ({amount -1..1, midpoint, roundness, feather}), '
+      + '`grain` ({amount 0..1, size 0.5..4px, animated per frame}) and `glow` ({intensity, radius, threshold, warmth}) add the #157 effect stages after the grade. '
+      + 'Effect components merge per component (omitted stays); an all-identity effect clears it.',
     parameters: z.object({
       clipId: z.string().describe('The video or image clip to grade.'),
       brightness: z.number().finite().min(-1).max(1).optional()
@@ -783,25 +978,181 @@ export const tools = {
         .describe('Whites -1 to +1: positive brightens toward clipping, negative recovers the ceiling. 0 = unchanged.'),
       invertColors: z.boolean().optional()
         .describe('Invert RGB channels while preserving alpha (the negative look).'),
+      curves: z.object({
+        master: curveChannelSchema.optional()
+          .describe('Master (Rec.709 luma) tone curve; an empty array clears it.'),
+        red: curveChannelSchema.optional()
+          .describe('Red-channel tone curve; an empty array clears it.'),
+        green: curveChannelSchema.optional()
+          .describe('Green-channel tone curve; an empty array clears it.'),
+        blue: curveChannelSchema.optional()
+          .describe('Blue-channel tone curve; an empty array clears it.'),
+      }).optional().describe(
+        'Tone curves (upstream #157 Curves). Each channel is a piecewise-linear list of '
+        + '{x, y} control points in 0-1 with strictly ascending x; empty/identity clears that '
+        + 'channel. Omitted channels stay as they are; when every channel ends up identity the '
+        + 'whole curve is cleared. Example: { master: [{x:0,y:0.06},{x:1,y:0.95}] } lifts the '
+        + 'toe for a faded film look.',
+      ),
+      wheels: z.object({
+        lift: liftZoneSchema.optional()
+          .describe('Lift (shadows) wheel; an identity zone clears it.'),
+        gamma: gammaZoneSchema.optional()
+          .describe('Gamma (midtones) wheel; an identity zone clears it.'),
+        gain: gainZoneSchema.optional()
+          .describe('Gain (highlights) wheel; an identity zone clears it.'),
+      }).optional().describe(
+        'Color wheels (upstream #157 Wheels). Each zone is a pad position (x, y in '
+        + '-1..1, angle = hue, radius = strength) plus a master (m): lift m in '
+        + '-0.5..0.5 (default 0), gamma m in 0.5..2 (default 1), gain m in '
+        + '0.5..1.5 (default 1). Omitted zones stay as they are; omitted '
+        + 'components within a zone stay; when every zone ends up identity the '
+        + 'whole wheels is cleared. Example: { gain: { m: 1.2 } } lifts the '
+        + 'highlights.',
+      ),
+      hueCurves: z.object({
+        hueVsHue: hueCurveChannelSchema.optional()
+          .describe('Hue-vs-hue curve (hue rotation by source hue); an empty array clears it.'),
+        hueVsSat: hueCurveChannelSchema.optional()
+          .describe('Hue-vs-saturation curve (saturation scale by source hue); an empty array clears it.'),
+        hueVsLum: hueCurveChannelSchema.optional()
+          .describe('Hue-vs-luminance curve (luminance shift by source hue); an empty array clears it.'),
+      }).optional().describe(
+        'Hue curves (upstream #157 Hue Curves). Each channel is a cyclic '
+        + 'piecewise-linear list of {x, y} control points in 0-1 with strictly '
+        + 'ascending x, sampled at the pixel hue (near-greys are gated out, so '
+        + 'they never tint); empty/neutral clears that channel. Omitted '
+        + 'channels stay as they are; when every channel ends up neutral the '
+        + 'whole hue curves is cleared. Example: { hueVsSat: '
+        + '[{x:0,y:0.8},{x:0.15,y:0.5}] } boosts red saturation.',
+      ),
       clear: z.boolean().optional()
-        .describe('Reset the whole grade — brightness, contrast, saturation, hue, exposure, temperature, tint, vibrance, highlights, shadows, blacks, whites, and invert — to neutral.'),
+        .describe('Reset the whole grade — brightness, contrast, saturation, hue, exposure, temperature, tint, vibrance, highlights, shadows, blacks, whites, curves, wheels, hue curves, LUT, blur, vignette, grain, glow, and invert — to neutral.'),
+      lutPath: z.string().max(MAX_LUT_PATH_CHARS).optional()
+        .describe('Absolute path to a .cube LUT file (1D or 3D). The file is validated when set — missing or invalid files refuse the call. An empty string clears the LUT.'),
+      lutIntensity: z.number().finite().min(0).max(1).optional()
+        .describe('LUT blend strength 0 to 1. 1 = full LUT, 0 = original frame. Defaults to 1 when a LUT is set.'),
+      blurRadius: z.number().finite().min(0).max(100).optional()
+        .describe('Gaussian blur radius in px, 0 to 100. 0 = sharp (clears the blur). Applied after the grade.'),
+      vignette: z.object({
+        amount: z.number().finite().min(-1).max(1).optional()
+          .describe('Edge gain -1 (darken) to 1 (lighten). 0 = no vignette and clears it.'),
+        midpoint: z.number().finite().min(0).max(1).optional()
+          .describe('Where the falloff starts, 0 to 1.'),
+        roundness: z.number().finite().min(-1).max(1).optional()
+          .describe('Shape morph -1 (rectangular) to 1 (round).'),
+        feather: z.number().finite().min(0).max(1).optional()
+          .describe('Falloff width, 0 to 1.'),
+      }).optional().describe(
+        'Vignette (upstream #157). Components merge: omitted stay, and an '
+        + 'all-default (amount 0) vignette clears the field.',
+      ),
+      grain: z.object({
+        amount: z.number().finite().min(0).max(1).optional()
+          .describe('Noise strength 0 to 1. 0 = no grain and clears it.'),
+        size: z.number().finite().min(0.5).max(4).optional()
+          .describe('Grain cell size in px, 0.5 to 4.'),
+      }).optional().describe(
+        'Film grain (upstream #157): monochromatic noise, strongest in the '
+        + 'mid-tones, animated per frame. Components merge like vignette.',
+      ),
+      glow: z.object({
+        intensity: z.number().finite().min(0).max(1).optional()
+          .describe('Screen-blend strength 0 to 1. 0 = no glow and clears it.'),
+        radius: z.number().finite().min(0).max(100).optional()
+          .describe('Highlight-bleed blur radius in px, 0 to 100.'),
+        threshold: z.number().finite().min(0).max(1).optional()
+          .describe('Luma threshold isolating highlights, 0 to 1.'),
+        warmth: z.number().finite().min(0).max(1).optional()
+          .describe('Warm red-orange cast on the bleed, 0 to 1.'),
+      }).optional().describe(
+        'Glow / halation (upstream #157): blurred highlights screen-blended '
+        + 'back. Components merge like vignette.',
+      ),
     }).refine(
       (op) => op.clear === true || op.brightness !== undefined || op.contrast !== undefined
         || op.saturation !== undefined || op.hueRotation !== undefined || op.exposure !== undefined
         || op.temperature !== undefined || op.tint !== undefined || op.vibrance !== undefined
         || op.highlights !== undefined || op.shadows !== undefined
         || op.blacks !== undefined || op.whites !== undefined
-        || op.invertColors !== undefined,
+        || op.invertColors !== undefined
+        || op.lutPath !== undefined || op.lutIntensity !== undefined
+        || op.blurRadius !== undefined
+        || (op.vignette !== undefined && Object.keys(op.vignette).length > 0)
+        || (op.grain !== undefined && Object.keys(op.grain).length > 0)
+        || (op.glow !== undefined && Object.keys(op.glow).length > 0)
+        || (op.curves !== undefined && Object.keys(op.curves).length > 0)
+        || (op.wheels !== undefined && Object.keys(op.wheels).length > 0)
+        || (op.hueCurves !== undefined && Object.keys(op.hueCurves).length > 0),
       { message: 'Pass at least one grade field, or clear: true.' },
+    ),
+  },
+
+  listGradePresets: {
+    name: 'list_grade_presets',
+    description:
+      'List the user-saved named color-grade/shot presets and their captured payloads. App-wide across editor windows.',
+    parameters: z.object({}),
+  },
+
+  saveGradePreset: {
+    name: 'save_grade_preset',
+    description:
+      'Capture the current complete color grade and normalized static shot settings of one video/image clip as a uniquely named preset. The name is trimmed; duplicate names are refused. Motion tracks are not captured and remain authoritative when present.',
+    parameters: z.object({
+      clipId: z.string().describe('The video or image clip whose current grade and static shot should be captured.'),
+      name: z.string().min(1).describe(`Unique name for the saved preset (max ${GRADE_PRESET_NAME_MAX} characters after trimming).`),
+    }),
+  },
+
+  renameGradePreset: {
+    name: 'rename_grade_preset',
+    description:
+      'Rename a saved color-grade/shot preset. A case-insensitive collision with another preset fails without changing either row.',
+    parameters: z.object({
+      presetId: z.string().min(1).max(64).describe('ID returned by list_grade_presets or save_grade_preset.'),
+      name: z.string().min(1).describe(`New unique preset name (max ${GRADE_PRESET_NAME_MAX} characters after trimming).`),
+    }),
+  },
+
+  deleteGradePreset: {
+    name: 'delete_grade_preset',
+    description:
+      'Delete a saved color-grade/shot preset by ID. Deleting an already absent ID is an idempotent no-op; clip links are left inert and referencing clip IDs are reported in the receipt.',
+    parameters: z.object({
+      presetId: z.string().min(1).max(64).describe('ID returned by list_grade_presets or save_grade_preset.'),
+    }),
+  },
+
+  applyGradePreset: {
+    name: 'apply_grade_preset',
+    description:
+      'Apply one saved grade/shot preset as a complete grade snapshot plus any carried normalized static shot fields to one clip, a selection, or every clip in the current project timeline in a single undo step. Provide exactly one target: clipId, clipIds, or allProjectClips:true; omitting all three is an error, not an all-project request. All-project mode refuses the whole call if any project clip is ineligible. Linking defaults to true; set linkPreset:false to apply the look but clear the existing link in the same undo step. Omitted grade fields reset to neutral; omitted shot fields and motion tracks are left untouched. Propagation is opt-in per call: omit propagate to touch only the requested clips, or pass propagate:"linked" to also cover the requested clips\' link groups, or propagate:"syncLock" to also cover their tracks and every track that follows sync lock. A propagated apply is still one undo step and refuses the whole call — changing nothing — if a covered clip cannot be written.',
+    parameters: z.object({
+      clipId: z.string().min(1).optional()
+        .describe('One video or image clip to receive the saved snapshot.'),
+      clipIds: z.array(z.string().min(1)).min(1).optional()
+        .describe('A selection of video or image clip IDs to receive the saved snapshot.'),
+      allProjectClips: z.literal(true).optional()
+        .describe('Set true to target every clip in the current project timeline; use this explicit flag instead of omitting a target.'),
+      linkPreset: z.boolean().optional()
+        .describe('Record the applied preset ID on each target in the same undo step (default true); false clears the existing link.'),
+      propagate: z.enum([...GRADE_PRESET_PROPAGATE_MODES]).optional()
+        .describe('Opt in to writing past the requested clips: "linked" also covers their link groups (the A/V unit, skipping members that cannot take a grade), "syncLock" also covers their own tracks plus every track that never opted out of sync lock. Omit it to grade only the requested clips; an unknown mode is refused, never treated as off.'),
+      presetId: z.string().min(1).max(64).describe('ID returned by list_grade_presets or save_grade_preset.'),
+    }).refine(
+      (args) => [args.clipId !== undefined, args.clipIds !== undefined, args.allProjectClips !== undefined]
+        .filter(Boolean).length === 1,
+      { message: 'Provide exactly one of clipId, clipIds, or allProjectClips:true.' },
     ),
   },
 
   setClipMotion: {
     name: 'set_clip_motion',
     description:
-      'Animate a video/image clip\'s position with keyframes (#535 v1.5): at least two {frame, value} points per axis; values interpolate between frames with easing and clamp at the ends. An empty points array clears that axis. Titles are static in v1. Scale axes (sx/sy) default to 1.0 (identity).',
+      'Animate a video/image/shape clip\'s position with keyframes (#535 v1.5): at least two {frame, value} points per axis; values interpolate between frames with easing and clamp at the ends. An empty points array clears that axis. Titles are static in v1. Scale axes (sx/sy) default to 1.0 (identity).',
     parameters: z.object({
-      clipId: z.string().describe('The video or image clip to animate.'),
+      clipId: z.string().describe('The video, image, or shape clip to animate.'),
       axis: z.enum(['x', 'y', 'r', 'sx', 'sy']).describe('Which axis to animate: x position, y position, rotation (degrees), scale X, or scale Y.'),
       points: z.array(z.object({
         frame: z.number().int().min(0).describe('Timeline frame for this keyframe.'),
@@ -809,6 +1160,25 @@ export const tools = {
         easing: z.enum(['linear', 'easeIn', 'easeOut', 'easeInOut']).optional()
           .describe('Easing of the segment starting at this keyframe. Default linear.'),
       })).describe('Keyframes for this axis. At least two to animate; an empty array clears the axis.'),
+    }),
+  },
+
+  setClipOpacityKeyframes: {
+    name: 'set_clip_opacity_keyframes',
+    description:
+      'Animate opacity on a video, image, or generated clip with absolute timeline-frame keyframes: '
+      + 'at least two {frame, value} points with value 0..1 and optional easing. An active track '
+      + 'overrides static opacity; an empty array clears it and restores static opacity. This is '
+      + 'separate from fadeInFrames/fadeOutFrames, which remain independent.',
+    parameters: z.object({
+      clipId: z.string().describe('The video, image, or generated clip to animate.'),
+      points: z.array(z.object({
+        frame: frameSchema.describe('Absolute timeline frame for this opacity keyframe.'),
+        value: z.number().finite().min(0).max(1)
+          .describe('Opacity at this frame, 0 (transparent) to 1 (opaque). Invalid values refuse the call.'),
+        easing: z.enum(['linear', 'easeIn', 'easeOut', 'easeInOut']).optional()
+          .describe('Easing of the segment starting at this keyframe. Default linear.'),
+      })).describe('Opacity keyframes. At least two are required; an empty array clears the track.'),
     }),
   },
 
@@ -878,6 +1248,23 @@ export const tools = {
     ),
   },
 
+  setClipNoiseReduction: {
+    name: 'set_clip_noise_reduction',
+    description:
+      'Reduce background noise on an audio clip (upstream #165). Strength 1-100 drives both the '
+      + 'live preview and the FFmpeg export (afftdn). 0 and clear: true both remove the stage — '
+      + 'matching the Inspector, whose slider deletes the field at 0 rather than storing an off value.',
+    parameters: z.object({
+      clipId: z.string().describe('The audio clip to denoise.'),
+      noiseReduction: z.number().int().min(0).max(100).optional()
+        .describe('Strength percent. 1-100 sets/overwrites; 0 removes the stage.'),
+      clear: z.boolean().optional().describe('Remove the noise reduction (same effect as passing 0).'),
+    }).refine(
+      (op) => op.clear === true || op.noiseReduction !== undefined,
+      { message: 'Pass noiseReduction, or clear: true.' },
+    ),
+  },
+
   applyLayout: {
     name: 'apply_layout',
     description:
@@ -896,7 +1283,7 @@ export const tools = {
   importFcpxml: {
     name: 'import_fcpxml',
     description:
-      'Import a Final Cut Pro XML (.fcpxml) file: media assets are probed into the library, tracks are created for the lanes, and picture/audio/title clips are placed on them. Opacity, geometry, crop and volume survive the trip; grades, blend modes and keyframed parameters are skipped and reported. Additive — existing timeline content is untouched.',
+      'Import a Final Cut Pro XML (.fcpxml) file: media assets are probed into the library, tracks are created for the lanes, and picture/audio/title clips are placed on them. Clip placement/trims, lanes, roles, titles (styling), static and keyframed opacity, transform (position/scale/rotation) including its keyframes, crop, volume and source timecode survive the trip; grades, effects, shape/generator constructs, edge rounding/softness, crop keyframes, keyframed audio volume, audio fades and title transform/opacity keyframes are skipped and reported. Additive — existing timeline content is untouched.',
     parameters: z.object({
       path: z.string().min(1).describe('Absolute path to the .fcpxml file.'),
     }),
@@ -905,9 +1292,29 @@ export const tools = {
   exportFcpxml: {
     name: 'export_fcpxml',
     description:
-      'Write the current timeline as Final Cut Pro XML 1.11 for Resolve / FCP / Premiere: picture + audio clips on lanes, title text with styling, opacity, geometry, crop and volume. Grades, blend modes and keyframed parameters are not represented.',
+      'Write the current timeline as Final Cut Pro XML 1.11 for Resolve / FCP / Premiere: clip placement/trims, lanes, roles, title text with styling, static and keyframed opacity, transform (position/scale/rotation) including its keyframes, crop, volume and source timecode. Grades, effects, edge rounding/softness, crop keyframes, keyframed audio volume, audio fades and title transform/opacity keyframes are not represented. Shape clips and clips with missing media are skipped and reported in the receipt (unsupported list with counts).',
     parameters: z.object({
       path: z.string().min(1).describe('Absolute destination path for the .fcpxml file.'),
+    }),
+  },
+
+  describeMedia: {
+    name: 'describe_media',
+    description:
+      'Generate a one-sentence AI description for a library image/video asset (upstream #118) from a single capped frame, using the user\'s own configured vision provider (billed to their key). Explicit only — never call it unless the user asked to describe that asset. The sentence is stored on the asset and becomes searchable in the media library. Undoable.',
+    parameters: z.object({
+      assetId: z.string().describe('Library asset to describe (video or image; audio is refused).'),
+    }),
+  },
+
+  loadSkill: {
+    name: 'load_skill',
+    description:
+      'Load the full workflow of one enabled agent skill (Track 2, L7): podcast cleanup, shorts reframe, subtitle burn-in. '
+      + 'Enabled skill names and one-line descriptions are listed in the system prompt under "Available skills"; call this with the name to read the body before starting that kind of task. '
+      + 'Returns advisory text only — it never edits the project, so follow it with the normal tools.',
+    parameters: z.object({
+      name: z.string().min(1).describe('Skill name from the "Available skills" index.'),
     }),
   },
 } as const;
@@ -937,8 +1344,12 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'get_timeline',
   'get_clips',
   'get_media',
+  'list_grade_presets',
   'verify_timeline',
   'inspect_frame',
+  // L7: returns advisory text as data; it neither mutates the project nor
+  // pushes an undo entry, so it is safe to run alongside other reads.
+  'load_skill',
 ]);
 
 /** True when a tool is classified read-only; unknown tools are mutating. */
@@ -955,41 +1366,138 @@ export function toolsToJsonSchema() {
   }));
 }
 
+const MAX_ZOD_SCHEMA_DEPTH = 12;
+
 // Minimal Zod â†’ JSON Schema conversion for MCP compatibility
-function zodToJsonSchema(schema: z.ZodType<any>): Record<string, unknown> {
-  // Preserve object fields when runtime validation is wrapped in a refinement.
-  if (schema instanceof z.ZodEffects) return zodToJsonSchema(schema.innerType());
-  // For our use case, we rely on zod's .parse() for validation
-  // and produce a simplified JSON schema for tool listing.
-  // A full implementation would use zod-to-json-schema package.
-  if (schema instanceof z.ZodObject) {
-    const shape = schema.shape;
-    const properties: Record<string, any> = {};
-    const required: string[] = [];
+function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
+  // Runtime refinements are transparent for discovery; keep the historical
+  // object fallback for a non-object top-level schema.
+  const converted = zodFieldToSchema(schema, 0, new Set());
+  return converted.type === 'object' ? converted : { type: 'object' };
+}
 
-    for (const [key, value] of Object.entries(shape)) {
-      const zodField = value as z.ZodType<any>;
-      properties[key] = zodFieldToSchema(zodField);
-      if (!(zodField instanceof z.ZodOptional)) {
-        required.push(key);
-      }
-    }
-
-    return { type: 'object', properties, required: required.length > 0 ? required : undefined };
+function zodFieldToSchema(
+  field: z.ZodTypeAny,
+  depth: number,
+  active: Set<z.ZodTypeAny>,
+): Record<string, unknown> {
+  if (depth >= MAX_ZOD_SCHEMA_DEPTH || active.has(field)) {
+    return zodStringFallback(field);
   }
-  return { type: 'object' };
+
+  active.add(field);
+  try {
+    if (field instanceof z.ZodString) {
+      return zodWithDescription({ type: 'string', description: field.description }, field);
+    }
+    if (field instanceof z.ZodNumber) {
+      return zodWithDescription({ type: 'number', description: field.description }, field);
+    }
+    if (field instanceof z.ZodBoolean) {
+      return zodWithDescription({ type: 'boolean', description: field.description }, field);
+    }
+    if (field instanceof z.ZodEnum) {
+      return zodWithDescription({ type: 'string', enum: field.options, description: field.description }, field);
+    }
+    if (field instanceof z.ZodLiteral) {
+      const type = zodLiteralType(field.value);
+      return type
+        ? zodWithDescription({ type, const: field.value }, field)
+        : zodStringFallback(field);
+    }
+    if (field instanceof z.ZodEffects) {
+      return zodWithDescription(zodFieldToSchema(field.innerType(), depth, active), field);
+    }
+    if (field instanceof z.ZodOptional) {
+      return zodWithDescription(
+        { ...zodFieldToSchema(field.unwrap(), depth, active), optional: true },
+        field,
+      );
+    }
+    if (field instanceof z.ZodDefault) {
+      return zodWithDescription(zodFieldToSchema(field.removeDefault(), depth, active), field);
+    }
+    if (field instanceof z.ZodObject) {
+      const properties: Record<string, unknown> = {};
+      const required: string[] = [];
+
+      for (const [key, value] of Object.entries(field.shape)) {
+        const zodField = value as z.ZodTypeAny;
+        properties[key] = zodFieldToSchema(zodField, depth + 1, active);
+        if (!isOptionalZodField(zodField)) required.push(key);
+      }
+
+      return zodWithDescription(
+        {
+          type: 'object',
+          properties,
+          required: required.length > 0 ? required : undefined,
+        },
+        field,
+      );
+    }
+    if (field instanceof z.ZodArray) {
+      return zodWithDescription(
+        { type: 'array', items: zodFieldToSchema(field.element, depth + 1, active) },
+        field,
+      );
+    }
+    return zodStringFallback(field);
+  } catch {
+    // Tool discovery must remain available even for a malformed/unsupported
+    // plugin schema. Runtime validation remains the source of truth.
+    return zodStringFallback(field);
+  } finally {
+    active.delete(field);
+  }
 }
 
-function zodFieldToSchema(field: z.ZodType<any>): Record<string, unknown> {
-  if (field instanceof z.ZodString) return { type: 'string', description: field.description };
-  if (field instanceof z.ZodNumber) return { type: 'number', description: field.description };
-  if (field instanceof z.ZodEnum) return { type: 'string', enum: field.options, description: field.description };
-  if (field instanceof z.ZodOptional) return { ...zodFieldToSchema(field.unwrap()), optional: true };
-  if (field instanceof z.ZodDefault) return zodFieldToSchema(field.removeDefault());
-  return { type: 'string' };
+function isOptionalZodField(field: z.ZodTypeAny): boolean {
+  const seen = new Set<z.ZodTypeAny>();
+  let current: z.ZodTypeAny | undefined = field;
+
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof z.ZodOptional || current instanceof z.ZodDefault) return true;
+    if (current instanceof z.ZodEffects) {
+      current = current.innerType();
+      continue;
+    }
+    if (current instanceof z.ZodNullable) {
+      current = current.unwrap();
+      continue;
+    }
+    return false;
+  }
+  return false;
 }
 
+function zodWithDescription(
+  schema: Record<string, unknown>,
+  field: z.ZodTypeAny,
+): Record<string, unknown> {
+  return field.description === undefined
+    ? schema
+    : { ...schema, description: field.description };
+}
 
+function zodStringFallback(field: z.ZodTypeAny): Record<string, unknown> {
+  return zodWithDescription({ type: 'string' }, field);
+}
+
+function zodLiteralType(value: unknown): string | undefined {
+  if (value === null) return 'null';
+  switch (typeof value) {
+    case 'string':
+      return 'string';
+    case 'boolean':
+      return 'boolean';
+    case 'number':
+      return Number.isFinite(value) ? 'number' : undefined;
+    default:
+      return undefined;
+  }
+}
 
 
 

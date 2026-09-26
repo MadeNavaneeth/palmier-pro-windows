@@ -4,9 +4,9 @@
  * A motion track is a sorted list of {frame, value, easing?} keypoints; the
  * value at any frame interpolates between neighbors using the easing of the
  * segment's START point (default linear) and clamps outside the ends.
- * Translation only: the export graph expresses these curves EXACTLY via
- * overlay arithmetic expressions (`if`/`pow`), so preview and export stay
- * pixel-identical. Scale/rotation keyframes wait on an export-side decision.
+ * The same evaluator backs all five motion axes in preview and export. Export
+ * expresses each curve via arithmetic expressions (`if`/`pow`), while preview
+ * evaluates the same tracks at the rendered timeline frame.
  */
 
 export type MotionEasing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';

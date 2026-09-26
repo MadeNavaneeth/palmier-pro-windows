@@ -2,20 +2,19 @@
  * OnboardingTour — lightweight first-run guidance (upstream PRs #456/#458,
  * first slice without analytics or guided flow).
  *
- * Free, local, zero-cost: three steps that point the newcomer at the same
- * surfaces the shortcut sheet and command palette already inventory, but in
- * the order a first edit follows. Dismissed state lives in localStorage so
- * the tour never reappears unless the user clears storage — the same
- * persisted-store contract the workspace layout uses.
+ * Free, local, zero-cost: three brief steps that describe the actions available
+ * on the welcome screen. Dismissed state lives in localStorage so the tour never
+ * reappears unless the user clears storage — the same persisted-store contract
+ * the workspace layout uses.
  */
 
 import React, { useState } from 'react';
 
 const STORAGE_KEY = 'palmier.onboarding.dismissed';
 const STEPS = [
-  { title: 'Import media', body: 'Drag video, audio, or images onto the timeline or use Import in the Media panel.' },
-  { title: 'Edit on the timeline', body: 'Cut with C, ripple-delete with Shift+Del, and move markers with M. Press Ctrl+K for the full command list.' },
-  { title: 'Ask the AI', body: 'Open the Agent panel and describe the edit — it uses the same tools you do.' },
+  { title: 'Welcome screen', body: 'Select Skip tour to return to the welcome screen, where you can choose New Project to start with an empty project or Open Project to open a saved project.' },
+  { title: 'New Project', body: 'New Project starts a new, empty project.' },
+  { title: 'Open Project', body: 'Open Project opens a saved project file.' },
 ] as const;
 
 function isDismissed(): boolean {

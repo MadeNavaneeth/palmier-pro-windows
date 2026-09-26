@@ -15,7 +15,7 @@ export interface SnapIndicator {
 export function useSnapIndicator(): SnapIndicator {
   const drag = useTimelineStore((s) => s.drag);
   const viewport = useTimelineStore((s) => s.viewport);
-  const project = useTimelineStore((s) => s.project);
+  const scopeTimeline = useTimelineStore((s) => s.getScopeTimeline());
 
   return useMemo(() => {
     if (drag.mode !== 'move' || !drag.clipId) {
@@ -23,7 +23,7 @@ export function useSnapIndicator(): SnapIndicator {
     }
 
     // Find the clip's current position
-    const clip = project.timeline.clips.find((c) => c.id === drag.clipId);
+    const clip = scopeTimeline.clips.find((c) => c.id === drag.clipId);
     if (!clip) return { active: false, frame: 0, pixelX: 0 };
 
     // Check if the current position aligns with a snap point
@@ -45,5 +45,5 @@ export function useSnapIndicator(): SnapIndicator {
     }
 
     return { active: false, frame: 0, pixelX: 0 };
-  }, [drag.mode, drag.clipId, project.timeline.clips, viewport]);
+  }, [drag.mode, drag.clipId, scopeTimeline.clips, viewport]);
 }

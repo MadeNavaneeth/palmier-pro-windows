@@ -3,10 +3,8 @@ import {
   detectSilentRanges,
   normalizeSilenceConfig,
   resolveSilenceConfig,
-  planSilenceRemoval,
   DEFAULT_SILENCE_CONFIG,
   SILENCE_LIMITS,
-  type FrameRange,
 } from './silence-detector';
 
 describe('detectSilentRanges', () => {
@@ -44,43 +42,6 @@ describe('detectSilentRanges', () => {
 
   it('returns nothing for empty input', () => {
     expect(detectSilentRanges([], hop)).toHaveLength(0);
-  });
-});
-
-describe('planSilenceRemoval', () => {
-  it('keeps the complement of silent ranges and reports removed frames', () => {
-    // clip source [0, 300); remove [100, 150) and [200, 250)
-    const silent: FrameRange[] = [{ start: 100, end: 150 }, { start: 200, end: 250 }];
-    const plan = planSilenceRemoval(0, 300, silent);
-    expect(plan.removedFrames).toBe(100);
-    expect(plan.kept).toEqual([
-      { inPoint: 0, outPoint: 100 },
-      { inPoint: 150, outPoint: 200 },
-      { inPoint: 250, outPoint: 300 },
-    ]);
-  });
-
-  it('merges overlapping silent ranges', () => {
-    const silent: FrameRange[] = [{ start: 100, end: 200 }, { start: 150, end: 250 }];
-    const plan = planSilenceRemoval(0, 300, silent);
-    expect(plan.removedFrames).toBe(150);
-    expect(plan.kept).toEqual([
-      { inPoint: 0, outPoint: 100 },
-      { inPoint: 250, outPoint: 300 },
-    ]);
-  });
-
-  it('clamps ranges to the clip bounds', () => {
-    const silent: FrameRange[] = [{ start: -50, end: 50 }, { start: 280, end: 400 }];
-    const plan = planSilenceRemoval(0, 300, silent);
-    expect(plan.kept).toEqual([{ inPoint: 50, outPoint: 280 }]);
-    expect(plan.removedFrames).toBe(70); // 50 at head + 20 at tail
-  });
-
-  it('returns the whole clip kept when nothing is silent', () => {
-    const plan = planSilenceRemoval(0, 300, []);
-    expect(plan.removedFrames).toBe(0);
-    expect(plan.kept).toEqual([{ inPoint: 0, outPoint: 300 }]);
   });
 });
 

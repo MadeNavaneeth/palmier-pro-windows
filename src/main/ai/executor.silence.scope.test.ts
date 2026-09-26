@@ -17,12 +17,19 @@ import { ToolExecutor } from './executor';
 import { EditorController } from '../../shared/editor/controller';
 import { resetSilenceSettingsCache } from '../media/silence-settings';
 
-function addMedia(editor: EditorController, id: string, path: string, type: 'audio' | 'video') {
+function addMedia(
+  editor: EditorController,
+  id: string,
+  path: string,
+  type: 'audio' | 'video',
+  audioCodec?: string,
+) {
   editor.addMedia({
     id,
     path,
     filename: path.split(/[\\/]/).pop()!,
     type,
+    ...(audioCodec ? { audioCodec } : {}),
     duration: 20,
     fileSize: 100,
     addedAt: '2026-08-25T00:00:00.000Z',
@@ -117,6 +124,26 @@ describe('remove_silence scoped mode', () => {
     expect(video[1]).toMatchObject({ startFrame: 30, durationFrames: 240 });
   });
 
+  it('routes the legacy clipId form through the linked ripple transaction', async () => {
+    const editor = new EditorController();
+    addMedia(editor, 'linked', 'G:\\linked.mp4', 'video', 'aac');
+    const video = editor.addClip({
+      assetId: 'linked', trackId: 'v1', startFrame: 0, durationFrames: 300,
+    }) as string;
+    mocks.detectSilenceForFile.mockResolvedValue([{ startSec: 1, endSec: 2 }]);
+
+    const result = await new ToolExecutor(editor).execute('remove_silence', { clipId: video });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({ removed: 1 });
+    expect(clipsOnTrack(editor, 'v1').map((clip) => [
+      clip.startFrame, clip.startFrame + clip.durationFrames,
+    ])).toEqual([[0, 30], [30, 270]]);
+    expect(clipsOnTrack(editor, 'a1').map((clip) => [
+      clip.startFrame, clip.startFrame + clip.durationFrames,
+    ])).toEqual([[0, 30], [30, 270]]);
+  });
+
   it('refuses before editing when an audio target source is missing', async () => {
     // Model a file that vanished after import: the clip persists but the
     // media entry is gone from the index the executor resolves against.
@@ -171,6 +198,16 @@ describe('remove_silence timeline mode', () => {
     return { ...h, secondAudioId };
   }
 
+  function laterAudioHarness(startFrame = 360) {
+    const h = twoClipHarness();
+    const secondAudioId = h.editor.addTrack('audio') as string;
+    addMedia(h.editor, 'assetC', 'F:\\c.mp3', 'audio');
+    const secondClip = h.editor.addClip({
+      assetId: 'assetC', trackId: secondAudioId, startFrame, durationFrames: 150,
+    }) as string;
+    return { ...h, secondAudioId, secondClip };
+  }
+
   it('sweeps every audio track in order with no arguments', async () => {
     const { executor } = secondAudioHarness();
 
@@ -180,6 +217,54 @@ describe('remove_silence timeline mode', () => {
     // a1 contributes 90 frames across two merged sections; track 2 adds 30.
     expect(result.data).toMatchObject({ sectionsRemoved: 3, removedFrames: 120 });
     expect(mocks.detectSilenceForFile).toHaveBeenCalledTimes(3); // one per distinct source path
+  });
+
+  it('analyzes one source once when it is used on multiple tracks', async () => {
+    const h = twoClipHarness();
+    const secondAudioId = h.editor.addTrack('audio') as string;
+    h.editor.addClip({ assetId: 'assetA', trackId: secondAudioId, startFrame: 600, durationFrames: 120 });
+
+    const result = await h.executor.execute('remove_silence', {});
+
+    expect(result.success).toBe(true);
+    expect(mocks.detectSilenceForFile).toHaveBeenCalledTimes(2); // A and B
+  });
+
+  it('preflights a later missing source before applying any track', async () => {
+    class VanishedMediaEditor extends EditorController {
+      override getMedia() {
+        return super.getMedia().filter((asset) => asset.id !== 'assetC');
+      }
+    }
+    const vanished = new VanishedMediaEditor();
+    twoClipHarness(vanished);
+    const secondAudioId = vanished.addTrack('audio') as string;
+    addMedia(vanished, 'assetC', 'F:\\c.mp3', 'audio');
+    const secondClip = vanished.addClip({
+      assetId: 'assetC', trackId: secondAudioId, startFrame: 360, durationFrames: 150,
+    }) as string;
+    const before = JSON.stringify(vanished.getProject());
+
+    const result = await new ToolExecutor(vanished).execute('remove_silence', {});
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(secondClip);
+    expect(JSON.stringify(vanished.getProject())).toBe(before);
+  });
+
+  it('uses post-ripple positions for a later sync-locked track', async () => {
+    const h = laterAudioHarness();
+
+    const result = await h.executor.execute('remove_silence', {});
+
+    expect(result.success).toBe(true);
+    // The first pass removes 30 + 30 frames before the second clip, so its
+    // current span is [270, 420). C's 1–2s silence therefore maps to
+    // [300, 330), not the stale pre-ripple [390, 420).
+    expect(clipsOnTrack(h.editor, h.secondAudioId).map((clip) => [
+      clip.startFrame,
+      clip.startFrame + clip.durationFrames,
+    ])).toEqual([[270, 300], [300, 390]]);
   });
 
   it('notes a partial sweep when a later anchor track is locked', async () => {
@@ -219,5 +304,111 @@ describe('remove_silence timeline mode', () => {
 
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({ removed: 0, message: expect.stringContaining('No dead air on the timeline') });
+  });
+});
+
+/**
+ * The detector reports the whole asset while a clip shows a trimmed part of it,
+ * so a detected span can be found and still meet no part of the clip. It is
+ * then omitted rather than clamped (clamping would cut audio the detector
+ * never called silent) — but "no dead air" over found silence is a false
+ * statement about the user's audio, so the omission is reported in the receipt.
+ */
+describe('remove_silence omission reporting', () => {
+  /** One audio clip whose 10s window is the head of its source. */
+  function trimmedHarness() {
+    const editor = new EditorController();
+    addMedia(editor, 'assetA', 'A:\\long.mp3', 'audio');
+    const c1 = editor.addClip({
+      assetId: 'assetA', trackId: 'a1', startFrame: 0, durationFrames: 300,
+    }) as string;
+    return { editor, executor: new ToolExecutor(editor), c1 };
+  }
+
+  interface Receipt {
+    removed: number;
+    ranges?: number;
+    sectionsRemoved?: number;
+    removedFrames?: number;
+    message?: string;
+    notes?: string[];
+  }
+
+  async function remove(
+    executor: ToolExecutor,
+    args: Record<string, unknown>,
+  ): Promise<Receipt> {
+    const result = await executor.execute('remove_silence', args);
+    expect(result.success).toBe(true);
+    return result.data as Receipt;
+  }
+
+  it('notes found silence that lies outside the clip instead of claiming none', async () => {
+    const { editor, executor, c1 } = trimmedHarness();
+    // Source 20..40s: the detector found two gaps, both past the clip's 10s.
+    mocks.detectSilenceForFile.mockResolvedValue([
+      { startSec: 20, endSec: 21 },
+      { startSec: 30, endSec: 31 },
+    ]);
+
+    const data = await remove(executor, { clipIds: [c1] });
+
+    // The "no dead air" line would be false here, so it is replaced by a note.
+    expect(data.message).toBeUndefined();
+    expect(data.notes?.join(' ')).toMatch(/found 2 silent spans/i);
+    expect(data.notes?.join(' ')).toMatch(/outside any clip's trimmed window/);
+    // The removed-count fields still parse for a caller that reads numbers.
+    expect(data).toMatchObject({ removed: 0, ranges: 0, sectionsRemoved: 0, removedFrames: 0 });
+    // And nothing on the timeline moved.
+    expect(clipsOnTrack(editor, 'a1')).toHaveLength(1);
+  });
+
+  it('reports both numbers when some spans became a cut and others did not', async () => {
+    const { executor, c1 } = trimmedHarness();
+    mocks.detectSilenceForFile.mockResolvedValue([
+      { startSec: 1, endSec: 2 },    // inside -> 30..60
+      { startSec: 20, endSec: 21 },   // past the clip
+    ]);
+
+    const data = await remove(executor, { clipIds: [c1] });
+
+    expect(data.removed).toBe(1);
+    expect(data.notes?.join(' ')).toMatch(/1 detected silent span produced no cut/);
+    expect(data.notes?.join(' ')).toMatch(/outside any clip's trimmed window/);
+  });
+
+  it('names an invalid timing differently from a span outside the clip', async () => {
+    const { executor, c1 } = trimmedHarness();
+    mocks.detectSilenceForFile.mockResolvedValue([
+      { startSec: Number.NaN, endSec: 2 },
+      { startSec: 1, endSec: 2 },
+    ]);
+
+    const data = await remove(executor, { clipIds: [c1] });
+
+    expect(data.removed).toBe(1);
+    expect(data.notes?.join(' ')).toMatch(/1 detected silent span produced no cut: 1 with invalid timings/);
+    expect(data.notes?.join(' ')).not.toMatch(/trimmed window/);
+  });
+
+  it('keeps the plain no-dead-air receipt when the detector found nothing', async () => {
+    const { executor, c1 } = trimmedHarness();
+    mocks.detectSilenceForFile.mockResolvedValue([]);
+
+    const data = await remove(executor, { clipIds: [c1] });
+
+    expect(data.message).toContain('No dead air in the selected clips');
+    expect(data.notes).toBeUndefined();
+  });
+
+  it('notes the omission on the legacy single-clip form too', async () => {
+    const { executor, c1 } = trimmedHarness();
+    mocks.detectSilenceForFile.mockResolvedValue([{ startSec: 20, endSec: 21 }]);
+
+    const data = await remove(executor, { clipId: c1 });
+
+    expect(data.removed).toBe(0);
+    expect(data.notes?.join(' ')).toMatch(/found 1 silent span/i);
+    expect(data.notes?.join(' ')).toMatch(/nothing was removed/);
   });
 });

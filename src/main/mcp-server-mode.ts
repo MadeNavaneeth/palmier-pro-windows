@@ -32,6 +32,10 @@ export async function startMcpServerMode(): Promise<void> {
       const { getOpenAiCompatibleRuntime } = await import('./ai/ipc');
       return getOpenAiCompatibleRuntime();
     },
+    getVisionRuntime: async () => {
+      const { getVisionRuntime } = await import('./ai/ipc-vision');
+      return getVisionRuntime();
+    },
   });
 
   if (!status.running) {

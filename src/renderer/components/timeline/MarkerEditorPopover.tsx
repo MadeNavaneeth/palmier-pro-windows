@@ -40,7 +40,7 @@ interface MarkerEditorPopoverProps {
 }
 
 export function MarkerEditorPopover({ markerId, x, width, onClose }: MarkerEditorPopoverProps) {
-  const marker = useTimelineStore((s) => s.project.timeline.markers?.find((m) => m.id === markerId));
+  const marker = useTimelineStore((s) => s.getScopeTimeline().markers?.find((m) => m.id === markerId));
   const fps = useTimelineStore((s) => s.getProjectFps());
   const updateMarker = useTimelineStore((s) => s.updateMarker);
   const deleteSelectedMarkers = useTimelineStore((s) => s.deleteSelectedMarkers);

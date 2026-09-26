@@ -40,8 +40,8 @@ export function TimelineTrack({ track, clips, onLaneMouseDown }: TimelineTrackPr
   const selectedGap = useTimelineStore((s) => s.selectedGap);
   const selectGap = useTimelineStore((s) => s.selectGap);
   const controller = useTimelineStore((s) => s.controller);
-  const inFrame = useTimelineStore((s) => s.project.timeline.inFrame);
-  const outFrame = useTimelineStore((s) => s.project.timeline.outFrame);
+  const inFrame = useTimelineStore((s) => s.getScopeTimeline().inFrame);
+  const outFrame = useTimelineStore((s) => s.getScopeTimeline().outFrame);
   const anySoloed = useTimelineStore((s) => s.getTracks().some((t) => t.soloed));
 
   // Frame where a dragged asset would land (null when not dragging over).

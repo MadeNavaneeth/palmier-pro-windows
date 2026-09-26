@@ -4,12 +4,13 @@
   "description": "GPU-accelerated compositor native addon for Palmier Pro Windows",
   "main": "index.node",
   "scripts": {
-    "build": "napi build --release",
-    "build:debug": "napi build",
-    "artifacts": "napi artifacts"
+    "build": "napi build --release && node ../scripts/native-addon.mjs",
+    "build:debug": "napi build && node ../scripts/native-addon.mjs",
+    "artifacts": "napi artifacts",
+    "check": "node ../scripts/native-addon.mjs --check"
   },
   "napi": {
-    "name": "palmier-compositor",
+    "binaryName": "palmier-compositor",
     "triples": {
       "defaults": true
     }

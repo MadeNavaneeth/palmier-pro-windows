@@ -72,6 +72,27 @@ cargo test
 
 Update the parity ledger and snapshot before a release.
 
+## Working Tree Safety
+
+The working tree routinely holds hundreds of files of uncommitted work with no second copy, so
+git is not a recovery mechanism in this repository.
+
+- **Never run `git checkout`, `git restore`, `git stash`, `git clean`, or `git reset`** on any
+  path. These are unrecoverable here. This has already caused two incidents: an agent reverted a
+  native file holding roughly 1800 uncommitted lines, recoverable only from an out-of-band
+  snapshot; and a `git stash push --include-untracked` round-tripped the entire tree through
+  `core.autocrlf`, flipping line endings on about 200 files and breaking a `\r`-strict parser in
+  three agent skill files.
+- To inspect a baseline, use `git show HEAD:<path>` or `git diff`. Both are read-only.
+- To undo your own edits, restore from a copy you made before you started. For a file you have not
+  modified, no backup is needed.
+- Copy a file to a temp directory before editing it when the change is risky or the file is large.
+- Do not commit unless explicitly asked, and stage only the intended files.
+- This repository has no `.gitattributes` and `core.autocrlf=true`, so working-tree files are CRLF
+  while git stores LF. That is expected, not damage, and `git add` normalizes it back. Do not
+  "fix" working-tree line endings, and do not read a CRLF working tree as evidence that a
+  `git stash` or `git checkout` round-trip occurred.
+
 ## Coding Behavior Guidelines (Karpathy)
 
 These principles apply to EVERY code change in this repository. They are

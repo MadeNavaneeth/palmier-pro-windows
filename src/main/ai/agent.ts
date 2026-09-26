@@ -12,6 +12,7 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { tools, toolsToJsonSchema, isReadOnlyTool } from './tools';
 import { ToolExecutor, type ToolResult } from './executor';
+import { skillIndexSection } from './skills';
 import {
   createCompletion,
   parseToolArguments,
@@ -19,6 +20,7 @@ import {
   CancelledError,
   type OpenAiMessage,
 } from './openai-compatible';
+import { renderCodexHistory, runCodexCompletion } from './codex-cli';
 import type { ProviderKind } from '../../shared/ai/provider-config';
 import type { PlanStep } from '../../shared/editor/plan';
 import { buildProjectDigest } from '../../shared/editor/project-digest';
@@ -45,10 +47,22 @@ export interface AgentConfig {
   apiKey: string;
   /**
    * API root override (#17). Optional for Anthropic, where the SDK default is
-   * used; required for `openai-compatible`, which has no default.
+   * used; required for `openai-compatible`, which has no default; unused by
+   * `codex-cli`, which shells out to the CLI.
    */
   baseUrl?: string;
   model?: string;
+  /**
+   * Explicit `codex` binary override (upstream #142). Only read when the
+   * provider is `codex-cli`.
+   */
+  binaryPath?: string;
+  /**
+   * Sandboxed working root for the Codex CLI's `-C` (upstream #142),
+   * resolved by the IPC layer inside the project/media scope. Only read when
+   * the provider is `codex-cli`.
+   */
+  workingDir?: string;
   maxTokens?: number;
   /**
    * Context window in tokens, when the deployment differs from the provider
@@ -147,6 +161,8 @@ export class PalmierAgent {
   private editor: EditorController;
   private config: AgentConfig | null = null;
   private conversationHistory: any[] = [];
+  /** Skills root for the prompt index and `load_skill` (Track 2, L7). */
+  private skillsDir: string | undefined;
   /** Non-null exactly while a turn is running (upstream #58). */
   private turn: AbortController | null = null;
   /** Callbacks of the running turn, so tool-driven events can reach the UI. */
@@ -158,13 +174,15 @@ export class PalmierAgent {
    */
   private lastPlan: PlanStep[] | null = null;
 
-  constructor(editor: EditorController) {
+  constructor(editor: EditorController, opts?: { skillsDir?: string }) {
     this.editor = editor;
+    this.skillsDir = opts?.skillsDir;
     this.executor = new ToolExecutor(editor, {
       onPlanUpdate: (plan) => {
         this.lastPlan = plan;
         this.activeCallbacks?.onPlan?.(plan);
       },
+      ...(opts?.skillsDir !== undefined ? { skillsDir: opts.skillsDir } : {}),
     });
   }
 
@@ -186,9 +204,23 @@ export class PalmierAgent {
    * The system prompt for a turn: the static contract plus a digest derived
    * from the controller *right now* (L4). Regenerated per turn, never cached,
    * so it cannot drift away from the authoritative project.
+   *
+   * The Codex CLI runs one-shot per round with its own working directory, so
+   * its turns carry one extra line naming the sandbox. Nothing else changes:
+   * the tool catalog arrives in the CLI prompt, not here.
    */
   private systemPrompt(): string {
-    return `${SYSTEM_PROMPT}\n\n${buildProjectDigest(this.editor.getProject())}`;
+    const base = `${SYSTEM_PROMPT}\n\n${buildProjectDigest(this.editor.getProject())}`;
+    // L7: names + descriptions only. Bodies reach the model solely as
+    // `load_skill` results, never via the prompt — and an empty section is
+    // omitted entirely so a skill-less setup pays nothing.
+    const skills = skillIndexSection(this.skillsDir);
+    const withSkills = skills.length > 0 ? `${base}\n\n${skills}` : base;
+    if (this.config?.provider === 'codex-cli' && this.config.workingDir) {
+      return `${withSkills}\n\nYour working directory is ${this.config.workingDir}. `
+        + 'The CLI runs read-only: answer with tool calls, never file edits or shell commands.';
+    }
+    return withSkills;
   }
 
   configure(config: AgentConfig): void {
@@ -197,6 +229,10 @@ export class PalmierAgent {
 
   isConfigured(): boolean {
     if (!this.config) return false;
+    // The Codex CLI authenticates with the user's own sign-in, so there is no
+    // key or endpoint to check — binary availability is gated per turn with a
+    // precise refusal instead.
+    if (this.config.provider === 'codex-cli') return true;
     // A local runtime needs no key, but it does need somewhere to send the
     // request, so one of the two must be present.
     return this.config.apiKey.length > 0 || Boolean(this.config.baseUrl);
@@ -256,6 +292,8 @@ export class PalmierAgent {
         await this.chatAnthropic(userMessage, callbacks, turn.signal);
       } else if (this.config.provider === 'openai-compatible') {
         await this.chatOpenAiCompatible(userMessage, callbacks, turn.signal);
+      } else if (this.config.provider === 'codex-cli') {
+        await this.chatCodexCli(userMessage, callbacks, turn.signal);
       } else {
         callbacks.onError(`Provider "${String(this.config.provider)}" not yet supported.`);
       }
@@ -354,6 +392,99 @@ export class PalmierAgent {
             content: JSON.stringify(outcome!.result),
           });
         });
+      }
+
+      // Ran out of rounds: report it rather than silently truncating the turn.
+      callbacks.onError(
+        `Stopped after ${MAX_TOOL_ROUNDS} tool rounds without a final answer. `
+        + 'Try a narrower request.',
+      );
+    } catch (err) {
+      if (err instanceof CancelledError || signal.aborted) {
+        this.recordCancelledTurn(fullResponse);
+        callbacks.onCancelled(fullResponse);
+        return;
+      }
+      callbacks.onError(err instanceof Error ? err.message : 'Unknown error during AI chat.');
+    }
+  }
+
+  /**
+   * Codex CLI turn (upstream #142).
+   *
+   * The CLI is a completion backend inside this same tool loop: one `codex
+   * exec` run per round, stateless (`--ephemeral`, no resume), with tool
+   * results folded back into the next round's prompt. The loop bound, the
+   * ToolExecutor semantics, the history shapes, and the cancellation contract
+   * are the OpenAI-compatible path's, unchanged.
+   *
+   * Streamed tokens reach the UI live; the transcript records each round's
+   * authoritative content, so a stream/parse disagreement cannot corrupt the
+   * recorded history.
+   */
+  private async chatCodexCli(
+    userMessage: string,
+    callbacks: StreamCallbacks,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const config = this.config!;
+    if (!config.workingDir) {
+      callbacks.onError('Codex CLI needs a working directory. Check AI settings.');
+      return;
+    }
+
+    const toolSchemas = toolsToJsonSchema().map((schema) => ({
+      name: schema.name,
+      description: schema.description,
+    }));
+    const system = this.systemPrompt();
+    const priorHistory = renderCodexHistory(this.conversationHistory);
+    this.conversationHistory.push({ role: 'user', content: userMessage });
+    let roundContext = '';
+    let fullResponse = '';
+
+    try {
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+        const result = await runCodexCompletion({
+          binaryPath: config.binaryPath,
+          // Blank means the CLI default; there is no provider default to fall
+          // back to, unlike the Anthropic path.
+          model: config.model || undefined,
+          workingDir: config.workingDir,
+          system,
+          history: priorHistory + roundContext,
+          userMessage,
+          tools: toolSchemas,
+          signal,
+          onToken: (token) => callbacks.onToken(token),
+        });
+
+        if (result.content) fullResponse += result.content;
+
+        if (!result.wantsTools) {
+          this.conversationHistory.push({ role: 'assistant', content: result.content });
+          this.appendTranscript({ event: 'assistant', content: fullResponse });
+          callbacks.onComplete(fullResponse);
+          return;
+        }
+
+        const calls = result.toolCalls.map((call) => ({
+          name: call.name,
+          args: parseToolArguments(call.argumentsJson),
+        }));
+        const outcomes = await this.runToolBatch(calls, signal, callbacks);
+        if (outcomes.some((outcome) => outcome === null)) {
+          // Stopped mid-batch: tool results never reached the CLI (it is
+          // stateless), so only completed text is recorded — same shape as
+          // the OpenAI path's cancelled turn.
+          this.recordCancelledTurn(fullResponse);
+          callbacks.onCancelled(fullResponse);
+          return;
+        }
+        roundContext += `\nAssistant: ${result.content}\n`
+          + outcomes.map((outcome, index) => (
+            `Tool ${result.toolCalls[index]!.name} returned: ${JSON.stringify(outcome!.result)}`
+          )).join('\n');
       }
 
       // Ran out of rounds: report it rather than silently truncating the turn.
@@ -475,6 +606,10 @@ export class PalmierAgent {
     const config = this.config!;
     const instruction = summarizeInstruction();
 
+    if (config.provider === 'codex-cli') {
+      return this.summarizeCodex(transcript, signal);
+    }
+
     if (config.provider === 'anthropic') {
       const client = new Anthropic({
         apiKey: config.apiKey,
@@ -506,6 +641,23 @@ export class PalmierAgent {
       ],
       tools: [],
       maxTokens: 1024,
+      signal,
+    });
+    return result.content.trim();
+  }
+
+  /** One-shot Codex summarization: no tools, same backend as the turn. */
+  private async summarizeCodex(transcript: string, signal: AbortSignal): Promise<string> {
+    const config = this.config!;
+    if (!config.workingDir) throw new Error('Codex CLI needs a working directory.');
+    const result = await runCodexCompletion({
+      binaryPath: config.binaryPath,
+      model: config.model || undefined,
+      workingDir: config.workingDir,
+      system: summarizeInstruction(),
+      history: '',
+      userMessage: transcript,
+      tools: [],
       signal,
     });
     return result.content.trim();
@@ -553,6 +705,7 @@ export class PalmierAgent {
     if (!shouldCompact(measure(this.conversationHistory), contextWindow)) return;
     // A provider that cannot take a request cannot take a summary request either.
     if (config.provider === 'openai-compatible' && (!config.baseUrl || !config.model)) return;
+    if (config.provider === 'codex-cli' && !config.workingDir) return;
 
     const before = measure(this.conversationHistory);
     const entries = this.conversationHistory.length;
@@ -832,37 +985,47 @@ Read the project state first, then make edits using the tools below.
 
 **Markers:** manage_markers creates/updates/deletes review notes anchored to frames. Point markers have durationFrames 0; positive values make range markers. Status is open/review/resolved (defaults to open).
 
-**Titles:** add_texts places styled text overlays (fontSize, color, bold, fontFamily, align, backgroundColor + padding, lineSpacing, fontCase, fillMode "footage"/"inverted", blurRadius, tiltX/tiltY). set_title_text updates existing title text and style.
+**Titles:** add_texts places styled text overlays (fontSize, color, bold, fontFamily, align, backgroundColor + padding, lineSpacing, fontCase, fillMode "footage"/"inverted", blurRadius, tiltX/tiltY, variable-font axes variationWght/variationWdth/variationSlnt/variationItal). set_title_text updates existing title text and style.
+
+**Shapes:** add_shapes places vector tutorial overlays (rect/ellipse/line/arrow) with canvas-pixel geometry, stroke/fill styling, and animation presets (draw-on, slide-in-left, slide-in-right, slide-in-up, pop, spin, pulse — position/scale/rotation keyframes only; there is no opacity preset, use fades). set_shape_style restyles a shape clip. set_clip_motion animates video/image/shape clips per axis (x, y, r, sx, sy) with easing; titles stay static.
+
+**Opacity animation:** set_clip_opacity_keyframes animates video/image/generated clip opacity with absolute-frame 0..1 keyframes and easing; points: [] clears the track. It is separate from fadeInFrames/fadeOutFrames, which remain independent.
 
 **Captions:** import_srt / import_vtt place subtitle files as timed text overlays on a video track.
 
 **Speed:** set_clip_speed changes constant playback speed (0.25x–4x) while keeping timeline duration fixed.
 
-**Color grade:** set_clip_color_grade adjusts brightness (-1..1), contrast and saturation (0..3), hue rotation (-180..180), exposure (-5..5 EV, applied first), white balance (temperature 2000..11000K, tint -100..100), vibrance (-1..1), tonal levels (highlights, shadows, blacks, whites, each -1..1) and invert. Omitted fields stay; a field passed its default clears it; clear: true resets the grade. Preview and export apply identical values.
+**Color grade:** set_clip_color_grade adjusts brightness (-1..1), contrast and saturation (0..3), hue rotation (-180..180), exposure (-5..5 EV, applied first), white balance (temperature 2000..11000K, tint -100..100), vibrance (-1..1), tonal levels (highlights, shadows, blacks, whites, each -1..1), tone curves, color wheels, hue curves, LUT and invert. The curves argument adds a master luma curve plus per-channel red/green/blue curves, each a list of {x, y} control points in 0-1 with strictly ascending x (up to 16 points, piecewise linear); an empty channel clears it, omitted channels stay, and an all-identity curve clears the field. The wheels argument adds lift/gamma/gain wheels (shadows/midtones/highlights): each zone is {x, y, m} with pad x/y in -1..1 plus a master (lift m -0.5..0.5 default 0, gamma m 0.5..2 default 1, gain m 0.5..1.5 default 1); omitted zones and components stay, and an all-identity wheels clears the field. The hueCurves argument adds hue-vs-hue/saturation/luminance curves, each a cyclic piecewise-linear list of {x, y} control points in 0-1 with strictly ascending x (up to 16 points), sampled at the pixel hue with near-greys gated out; an empty channel clears it, omitted channels stay, and an all-neutral set clears the field. The lutPath argument applies a .cube LUT file (1D or 3D, validated when set — a missing or invalid file refuses the call); lutIntensity blends it 0..1 (default 1, pass alone to re-blend the existing LUT); an empty lutPath clears the LUT. The blurRadius argument (0-100px gaussian blur, 0 clears), vignette ({amount -1..1, midpoint 0..1, roundness -1..1, feather 0..1}), grain ({amount 0..1, size 0.5..4, animated per frame}) and glow ({intensity 0..1, radius 0..100, threshold 0..1, warmth 0..1}) add the #157 effect stages after the grade; effect components merge per component (omitted stays), an all-identity effect clears it, and clear: true resets grade and effects together. Omitted fields stay; a field passed its default clears it. Preview and export apply identical values.
 
-**Audio:** normalize_audio analyzes peak level and adjusts volume to reach a target (-3 dBFS default). set_clip_pan sets stereo balance (-1 left … +1 right). set_clip_eq applies a three-band EQ (low 100 Hz shelf, mid 1 kHz bell, high 3 kHz shelf, ±15 dB; omitted bands stay, 0 clears a band, clear resets). set_clip_compressor applies threshold/ratio/attack/release/makeup (ratio 1 or clear removes it). Audio fades use clip fadeIn/fadeOutFrames. remove_silence detects and ripples out silent gaps — pass clipIds to scope it, omit for the whole timeline; settings mirror the user's saved controls unless overridden per call.
+**Named grade/shot presets:** list_grade_presets lists saved looks; save_grade_preset captures a video/image clip's grade and normalized static shot fields under a unique name; rename_grade_preset and delete_grade_preset manage saved looks; apply_grade_preset targets one clip, a selection, or all current-timeline clips with allProjectClips:true, always in one undo step. It links the preset by default; pass linkPreset:false to clear the link. Omitting the target is refused, and all-project mode refuses the whole call if any project clip is ineligible. Deleted or manually edited links are inert metadata. Active motion tracks win over static shot fields.
+
+**Audio:** normalize_audio analyzes peak level and adjusts volume to reach a target (-3 dBFS default). set_clip_pan sets stereo balance (-1 left … +1 right). set_clip_eq applies a three-band EQ (low 100 Hz shelf, mid 1 kHz bell, high 3 kHz shelf, ±15 dB; omitted bands stay, 0 clears a band, clear resets). set_clip_compressor applies threshold/ratio/attack/release/makeup (ratio 1 or clear removes it). set_clip_noise_reduction applies spectral denoise to an audio clip (strength 1-100; 0 or clear removes it). Audio fades use clip fadeIn/fadeOutFrames. remove_silence detects and ripples out silent gaps — pass clipIds to scope it, omit for the whole timeline; settings mirror the user's saved controls unless overridden per call.
 
 **Tracks:** manage_tracks reorders, renames, toggles mute/hide/sync-lock, and removes empty tracks. add_track creates new tracks.
 
 **Links:** manage_clip_links links or unlinks clips so they edit together. Linked A/V pairs are created automatically for video with embedded audio.
 
-**Media:** swap_clip_media replaces a clip's source file keeping all edits intact.
+**Nesting:** nest_clips groups clips into a nested sequence (one compound clip replacing them, one undo step; linked partners nest together). flatten_compound restores one compound clip's content to the main timeline (one level, one undo step). Trim, split, and move work on the compound clip itself. nest_clips, flatten_compound, get_timeline, and get_clips take an optional scopeTimelineId to work inside a nested timeline (omit it for the main timeline); get_timeline also lists nested timelines when any exist, and verify_timeline audits every scope at once so it needs no scope argument.
+
+**Media:** swap_clip_media replaces a clip's source file keeping all edits intact. describe_media generates a one-sentence AI description for a library image/video asset from a single frame via the user's own vision provider (explicit only — call it solely when the user asks to describe that asset; audio is refused, stored descriptions are searchable via get_media).
+
+**Library folders:** manage_media_folders lists/creates/renames/deletes flat one-level media-library folders and moves assets between them (list first to get folder ids; each mutating call is one undo step; deleting a folder moves its assets to the library root and never deletes media).
 
 **Styling extras:** set_clip_blend_mode (multiply/screen/overlay/…), set_clip_fade, set_clip_transition (wipe/slide), cross_dissolve between adjacent clips, copy_clip_settings to copy style from one clip to others.
 
-**Generation:** generate_media creates an image/video/audio asset from a prompt via the configured providers (fal.ai, Replicate, HiggsField) and imports it into the library — then place it with add_clip like any other media. Requires the user to have set an API key in Settings → Media generation.
+**Generation:** generate_media creates an image/video/audio asset from a prompt via the configured providers (fal.ai, Replicate, HiggsField) and imports it into the library (pass referenceImagePath, an absolute path to a local image, to generate an image from an existing picture instead of the prompt alone; it is refused for video and audio) — then place it with add_clip like any other media. Requires the user to have set an API key in Settings → Media generation.
 
-**Model recommendations (upstream #572):**
-- **Images:** Seedream or GPT Image for high-quality results; fal-ai/flux/dev for fast iteration.
-- **Video:** Seedance 2.5 for text-to-video; MiniMax H3 with a reference image for video-to-video reframe.
-- **Audio:** Replicate's meta/musicgen for music generation.
+**Model recommendations (upstream #572):** every model named below is in the live provider catalog, and model ids are written in quotes; only name these, and only when the user's provider exposes it.
+- **Images:** "fal-ai/flux-pro/v1.1" or "fal-ai/flux/dev" for quality; "fal-ai/ideogram/v2" and "fal-ai/recraft/v3" when the prompt has text to render; "fal-ai/flux/schnell" or "black-forest-labs/flux-schnell" for fast iteration. Every one of these accepts referenceImagePath.
+- **Video:** "fal-ai/kling-video/v1/standard/text-to-video" for motion; "fal-ai/minimax-video/video-01" for short clips; "fal-ai/luma-dream-machine" for a softer look; "stability-ai/stable-video-diffusion:latest" on Replicate. These are text to video only. To reframe an existing shot, inspect_frame the source to write a png, then generate an image from that file with referenceImagePath and cut the result in.
+- **Audio:** "meta/musicgen:latest" for music, "suno-ai/bark:latest" for speech and effects.
 Choose the best available model from the configured providers. If a preferred model is unavailable, fall back to the provider default.
 
-**Interchange:** export_fcpxml writes the timeline as Final Cut XML for Resolve/FCP/Premiere; import_fcpxml reads one back additively (new tracks per lane). Opacity, geometry, crop and volume survive the trip; grades, blend modes and keyframed parameters inside FCPXML files are skipped and reported.
+**Interchange:** export_fcpxml writes the timeline as Final Cut XML for Resolve/FCP/Premiere; import_fcpxml reads one back additively (new tracks per lane). Clip placement/trims, lanes, roles, titles (styling), static and keyframed opacity, transform (position/scale/rotation) including its keyframes, crop, volume and source timecode survive the trip; grades, effects, edge rounding/softness, crop keyframes, keyframed audio volume, audio fades and title transform/opacity keyframes are skipped and reported.
 
-**Project files:** new_project, open_project, and save_project manage .vproj files directly, and export_project renders the timeline to a file with the same exporter the delivery panel uses — mainly for MCP batch workflows.
+**Project files:** new_project, open_project, and save_project manage .vproj files directly, and export_project renders the timeline to a file with the same exporter the delivery panel uses (pass hdr:"hlg" or "pq" for a 10-bit BT.2020 HDR delivery on MP4/MOV) — mainly for MCP batch workflows.
 
-**Verification:** verify_timeline is a read-only audit (zero-length clips, source overruns, overlaps, offline media, orphaned link groups, bad fades, empty titles, invalid markers). Run it after any destructive batch and fix what it reports before saying the edit is done.
+**Verification:** verify_timeline is a read-only audit (zero-length clips, source overruns, overlaps, offline media, orphaned link groups, bad fades, empty titles/shapes, invalid markers). Run it after any destructive batch and fix what it reports before saying the edit is done.
 
 **Settings:** set_project_settings changes fps/canvas/aspect ratio as one undoable step. undo/redo wrap everything above.
 

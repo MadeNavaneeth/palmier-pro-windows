@@ -96,5 +96,9 @@ export function initAutoUpdater(win: BrowserWindow): void {
 }
 
 function sendStatus(status: string, data?: Record<string, unknown>): void {
-  mainWindow?.webContents.send('updater:status', { status, ...data });
+  // Multi-window (#137): the updater is initialized with the first window,
+  // which the user can now close while others stay open. Never send into a
+  // destroyed window — status delivery to a closed window is simply skipped.
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('updater:status', { status, ...data });
 }

@@ -42,7 +42,8 @@
  */
 
 import type { Clip, Project } from '../../shared/types/project';
-import { drawTitle, isAdvancedTitle } from './title-render';
+import { isAdvancedTitle } from '../../shared/editor/title';
+import { drawTitle } from './title-render';
 
 export interface RasterizedTitle {
   width: number;
@@ -76,6 +77,10 @@ function styleKey(clip: Clip): string {
     clip.titleBlurRadius,
     clip.titleTiltXDeg,
     clip.titleTiltYDeg,
+    clip.titleVariationWght,
+    clip.titleVariationWdth,
+    clip.titleVariationSlnt,
+    clip.titleVariationItal,
     clip.opacity,
     clip.x,
     clip.y,
@@ -179,20 +184,43 @@ export type TitleRasterForIpc = {
  * and image clips do on the main-process side, and this must agree or
  * soloing a track would hide its video but leave its titles behind.
  *
+ * Nested timelines contribute their visible-track titles without the frame
+ * filter: mapping a nested clip to root frames needs the full resolution
+ * chain the main-process compositor owns, while this side only hands over
+ * box-content bitmaps keyed by clip id — the compositor picks the ones its
+ * resolved visible set actually needs. Content caching keeps the over-scan
+ * cheap.
+ *
  * Shared by the playback engine's preview requests and the marker-index
  * thumbnails, so both surfaces composite a title the same way.
  */
 export function visibleTitleRasters(project: Project, frame: number): TitleRasterForIpc[] {
   const { width, height } = project.settings;
-  const trackById = new Map(project.timeline.tracks.map((track) => [track.id, track] as const));
-  const anySoloed = project.timeline.tracks.some((track) => track.soloed);
   const results: TitleRasterForIpc[] = [];
-  for (const clip of project.timeline.clips) {
+  collectTitleRasters(project.timeline.tracks, project.timeline.clips, frame, width, height, results);
+  for (const nested of Object.values(project.timelines ?? {})) {
+    collectTitleRasters(nested.tracks, nested.clips, null, width, height, results);
+  }
+  return results;
+}
+
+/** Titles on visible tracks; `frame: null` rasterizes regardless of position (nested timelines). */
+function collectTitleRasters(
+  tracks: Project['timeline']['tracks'],
+  clips: Project['timeline']['clips'],
+  frame: number | null,
+  width: number,
+  height: number,
+  results: TitleRasterForIpc[],
+): void {
+  const trackById = new Map(tracks.map((track) => [track.id, track] as const));
+  const anySoloed = tracks.some((track) => track.soloed);
+  for (const clip of clips) {
     if (clip.type !== 'title') continue;
     const track = trackById.get(clip.trackId);
     if (!track || track.visible === false) continue;
     if (anySoloed && !track.soloed) continue;
-    if (frame < clip.startFrame || frame >= clip.startFrame + clip.durationFrames) continue;
+    if (frame !== null && (frame < clip.startFrame || frame >= clip.startFrame + clip.durationFrames)) continue;
     const rasterized = rasterizeTitle(clip as Clip, width, height);
     if (!rasterized) continue;
     results.push({
@@ -204,5 +232,4 @@ export function visibleTitleRasters(project: Project, frame: number): TitleRaste
       rgba: rasterized.data,
     });
   }
-  return results;
 }

@@ -11,6 +11,16 @@
  */
 
 import { create } from 'zustand';
+import {
+  DEFAULT_APPEARANCE,
+  narrowAppearance,
+  type Appearance,
+} from '../lib/appearance';
+import {
+  DEFAULT_SHORTCUT_PRESET,
+  asShortcutPresetId,
+  type ShortcutPresetId,
+} from '../../shared/editor/shortcuts';
 import { asGuideKind, type GuideKind } from '../../shared/preview/guides';
 import {
   isDetachablePanel,
@@ -38,6 +48,8 @@ const PANELS_STORAGE_KEY = 'palmier.layout.panels';
 const PANEL_GROUPS_STORAGE_KEY = 'palmier.layout.panelGroups';
 const LAYOUT_STORAGE_KEY = 'palmier.layout.preset';
 const SPLITS_STORAGE_KEY = 'palmier.layout.splits';
+const SHORTCUT_PRESET_STORAGE_KEY = 'palmier.shortcuts.preset';
+const APPEARANCE_STORAGE_KEY = 'palmier.ui.appearance';
 
 // Re-exported so callers keep importing the panel vocabulary from the store.
 export type { PanelKey, PanelVisibility } from '../../shared/ui/panel-groups';
@@ -54,6 +66,41 @@ function loadLayout(): LayoutPreset {
 function saveLayout(preset: LayoutPreset): void {
   try {
     window.localStorage?.setItem(LAYOUT_STORAGE_KEY, preset);
+  } catch {
+    // A full or unavailable storage quota must not break the switch itself.
+  }
+}
+
+/** Persisted keyboard preset, or the default when unset or unrecognized (#579). */
+function loadShortcutPreset(): ShortcutPresetId {
+  try {
+    return asShortcutPresetId(window.localStorage?.getItem(SHORTCUT_PRESET_STORAGE_KEY))
+      ?? DEFAULT_SHORTCUT_PRESET;
+  } catch {
+    return DEFAULT_SHORTCUT_PRESET;
+  }
+}
+
+function saveShortcutPreset(preset: ShortcutPresetId): void {
+  try {
+    window.localStorage?.setItem(SHORTCUT_PRESET_STORAGE_KEY, preset);
+  } catch {
+    // A full or unavailable storage quota must not break the switch itself.
+  }
+}
+
+/** Persisted appearance, or follow-the-system when unset or unrecognized. */
+function loadAppearance(): Appearance {
+  try {
+    return narrowAppearance(window.localStorage?.getItem(APPEARANCE_STORAGE_KEY));
+  } catch {
+    return DEFAULT_APPEARANCE;
+  }
+}
+
+function saveAppearance(appearance: Appearance): void {
+  try {
+    window.localStorage?.setItem(APPEARANCE_STORAGE_KEY, appearance);
   } catch {
     // A full or unavailable storage quota must not break the switch itself.
   }
@@ -263,6 +310,20 @@ interface UiState {
    * a resized workspace survives a restart, like the panel flags above.
    */
   splits: Record<SplitKey, number>;
+  /**
+   * Which keyboard preset the handler and help sheet read (upstream #579).
+   *
+   * Persisted like the layout: FCP muscle memory is a per-machine choice, not a
+   * per-project one, and it must survive a restart. UI-only — switching never
+   * reaches the project, so it produces no undo entry.
+   */
+  shortcutPreset: ShortcutPresetId;
+  /**
+   * Theme preference (upstream PR #430's Theme half): follow the OS, or an
+   * explicit light/dark override. Persisted like the layout, UI-only, no undo
+   * entry.
+   */
+  appearance: Appearance;
 
   openShortcutHelp: () => void;  closeShortcutHelp: () => void;
   toggleShortcutHelp: () => void;
@@ -284,6 +345,10 @@ interface UiState {
   setSplit: (key: SplitKey, value: number) => void;
   /** Restore every divider to its default position. */
   resetSplits: () => void;
+  /** Switch keyboard preset; the value is narrowed and persisted. */
+  setShortcutPreset: (preset: ShortcutPresetId) => void;
+  /** Switch appearance; the value is narrowed and persisted. */
+  setAppearance: (appearance: Appearance) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -295,6 +360,8 @@ export const useUiStore = create<UiState>((set) => ({
   detached: [],
   layout: loadLayout(),
   splits: loadSplits(),
+  shortcutPreset: loadShortcutPreset(),
+  appearance: loadAppearance(),
 
   openShortcutHelp: () => set({ shortcutHelpOpen: true }),
   closeShortcutHelp: () => set({ shortcutHelpOpen: false }),
@@ -403,5 +470,25 @@ export const useUiStore = create<UiState>((set) => ({
       const next = { ...SPLITS_DEFAULTS };
       saveSplits(next);
       return { splits: next };
+    }),
+
+  setShortcutPreset: (preset) =>
+    set((state) => {
+      // Guarded like setLayout: a bad value from an untyped caller cannot
+      // persist and then be read back as the active preset on the next launch.
+      const next = asShortcutPresetId(preset);
+      if (next === null || next === state.shortcutPreset) return {};
+      saveShortcutPreset(next);
+      return { shortcutPreset: next };
+    }),
+
+  setAppearance: (appearance) =>
+    set((state) => {
+      // Guarded like setLayout: a bad value cannot persist and then be read
+      // back as the active theme on the next launch.
+      const next = narrowAppearance(appearance);
+      if (next === state.appearance) return {};
+      saveAppearance(next);
+      return { appearance: next };
     }),
 }));

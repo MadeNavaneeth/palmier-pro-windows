@@ -9,6 +9,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { SilenceConfig } from '../shared/audio/silence-detector';
 import type { MarkerSettings } from '../shared/editor/marker-settings';
+import type { FcpxmlExportResult } from '../shared/fcpxml/exporter';
 
 // â”€â”€â”€ Type-safe API exposed to the renderer as `window.palmier` â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -22,7 +23,12 @@ const api = {
     autosave: (name: string, filePath: string | null, data: string) =>
       ipcRenderer.invoke('project:autosave', name, filePath, data),
     recoveryCheck: () => ipcRenderer.invoke('project:recovery-check'),
-    recoveryClear: () => ipcRenderer.invoke('project:recovery-clear'),
+    /** Omit the id for this session's snapshot; pass one to handle an orphan. */
+    recoveryClear: (recoveryId?: string) => (
+      recoveryId === undefined
+        ? ipcRenderer.invoke('project:recovery-clear')
+        : ipcRenderer.invoke('project:recovery-clear', recoveryId)
+    ),
   },
 
   // â”€â”€ Media â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -58,9 +64,17 @@ const api = {
      */
     scanRelink: (filenames: string[], folder: string) =>
       ipcRenderer.invoke('media:scan-relink', filenames, folder),
-    /** FCPXML UI bridges (#154): open+parse+probe / save-dialog+write. */
+    /**
+     * FCPXML UI bridges (#154): open+parse+probe / save-dialog+write. The
+     * write carries the exporter's omission report so the panel can tell the
+     * user what the format could not carry instead of dropping the notes.
+     */
     openFcpxml: () => ipcRenderer.invoke('media:fcpxml-open'),
-    writeFcpxml: (xml: string) => ipcRenderer.invoke('media:fcpxml-write', { xml }),
+    writeFcpxml: (report: Pick<FcpxmlExportResult, 'xml' | 'unsupported'>) =>
+      ipcRenderer.invoke('media:fcpxml-write', {
+        xml: report.xml,
+        unsupported: report.unsupported,
+      }),
     /**
      * Transcribe an audio/video file over the BYOK whisper-compatible
      * runtime and return caption cues (#39/#91); renderer materializes them.
@@ -69,6 +83,8 @@ const api = {
       path: string;
       language?: string;
       model?: string;
+      /** Engine choice (#39): auto (local when ready) / local / custom / cloud. */
+      engine?: 'auto' | 'local' | 'custom' | 'cloud';
       /** Caption planning controls (#91); narrowed again in main. */
       plan?: {
         maxWordsPerCue?: number;
@@ -77,10 +93,39 @@ const api = {
         pauseBreakSec?: number;
       };
     }) => ipcRenderer.invoke('media:transcribe', payload),
+    /** Stop the window's in-flight local transcription run. */
+    cancelTranscribe: () => ipcRenderer.invoke('media:transcribe-cancel'),
     /** Custom STT server preference (#287): read + persist. */
     getTranscribeConfig: () => ipcRenderer.invoke('media:get-transcribe-config'),
-    setTranscribeConfig: (patch: { baseUrl?: string; apiKey?: string; model?: string }) =>
-      ipcRenderer.invoke('media:set-transcribe-config', patch),
+    setTranscribeConfig: (patch: {
+      baseUrl?: string;
+      apiKey?: string;
+      model?: string;
+      engine?: 'auto' | 'local' | 'custom' | 'cloud';
+      localModel?: string;
+      localBinaryPath?: string;
+    }) => ipcRenderer.invoke('media:set-transcribe-config', patch),
+    /** Local/offline STT setup (#39): binary + model status, downloads. */
+    getLocalSttStatus: () => ipcRenderer.invoke('media:get-local-stt-status'),
+    downloadLocalModel: (modelId: string) =>
+      ipcRenderer.invoke('media:download-local-model', modelId),
+    downloadLocalBinary: () => ipcRenderer.invoke('media:download-local-binary'),
+    cancelLocalDownload: () => ipcRenderer.invoke('media:cancel-local-download'),
+    deleteLocalModel: (modelId: string) =>
+      ipcRenderer.invoke('media:delete-local-model', modelId),
+    /**
+     * AI description (#118 AI half): explicit Describe only. Sends one
+     * capped frame to the user's own vision provider; returns the sentence
+     * for the renderer to store via setAssetDescription (one undo step).
+     */
+    describe: (payload: {
+      assetId: string;
+      assetPath: string;
+      assetType: string;
+      thumbnailPath?: string;
+      assetWidth?: number;
+      assetHeight?: number;
+    }) => ipcRenderer.invoke('media:describe', payload),
     /**
      * Extract a video's audio into a standalone library asset (upstream PR
      * #562). The optional window bakes a source range in (timeline clip entry).
@@ -89,6 +134,13 @@ const api = {
       sourcePath: string,
       window?: { startSec: number; endSec: number },
     ) => ipcRenderer.invoke('media:extract-audio', sourcePath, window),
+    /**
+     * LUT picker (upstream #157 LUTs): .cube file dialog with boundary
+     * validation; resolves with the clip-ready ref on success.
+     */
+    chooseLut: () => ipcRenderer.invoke('lut:choose'),
+    /** Validate a clip's stored LUT path for the missing-file diagnostic. */
+    validateLut: (lutPath: string) => ipcRenderer.invoke('lut:validate', lutPath),
     thumbnail: (filePath: string, outputDir: string, timestamp?: number) =>
       ipcRenderer.invoke('media:thumbnail', filePath, outputDir, timestamp),
     // `config` overrides the saved silence controls for this call only; omit it
@@ -131,12 +183,25 @@ const api = {
       ipcRenderer.invoke('markers:set-marker-settings', update),
   },
 
+  // ── Named color-grade presets (app-wide, not session state) ──
+  gradePresets: {
+    list: () => ipcRenderer.invoke('grade-presets:list'),
+    get: (id: string) => ipcRenderer.invoke('grade-presets:get', id),
+    save: (label: string, grade: unknown, shot?: unknown) =>
+      ipcRenderer.invoke('grade-presets:save', label, grade, shot),
+    rename: (id: string, label: string) => ipcRenderer.invoke('grade-presets:rename', id, label),
+    remove: (id: string) => ipcRenderer.invoke('grade-presets:remove', id),
+  },
+
   // â”€â”€ AI / MCP (Phase 5+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   ai: {
     chat: (messages: unknown[], provider: string) =>
       ipcRenderer.invoke('ai:chat', messages, provider),
     /** Stop the turn in progress (#58). Resolves whether there was one. */
     cancel: (): Promise<{ cancelled: boolean }> => ipcRenderer.invoke('ai:cancel'),
+    /** Clear this window's authoritative conversation, cancelling a busy turn first. */
+    clearHistory: (): Promise<{ success: true; cancelled: boolean }> =>
+      ipcRenderer.invoke('ai:clear-history'),
     /**
      * Session hand-off for a detached chat (#286): the structured history
      * plus the current plan checklist. Narrowed in the renderer before use.
@@ -148,15 +213,25 @@ const api = {
     /** Persist a provider's base URL and model (#17, #140). Validated in main. */
     setProviderConfig: (
       provider: string,
-      config: { kind: string; baseUrl?: string; model: string },
+      config: { kind: string; baseUrl?: string; model: string; binaryPath?: string },
     ) => ipcRenderer.invoke('ai:set-provider-config', provider, config),
     getProviders: () => ipcRenderer.invoke('ai:get-providers'),
+    /** Codex CLI availability probe for the settings UI (#142). No credentials involved. */
+    getCodexStatus: () => ipcRenderer.invoke('ai:codex-status'),
     /**
      * Loopback MCP endpoint for external clients (Claude Desktop, Cursor, …):
      * read the current status/config, or enable/disable the listener.
      */
     getMcpConfig: () => ipcRenderer.invoke('mcp:get-config'),
     setMcpEnabled: (enabled: boolean) => ipcRenderer.invoke('mcp:set-enabled', enabled),
+    /**
+     * Agent skills (Track 2, L7): list discovered skills with their
+     * enablement, or flip one skill. Bodies never cross this bridge except
+     * through the explicit `load_skill` tool call.
+     */
+    getSkills: () => ipcRenderer.invoke('skills:get-state'),
+    setSkillEnabled: (name: string, enabled: boolean) =>
+      ipcRenderer.invoke('skills:set-enabled', name, enabled),
   },
 
   // â”€â”€ Preview (Phase 3+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -240,6 +315,7 @@ const api = {
       'export:progress',
       'export:complete',
       'export:error',
+      'export:warning',
       'ai:stream-token',
       'ai:stream-end',
       'ai:tool-call',
@@ -247,6 +323,8 @@ const api = {
       'ai:plan',
       'generation:progress',
       'generation:complete',
+      'transcribe:progress',
+      'local-stt:progress',
       'panels:detached-changed',
     ];
     if (!allowed.includes(channel)) {

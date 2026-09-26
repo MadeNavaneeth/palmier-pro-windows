@@ -1,21 +1,25 @@
 /**
- * ShortcutHelpDialog — the discoverable half of upstream issue #164.
+ * ShortcutHelpDialog — the discoverable half of upstream issues #164 and #579.
  *
  * Parity with another NLE's key layout is worth little if the bindings are
  * invisible, so the sheet is generated from the same catalogue the handler
- * dispatches on. A command added to `shared/editor/shortcuts.ts` appears here
- * without touching this file, and one that is renamed cannot be listed wrongly.
+ * dispatches on, resolved through the preset the handler is matching. A command
+ * added to `shared/editor/shortcuts.ts` appears here without touching this file,
+ * a command that is renamed cannot be listed wrongly, and a preset that remaps a
+ * chord is printed with the chord that actually fires.
  */
 
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { X } from 'lucide-react';
 import {
+  SHORTCUT_PRESET_INFO,
   formatShortcut,
   primaryShortcutLabel,
   shortcutsByCategory,
+  shortcutsForPreset,
+  type ShortcutPresetId,
 } from '../../shared/editor/shortcuts';
-
-const GROUPS = shortcutsByCategory();
+import { useUiStore } from '../store/ui';
 
 interface ShortcutHelpDialogProps {
   isOpen: boolean;
@@ -26,6 +30,13 @@ export function ShortcutHelpDialog({ isOpen, onClose }: ShortcutHelpDialogProps)
   const panelRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const preset = useUiStore((state) => state.shortcutPreset);
+  const setPreset = useUiStore((state) => state.setShortcutPreset);
+
+  // Resolved once per preset, so the sheet always lists the handler's chords.
+  const definitions = useMemo(() => shortcutsForPreset(preset), [preset]);
+  const groups = useMemo(() => shortcutsByCategory(definitions), [definitions]);
+  const closeChord = primaryShortcutLabel('showShortcuts', definitions);
 
   // Move focus in on open and put it back on close, so opening the sheet from
   // the keyboard does not strand the focus ring behind the overlay.
@@ -82,25 +93,44 @@ export function ShortcutHelpDialog({ isOpen, onClose }: ShortcutHelpDialogProps)
             <h2 id="shortcut-help-title" className="text-sm font-medium text-text-primary">
               Keyboard Shortcuts
             </h2>
-            <p className="mt-0.5 text-[10px] text-text-muted">
-              Press {primaryShortcutLabel('showShortcuts')} to close
-            </p>
+            {closeChord && (
+              <p className="mt-0.5 text-[10px] text-text-muted">
+                Press {closeChord} to close
+              </p>
+            )}
           </div>
-          <button
-            ref={closeButtonRef}
-            onClick={onClose}
-            className="icon-button"
-            aria-label="Close keyboard shortcuts"
-          >
-            <X size={14} />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <label htmlFor="shortcut-preset" className="text-[10px] text-text-muted">
+              Preset
+            </label>
+            <select
+              id="shortcut-preset"
+              value={preset}
+              onChange={(event) => setPreset(event.target.value as ShortcutPresetId)}
+              className="rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+            >
+              {SHORTCUT_PRESET_INFO.map((entry) => (
+                <option key={entry.id} value={entry.id} className="bg-surface-2">
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+            <button
+              ref={closeButtonRef}
+              onClick={onClose}
+              className="icon-button"
+              aria-label="Close keyboard shortcuts"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </header>
 
         {/* Column count adapts so the sheet stays readable at 1024px wide and
             still fills a 1600px window without a single tall column. */}
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <div className="gap-x-8 [column-count:1] sm:[column-count:2] lg:[column-count:3]">
-            {GROUPS.map((group) => (
+            {groups.map((group) => (
               <section key={group.category} className="mb-5 break-inside-avoid">
                 <h3 className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-text-muted">
                   {group.category}
@@ -113,12 +143,20 @@ export function ShortcutHelpDialog({ isOpen, onClose }: ShortcutHelpDialogProps)
                     >
                       <dt className="min-w-0 text-xs text-text-secondary">{item.label}</dt>
                       <dd className="flex shrink-0 items-center gap-1">
-                        {item.bindings.map((binding, index) => (
-                          <React.Fragment key={formatShortcut(binding)}>
-                            {index > 0 && <span className="text-[10px] text-text-muted">/</span>}
-                            <Kbd>{formatShortcut(binding)}</Kbd>
-                          </React.Fragment>
-                        ))}
+                        {item.bindings.length === 0 ? (
+                          // A preset can deliberately leave a command unbound
+                          // (#579); say so rather than rendering an empty cell.
+                          <span className="text-[10px] text-text-muted" title="No binding in this preset">
+                            —
+                          </span>
+                        ) : (
+                          item.bindings.map((binding, index) => (
+                            <React.Fragment key={formatShortcut(binding)}>
+                              {index > 0 && <span className="text-[10px] text-text-muted">/</span>}
+                              <Kbd>{formatShortcut(binding)}</Kbd>
+                            </React.Fragment>
+                          ))
+                        )}
                       </dd>
                     </div>
                   ))}

@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 function installAi(stubs: {
   getSession?: () => Promise<unknown>;
   chat?: () => Promise<void>;
+  clearHistory?: () => Promise<unknown>;
   on?: (channel: string, callback: (...args: unknown[]) => void) => () => void;
 } = {}): Record<string, (...args: unknown[]) => void> {
   const handlers: Record<string, (...args: unknown[]) => void> = {};
@@ -25,6 +26,7 @@ function installAi(stubs: {
         getSession: stubs.getSession ?? (() => Promise.reject(new Error('down'))),
         chat: stubs.chat ?? (() => new Promise<void>(() => {})),
         cancel: () => Promise.resolve({ cancelled: true }),
+        clearHistory: stubs.clearHistory ?? (() => Promise.resolve({ success: true, cancelled: false })),
       },
       on:
         stubs.on ??
@@ -148,6 +150,77 @@ describe('refreshSession', () => {
 
     await expect(useAiStore.getState().refreshSession()).resolves.toBe(false);
     expect(useAiStore.getState().messages).toEqual([]);
+  });
+});
+
+describe('clearHistory', () => {
+  it('clears the local transcript and ignores events from the cancelled turn', async () => {
+    const clearHistory = vi.fn(() => Promise.resolve({ success: true, cancelled: true }));
+    const handlers = installAi({ clearHistory });
+    const module = await import('./ai');
+    const useAiStore = module.useAiStore;
+
+    useAiStore.setState({
+      messages: [{ role: 'user', content: 'private', timestamp: 1 }],
+      isStreaming: true,
+      streamingContent: 'partial',
+      plan: [{ step: 'Private plan', status: 'in_progress' }],
+    });
+    useAiStore.getState().clearHistory();
+    await Promise.resolve();
+
+    expect(clearHistory).toHaveBeenCalledTimes(1);
+    expect(useAiStore.getState().messages).toEqual([]);
+    expect(useAiStore.getState().isStreaming).toBe(false);
+    expect(useAiStore.getState().streamingContent).toBe('');
+    expect(useAiStore.getState().plan).toEqual([]);
+
+    module.initAiListeners();
+    handlers['ai:stream-token']?.('late token');
+    handlers['ai:tool-call']?.({ name: 'get_timeline', args: {} });
+    handlers['ai:tool-result']?.({ name: 'get_timeline', result: { success: true } });
+    handlers['ai:plan']?.([{ step: 'Late plan', status: 'pending' }]);
+    handlers['ai:stream-end']?.('cancelled');
+
+    expect(useAiStore.getState().messages).toEqual([]);
+    expect(useAiStore.getState().plan).toEqual([]);
+  });
+
+  it('does not re-adopt a cleared transcript when a detached chat boots', async () => {
+    let snapshot: unknown = { history: HISTORY, plan: [] };
+    installAi({ getSession: () => Promise.resolve(snapshot) });
+    const useAiStore = await loadStore();
+
+    useAiStore.setState({
+      messages: [{ role: 'user', content: 'cleared', timestamp: 1 }],
+    });
+    useAiStore.getState().clearHistory();
+    snapshot = { history: [], plan: null };
+    await expect(useAiStore.getState().refreshSession()).resolves.toBe(true);
+
+    expect(useAiStore.getState().messages).toEqual([]);
+    expect(useAiStore.getState().plan).toEqual([]);
+  });
+
+  it('drops a session snapshot that was already in flight when Clear ran', async () => {
+    let resolveSession!: (value: unknown) => void;
+    installAi({
+      getSession: () => new Promise<unknown>((resolve) => {
+        resolveSession = resolve;
+      }),
+    });
+    const useAiStore = await loadStore();
+    useAiStore.setState({
+      messages: [{ role: 'user', content: 'before clear', timestamp: 1 }],
+    });
+
+    const refresh = useAiStore.getState().refreshSession();
+    useAiStore.getState().clearHistory();
+    resolveSession({ history: HISTORY, plan: [] });
+
+    await expect(refresh).resolves.toBe(true);
+    expect(useAiStore.getState().messages).toEqual([]);
+    expect(useAiStore.getState().plan).toEqual([]);
   });
 });
 

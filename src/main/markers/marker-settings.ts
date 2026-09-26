@@ -79,15 +79,25 @@ export function resetMarkerSettingsCache(): void {
 }
 
 /**
- * IPC for the timeline toolbar toggle, and application of the saved value to
- * the main-process mirror the Agent edits through. The mirror keeps its own
- * controller flag (a preference, not project data, so renderer project syncs
- * neither carry nor clear it); the set-handler applies the saved value there
- * so agent ripple edits obey the toggle without re-reading the file per call.
+ * Apply the saved preference to one controller's flag (a preference, not
+ * project data, so renderer project syncs neither carry nor clear it). Every
+ * new session's mirror gets this on creation, so agent ripple edits obey the
+ * toggle without re-reading the file per call.
  */
-export function registerMarkerSettingsHandlers(controller: EditorController): void {
+export function applyMarkerSettings(controller: EditorController): void {
   controller.setRippleTimelineMarkers(loadMarkerSettings().rippleTimelineMarkers);
+}
 
+/**
+ * IPC for the timeline toolbar toggle, and application of the saved value to
+ * the main-process mirrors the Agent edits through. The preference is
+ * process-wide, so a set applies to every live session's controller — with
+ * multiple windows (#137) a toggle honored in one window must not be skipped
+ * in another's agent edits.
+ */
+export function registerMarkerSettingsHandlers(
+  getControllers: () => Iterable<EditorController>,
+): void {
   ipcMain.handle('markers:get-marker-settings', () => ({
     success: true,
     settings: loadMarkerSettings(),
@@ -96,7 +106,9 @@ export function registerMarkerSettingsHandlers(controller: EditorController): vo
 
   ipcMain.handle('markers:set-marker-settings', (_event, update?: unknown) => {
     const settings = saveMarkerSettings(update);
-    controller.setRippleTimelineMarkers(settings.rippleTimelineMarkers);
+    for (const controller of getControllers()) {
+      controller.setRippleTimelineMarkers(settings.rippleTimelineMarkers);
+    }
     return { success: true, settings };
   });
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { EditorController } from './controller';
-import { createEmptyProject } from '../types/project';
+import { createEmptyProject, type Clip } from '../types/project';
 
 describe('EditorController', () => {
   it('creates with a default empty project', () => {
@@ -149,3 +149,77 @@ describe('EditorController.addClip track targeting', () => {
     expect(ctrl.getClips().every((clip) => trackIds.has(clip.trackId))).toBe(true);
   });
 });
+
+describe('EditorController opacity automation', () => {
+  function withVisualClip(): { ctrl: EditorController; clipId: string } {
+    const ctrl = new EditorController();
+    ctrl.addMedia({
+      id: 'asset-opacity', path: '/opacity.mp4', filename: 'opacity.mp4', type: 'video',
+      duration: 300, fileSize: 1, addedAt: new Date().toISOString(),
+    });
+    const clipId = ctrl.addClip({ assetId: 'asset-opacity', trackId: 'v1', startFrame: 0, durationFrames: 60 });
+    return { ctrl, clipId };
+  }
+
+  it('sanitizes, persists, and round-trips an opacity track', () => {
+    const { ctrl, clipId } = withVisualClip();
+    const changed = ctrl.setClipOpacityTrack(clipId, [
+      { frame: 30, value: 0.8 },
+      { frame: 0, value: 0.2 },
+      { frame: 15, value: 2 },
+      { frame: 20, value: Number.NaN },
+    ]);
+    expect(changed).toBe(true);
+    expect(ctrl.getClips()[0].opacityTrack).toEqual([
+      { frame: 0, value: 0.2 },
+      { frame: 30, value: 0.8 },
+    ]);
+
+    const restored = EditorController.deserialize(ctrl.serialize()).getProject();
+    expect(restored.timeline.clips[0].opacityTrack).toEqual([
+      { frame: 0, value: 0.2 },
+      { frame: 30, value: 0.8 },
+    ]);
+  });
+
+  it('does not add history for a no-op and makes a mutation one undo step', () => {
+    const { ctrl, clipId } = withVisualClip();
+    const historyBefore = ctrl.getLastCommandDescription();
+    expect(ctrl.setClipOpacityTrack(clipId, [])).toBe(false);
+    expect(ctrl.getLastCommandDescription()).toBe(historyBefore);
+    expect(ctrl.setClipOpacityTrack(clipId, [{ frame: 0, value: 0.2 }, { frame: 30, value: 0.8 }])).toBe(true);
+    const historyAfterSet = ctrl.getLastCommandDescription();
+
+    expect(ctrl.setClipOpacityTrack(clipId, [
+      { frame: 0, value: 0.2 }, { frame: 30, value: 0.8 },
+    ])).toBe(false);
+    expect(ctrl.getLastCommandDescription()).toBe(historyAfterSet);
+
+    expect(ctrl.undo()).toBe(true);
+    expect(ctrl.getClips()[0].opacityTrack).toBeUndefined();
+    expect(ctrl.getLastCommandDescription()).toBe(historyBefore);
+  });
+
+  it('drops hostile tracks on project read without changing other clip fields', () => {
+    const project = createEmptyProject();
+    const base: Clip = {
+      id: 'hostile-opacity', assetId: 'asset', type: 'video', trackId: 'v1',
+      startFrame: 0, durationFrames: 30, inPoint: 0, outPoint: 30,
+      x: 12, y: 13, width: 1920, height: 1080, rotation: 4,
+      scaleX: 1.2, scaleY: 0.8, opacity: 0.7, anchorX: 3, anchorY: 4,
+      volume: 1, muted: false,
+    };
+    project.timeline.clips = [
+      { ...base, id: 'wrong', opacityTrack: 'bad' as never },
+      { ...base, id: 'single', opacityTrack: [{ frame: 0, value: 0.5 }] },
+      { ...base, id: 'range', opacityTrack: [{ frame: 0, value: 0.5 }, { frame: 30, value: 1.2 }] },
+    ];
+
+    const restored = EditorController.deserialize(JSON.stringify(project)).getProject();
+    expect(restored.timeline.clips.map((clip) => clip.opacityTrack)).toEqual([undefined, undefined, undefined]);
+    expect(restored.timeline.clips.map((clip) => [clip.x, clip.y, clip.opacity])).toEqual([
+      [12, 13, 0.7], [12, 13, 0.7], [12, 13, 0.7],
+    ]);
+  });
+});
+

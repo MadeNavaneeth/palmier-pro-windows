@@ -1,10 +1,13 @@
 ﻿import React from 'react';
 import {
+  ArrowRight,
+  Circle,
   CircleX,
   Copy,
   Flag,
   Keyboard,
   Magnet,
+  Minus,
   Search,
   ListCollapse,
   Maximize2,
@@ -14,6 +17,8 @@ import {
   MousePointer2,
   Redo2,
   Scissors,
+  Shapes,
+  Square,
   Trash2,
   Type,
   Undo2,
@@ -22,18 +27,8 @@ import {
 } from 'lucide-react';
 import { useTimelineStore } from '../../store/timeline';
 import { useUiStore } from '../../store/ui';
-import { primaryShortcutLabel } from '../../../shared/editor/shortcuts';
-
-/**
- * Tooltip text with the live chord appended.
- *
- * Reading the chord from the catalogue means a rebinding cannot leave a stale
- * hint on a button Ã¢â‚¬â€ the labels here used to name keys the handler no longer had.
- */
-function withChord(label: string, id: Parameters<typeof primaryShortcutLabel>[0]): string {
-  const chord = primaryShortcutLabel(id);
-  return chord ? `${label} (${chord})` : label;
-}
+import { primaryShortcutLabel, shortcutsForPreset } from '../../../shared/editor/shortcuts';
+import { SHAPE_KINDS, type ShapeKind } from '../../../shared/editor/shape';
 
 export function TimelineToolbar() {
   const viewport = useTimelineStore((state) => state.viewport);
@@ -46,8 +41,8 @@ export function TimelineToolbar() {
   const addTitleAtPlayhead = useTimelineStore((state) => state.addTitleAtPlayhead);
   const selectedClipIds = useTimelineStore((state) => state.selectedClipIds);
   const selectedGap = useTimelineStore((state) => state.selectedGap);
-  const inFrame = useTimelineStore((state) => state.project.timeline.inFrame);
-  const outFrame = useTimelineStore((state) => state.project.timeline.outFrame);
+  const inFrame = useTimelineStore((state) => state.getScopeTimeline().inFrame);
+  const outFrame = useTimelineStore((state) => state.getScopeTimeline().outFrame);
   const setInFrame = useTimelineStore((state) => state.setInFrame);
   const setOutFrame = useTimelineStore((state) => state.setOutFrame);
   const extractMarkedRange = useTimelineStore((state) => state.extractMarkedRange);
@@ -64,8 +59,21 @@ export function TimelineToolbar() {
   const duplicateSelected = useTimelineStore((state) => state.duplicateSelected);
   const openPalette = useUiStore((state) => state.openCommandPalette);
   const deselectAll = useTimelineStore((state) => state.deselectAll);
-  const fitToViewport = useTimelineStore((state) => state.fitToViewport);
+  const timelinePath = useTimelineStore((state) => state.timelinePath);
+  const navigateScopeTo = useTimelineStore((state) => state.navigateScopeTo);  const fitToViewport = useTimelineStore((state) => state.fitToViewport);
   const openShortcutHelp = useUiStore((state) => state.openShortcutHelp);
+  const shortcutPreset = useUiStore((state) => state.shortcutPreset);
+
+  // Tooltip text with the live chord appended.
+  //
+  // Reading the chord from the catalogue through the active preset (#579) means
+  // a rebinding — default or Final Cut Pro — cannot leave a stale hint on a
+  // button; the labels here used to name keys the handler no longer had.
+  const definitions = React.useMemo(() => shortcutsForPreset(shortcutPreset), [shortcutPreset]);
+  const withChord = (label: string, id: Parameters<typeof primaryShortcutLabel>[0]): string => {
+    const chord = primaryShortcutLabel(id, definitions);
+    return chord ? `${label} (${chord})` : label;
+  };
 
   // Pull the saved marker-ripple preference into the store controller once.
   React.useEffect(() => {
@@ -98,6 +106,37 @@ export function TimelineToolbar() {
     // open in a 1024px window this row is 400px wide, and at gap-1.5 the
     // shortcuts button sat 1px past the panel edge.
     <div className="@container flex h-[38px] shrink-0 items-center gap-1.5 border-b border-white/10 bg-surface-1 px-2.5">
+      {/* Nested-timeline breadcrumb (#155 slice 2): rendered only while a
+          nest is open, so the root toolbar is byte-for-byte the old layout.
+          Ancestors navigate up; the leaf is the current scope. */}
+      {timelinePath.length > 1 && (
+        <>
+          <nav aria-label="Nested timeline" className="flex min-w-0 items-center gap-0.5">
+            {timelinePath.map((crumb, index) => {
+              const last = index === timelinePath.length - 1;
+              return (
+                <span key={crumb.id ?? 'main'} className="flex min-w-0 items-center gap-0.5">
+                  {index > 0 && <span className="shrink-0 text-[10px] text-text-muted">›</span>}
+                  {last ? (
+                    <span aria-current="page" className="max-w-28 truncate text-[10px] font-medium text-text-primary">
+                      {crumb.name}
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => navigateScopeTo(crumb.id)}
+                      title={`Back to ${crumb.name}`}
+                      className="max-w-28 truncate text-[10px] text-text-secondary hover:text-text-primary hover:underline"
+                    >
+                      {crumb.name}
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+          </nav>
+          <Divider />
+        </>
+      )}
       <ToolButton
         label={canUndo && lastOp ? `Undo: ${lastOp}` : withChord('Undo', 'undo')}
         onClick={undo}
@@ -146,6 +185,7 @@ export function TimelineToolbar() {
       >
         <Type size={14} />
       </ToolButton>
+      <ShapePicker />
       <ToolButton
         label={withChord('Duplicate selected clips', 'duplicateSelected')}
         onClick={duplicateSelected}
@@ -238,6 +278,92 @@ export function TimelineToolbar() {
  */
 function Divider() {
   return <div className="mx-1 h-5 w-px bg-white/12 @max-md:mx-0.5" />;
+}
+
+/** Icons for the shape kinds, in `SHAPE_KINDS` order. */
+const SHAPE_ICONS: Readonly<Record<ShapeKind, React.ReactNode>> = {
+  rect: <Square size={12} />,
+  ellipse: <Circle size={12} />,
+  line: <Minus size={12} />,
+  arrow: <ArrowRight size={12} />,
+};
+
+const SHAPE_LABELS: Readonly<Record<ShapeKind, string>> = {
+  rect: 'Rectangle',
+  ellipse: 'Ellipse',
+  line: 'Line',
+  arrow: 'Arrow',
+};
+
+/**
+ * Shape-kind menu: pick a kind and insert a 3s clip at the playhead. Same
+ * open/dismiss/Escape contract as the Preview's GuidesMenu; the menu opens
+ * downward because this row sits above the tracks.
+ */
+function ShapePicker() {
+  const addShapeAtPlayhead = useTimelineStore((state) => state.addShapeAtPlayhead);
+  const [open, setOpen] = React.useState(false);
+  const rootRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        onClick={() => setOpen((value) => !value)}
+        // Escape closes the menu without reaching the global shortcut layer,
+        // where it would clear the timeline selection.
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && open) {
+            event.stopPropagation();
+            setOpen(false);
+          }
+        }}
+        className="icon-button disabled:cursor-not-allowed disabled:opacity-25"
+        title="Add a shape at the playhead"
+        aria-label="Add a shape at the playhead"
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        <Shapes size={14} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Add shape"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              setOpen(false);
+            }
+          }}
+          className="absolute left-0 top-full z-40 mt-1 w-36 overflow-hidden rounded-md border border-surface-3 bg-surface-2 py-1 shadow-2xl"
+        >
+          {SHAPE_KINDS.map((kind) => (
+            <button
+              key={kind}
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                addShapeAtPlayhead(kind);
+              }}
+              className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[11px] text-text-secondary transition hover:bg-white/[0.06] hover:text-text-primary"
+            >
+              {SHAPE_ICONS[kind]}
+              {SHAPE_LABELS[kind]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ToolButton({

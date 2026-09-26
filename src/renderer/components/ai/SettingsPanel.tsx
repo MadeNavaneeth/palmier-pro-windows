@@ -24,12 +24,14 @@ import {
   Monitor,
   Bot,
   Boxes,
+  Terminal,
 } from 'lucide-react';
 import { useAiStore } from '../../store/ai';
 import {
   PROVIDER_PRESETS,
   presetById,
   validateBaseUrl,
+  validateBinaryPathShape,
   validateProviderConfig,
 } from '../../../shared/ai/provider-config';
 
@@ -42,6 +44,7 @@ interface ProviderInfo {
   lastFour: string;
   baseUrl: string;
   model: string;
+  binaryPath: string;
 }
 
 type SaveState =
@@ -64,6 +67,7 @@ function providerLogo(id: string): React.ReactNode {
     case 'cerebras': return <Cpu className={`${cls} text-rose-400`} />;
     case 'ollama': return <HardDrive className={`${cls} text-zinc-400`} />;
     case 'lmstudio': return <Monitor className={`${cls} text-zinc-400`} />;
+    case 'codex-cli': return <Terminal className={`${cls} text-emerald-400`} />;
     default: return <Bot className={`${cls} text-text-muted`} />;
   }
 }
@@ -88,9 +92,14 @@ export function SettingsPanel() {
   const [apiKey, setApiKey] = useState('');
   const [storedKeySuffix, setStoredKeySuffix] = useState('');
   const [replacingKey, setReplacingKey] = useState(false);
+  const [binaryPath, setBinaryPath] = useState('');
+  const [codexStatus, setCodexStatus] = useState<
+    { available: boolean; version: string | null; reason: string | null } | null
+  >(null);
   const [save, setSave] = useState<SaveState>({ status: 'idle' });
 
   const preset = presetById(selectedId);
+  const isCodex = preset?.kind === 'codex-cli';
 
   // Load the persisted configuration for the selected provider whenever the
   // panel opens or the selection changes.
@@ -105,6 +114,7 @@ export function SettingsPanel() {
         const current = providers.find((entry) => entry.id === selectedId);
         setBaseUrl(current?.baseUrl ?? preset?.baseUrl ?? '');
         setModel(current?.model ?? preset?.defaultModel ?? '');
+        setBinaryPath(current?.binaryPath ?? '');
         setStoredKeySuffix(current?.hasKey ? current.lastFour : '');
         setReplacingKey(false);
         setApiKey('');
@@ -122,12 +132,50 @@ export function SettingsPanel() {
     };
   }, [showSettings, selectedId, preset?.baseUrl, preset?.defaultModel]);
 
-  const urlCheck = preset?.kind === 'openai-compatible' || baseUrl.trim().length > 0
-    ? validateBaseUrl(baseUrl)
-    : null;
+  const urlCheck = isCodex || (preset?.kind !== 'openai-compatible' && baseUrl.trim().length === 0)
+    ? null
+    : validateBaseUrl(baseUrl);
   const urlError = urlCheck && !urlCheck.ok ? urlCheck.reason : null;
   const isLoopback = urlCheck?.ok ? urlCheck.isLoopback : false;
   const needsKey = (preset?.requiresApiKey ?? true) && !storedKeySuffix && !apiKey.trim();
+  const binaryCheck = isCodex && binaryPath.trim().length > 0
+    ? validateBinaryPathShape(binaryPath)
+    : null;
+  const binaryError = binaryCheck && !binaryCheck.ok ? binaryCheck.reason : null;
+
+  const probeCodex = useCallback(async () => {
+    if (!isCodex) return;
+    setCodexStatus(null);
+    try {
+      const res = await window.palmier.ai.getCodexStatus() as {
+        success: boolean;
+        status?: { available: boolean; version: string | null; reason: string | null };
+      };
+      if (res?.success && res.status) setCodexStatus(res.status);
+    } catch (err) {
+      console.error('Failed to probe Codex CLI:', err);
+    }
+  }, [isCodex]);
+
+  // Availability probe for the Codex binary, same load pattern as above.
+  useEffect(() => {
+    if (!showSettings || !isCodex) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await window.palmier.ai.getCodexStatus() as {
+          success: boolean;
+          status?: { available: boolean; version: string | null; reason: string | null };
+        };
+        if (!cancelled && res?.success && res.status) setCodexStatus(res.status);
+      } catch (err) {
+        if (!cancelled) console.error('Failed to probe Codex CLI:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showSettings, isCodex, selectedId]);
 
   const handleSave = useCallback(async () => {
     if (!preset) return;
@@ -137,6 +185,7 @@ export function SettingsPanel() {
       kind: preset.kind,
       baseUrl: baseUrl.trim() || undefined,
       model,
+      binaryPath: binaryPath.trim() || undefined,
     });
     if (!validated.ok) {
       setSave({ status: 'error', message: validated.reason });
@@ -148,6 +197,7 @@ export function SettingsPanel() {
         kind: validated.config.kind,
         baseUrl: validated.config.baseUrl,
         model: validated.config.model,
+        binaryPath: validated.config.binaryPath,
       });
       if (configResult && configResult.success === false) {
         setSave({ status: 'error', message: configResult.error || 'Could not save the endpoint.' });
@@ -173,13 +223,15 @@ export function SettingsPanel() {
         model: validated.config.model,
       });
       setSave({ status: 'saved' });
+      // The saved override changes what the probe resolves, so re-probe it.
+      if (preset.kind === 'codex-cli') void probeCodex();
     } catch (err) {
       setSave({
         status: 'error',
         message: err instanceof Error ? err.message : 'Could not save AI settings.',
       });
     }
-  }, [preset, selectedId, baseUrl, model, apiKey]);
+  }, [preset, selectedId, baseUrl, model, apiKey, binaryPath, probeCodex]);
 
   if (!showSettings) return null;
 
@@ -220,6 +272,7 @@ export function SettingsPanel() {
             {preset?.hint && <Hint>{preset.hint}</Hint>}
           </Field>
 
+          {!isCodex && (
           <Field
             label={preset?.kind === 'anthropic' ? 'API base URL (optional)' : 'API base URL'}
             htmlFor="ai-base-url"
@@ -254,8 +307,42 @@ export function SettingsPanel() {
               </Hint>
             )}
           </Field>
+          )}
 
-          <Field label="Model" htmlFor="ai-model">
+          {isCodex && (
+          <Field label="Codex binary path (optional)" htmlFor="ai-binary-path">
+            <input
+              id="ai-binary-path"
+              type="text"
+              spellCheck={false}
+              value={binaryPath}
+              onChange={(event) => setBinaryPath(event.target.value)}
+              placeholder="Leave blank to use PATH"
+              aria-invalid={Boolean(binaryError)}
+              aria-describedby={binaryError ? 'ai-binary-path-error' : undefined}
+              className={`w-full rounded border bg-surface-2 px-3 py-1.5 font-mono text-xs text-text-primary placeholder:text-text-muted focus:outline-none ${
+                binaryError ? 'border-red-500/60' : 'border-surface-3 focus:border-accent'
+              }`}
+            />
+            {binaryError ? (
+              <p id="ai-binary-path-error" className="mt-1 text-[10px] text-red-400">
+                {binaryError}
+              </p>
+            ) : codexStatus === null ? (
+              <Hint>Checking for the Codex CLI…</Hint>
+            ) : codexStatus.available ? (
+              <Hint>
+                Found{codexStatus.version ? ` (${codexStatus.version})` : ''}. Runs read-only inside your project and media folders.
+              </Hint>
+            ) : (
+              <p role="status" className="mt-1 text-[10px] text-red-400">
+                {codexStatus.reason}
+              </p>
+            )}
+          </Field>
+          )}
+
+          <Field label={isCodex ? 'Model (optional)' : 'Model'} htmlFor="ai-model">
             <input
               id="ai-model"
               type="text"
@@ -265,9 +352,14 @@ export function SettingsPanel() {
               placeholder={preset?.defaultModel || 'model-name'}
               className="w-full rounded border border-surface-3 bg-surface-2 px-3 py-1.5 font-mono text-xs text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
             />
-            <Hint>Any model id the endpoint accepts.</Hint>
+            <Hint>
+              {isCodex
+                ? 'Blank uses the model from your Codex config.'
+                : 'Any model id the endpoint accepts.'}
+            </Hint>
           </Field>
 
+          {!isCodex && (
           <Field
             label={preset?.requiresApiKey ? 'API key' : 'API key (optional)'}
             htmlFor="ai-api-key"
@@ -302,8 +394,9 @@ export function SettingsPanel() {
                 : 'Local runtimes usually ignore this. Leave it blank unless yours needs one.'}
             </Hint>
           </Field>
+          )}
 
-          {!isLoopback && !urlError && (
+          {!isCodex && !isLoopback && !urlError && (
             <div className="flex gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-300">
               <AlertTriangle size={13} className="mt-px shrink-0" aria-hidden="true" />
               <span>
@@ -316,6 +409,8 @@ export function SettingsPanel() {
           <GenerationProvidersSection />
 
           <McpClientSection />
+
+          <SkillsSection />
 
           {save.status === 'error' && (
             <p role="alert" className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[10px] text-red-400">
@@ -340,7 +435,11 @@ export function SettingsPanel() {
           <button
             onClick={() => void handleSave()}
             disabled={
-              save.status === 'saving' || Boolean(urlError) || !model.trim() || needsKey
+              save.status === 'saving'
+              || Boolean(urlError)
+              || Boolean(binaryError)
+              || (!isCodex && !model.trim())
+              || needsKey
             }
             className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-surface-0 transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -593,6 +692,123 @@ function GenerationProvidersSection() {
                 </button>
               </div>
             </div>
+          ))}
+          {error && (
+            <p role="alert" className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-400">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Agent skills (Track 2, L7) ─────────────────────────────────────────────
+
+interface SkillInfo {
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+/**
+ * Enable/disable list for agent skills.
+ *
+ * Same load pattern as the sections above: read once on mount, flip one skill
+ * per toggle, narrow the response before use. A disabled skill is invisible
+ * to the agent — it leaves both the prompt index and the `load_skill` tool.
+ */
+function SkillsSection() {
+  const [skills, setSkills] = useState<SkillInfo[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const res = await window.palmier.ai.getSkills() as {
+        success?: boolean;
+        skills?: SkillInfo[];
+        error?: string;
+      };
+      if (res?.success && Array.isArray(res.skills)) {
+        setSkills(res.skills.filter((skill) => (
+          typeof skill?.name === 'string'
+          && typeof skill?.description === 'string'
+          && typeof skill?.enabled === 'boolean'
+        )));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load skills.');
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const toggle = useCallback(async (name: string, enabled: boolean) => {
+    setBusy(true);
+    setError('');
+    try {
+      const res = await window.palmier.ai.setSkillEnabled(name, enabled) as {
+        success?: boolean;
+        error?: string;
+      };
+      if (!res?.success) {
+        setError(res?.error || 'Could not update the skill.');
+      } else {
+        setSkills((current) => (
+          current?.map((skill) => (skill.name === name ? { ...skill, enabled } : skill)) ?? current
+        ));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update the skill.');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  return (
+    <div className="border-t border-white/10 pt-3">
+      <label className="mb-1.5 block text-[10px] uppercase tracking-wide text-text-secondary">
+        Agent skills
+      </label>
+      <Hint>
+        Reusable editor workflows. The assistant sees only names and summaries;
+        a full workflow loads only when it asks for it, and skill files are
+        read as untrusted text that never runs on its own.
+      </Hint>
+
+      {skills === null ? (
+        <p className="mt-2 text-[10px] text-text-muted">Loading skills…</p>
+      ) : skills.length === 0 ? (
+        <Hint>No skills found.</Hint>
+      ) : (
+        <div className="mt-1.5 space-y-1.5">
+          {skills.map((skill) => (
+            <label
+              key={skill.name}
+              className="flex cursor-pointer items-start gap-2 rounded border border-surface-3 bg-surface-2 px-2 py-1.5"
+            >
+              <input
+                type="checkbox"
+                checked={skill.enabled}
+                disabled={busy}
+                onChange={(event) => void toggle(skill.name, event.target.checked)}
+                data-skill-enabled={skill.name}
+                aria-label={`${skill.name} skill enabled`}
+                className="mt-0.5 accent-[var(--color-accent)]"
+              />
+              <span className="min-w-0">
+                <span className="block font-mono text-[11px] font-medium text-text-primary">
+                  {skill.name}
+                </span>
+                <span className="block text-[10px] text-text-muted">
+                  {skill.description}
+                </span>
+              </span>
+            </label>
           ))}
           {error && (
             <p role="alert" className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-400">

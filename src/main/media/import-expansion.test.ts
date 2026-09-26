@@ -6,7 +6,7 @@
  * the first. These tests pin folder recursion with its bounds, readable
  * failures for folders that cannot be listed, and the single-shot notices.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -63,6 +63,25 @@ describe('expandImportPaths', () => {
 
     expect(files).toEqual([media]);
     expect(errors).toEqual(['stray.txt is not a supported media file']);
+  });
+
+  it('skips and reports a top-level link without following it', async () => {
+    const linked = path.join(root, 'linked-folder');
+    const readdir = vi.fn();
+    const io: ImportExpansionIo = {
+      stat: async () => ({
+        isDirectory: () => true,
+        isFile: () => false,
+        isSymbolicLink: () => true,
+      }),
+      readdir,
+    };
+
+    const { files, errors } = await expandImportPaths([linked], io);
+
+    expect(files).toEqual([]);
+    expect(errors).toEqual(['linked-folder is a symbolic link or junction and was skipped']);
+    expect(readdir).not.toHaveBeenCalled();
   });
 
   it('reports a readable failure when a folder cannot be listed', async () => {

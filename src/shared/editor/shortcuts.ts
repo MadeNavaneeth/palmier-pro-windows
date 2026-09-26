@@ -232,6 +232,123 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   },
 ] as const;
 
+/**
+ * Selectable binding presets (upstream #579).
+ *
+ * A preset is not a second catalogue: command ids, labels and categories always
+ * come from `SHORTCUTS` above, so the help sheet and the key handler cannot be
+ * shown a command the other does not know about. A preset only swaps the chords
+ * of the commands whose Final Cut Pro defaults differ; every other command keeps
+ * its default binding, and an empty list unbinds a command on purpose.
+ */
+export const SHORTCUT_PRESETS = ['default', 'fcp'] as const;
+
+export type ShortcutPresetId = (typeof SHORTCUT_PRESETS)[number];
+
+export const DEFAULT_SHORTCUT_PRESET: ShortcutPresetId = 'default';
+
+export interface ShortcutPresetInfo {
+  id: ShortcutPresetId;
+  label: string;
+}
+
+export const SHORTCUT_PRESET_INFO: readonly ShortcutPresetInfo[] = [
+  { id: 'default', label: 'Default' },
+  { id: 'fcp', label: 'Final Cut Pro' },
+] as const;
+
+/**
+ * Narrow an untrusted value to a preset, or null.
+ *
+ * The persisted value is user-writable and may have been written by a build with
+ * a different set of presets, so it is checked rather than cast — the same
+ * treatment `workspace-layout.ts` gives the persisted layout.
+ */
+export function asShortcutPresetId(value: unknown): ShortcutPresetId | null {
+  return typeof value === 'string' && (SHORTCUT_PRESETS as readonly string[]).includes(value)
+    ? (value as ShortcutPresetId)
+    : null;
+}
+
+/**
+ * Final Cut Pro 10 defaults (US layout) for the commands where they differ.
+ *
+ * Chords are from Apple's "Keyboard shortcuts in Final Cut Pro for Mac" page
+ * (support.apple.com/guide/final-cut-pro/keyboard-shortcuts-ver90ba5929/mac).
+ * Commands absent below already match FCP: J/K/L, arrows and Shift+arrows,
+ * Home/End, I/O and Shift+I/Shift+O, M, X, A/C/V/D, undo, New Project (⌘N) and
+ * Open Library (⌘O). Empty arrays are deliberate: FCP has no single chord for
+ * the command, and this build does not invent one.
+ */
+const FCP_BINDINGS: Partial<Record<ShortcutId, readonly ShortcutBinding[]>> = {
+  // FCP's Blade is ⌘B; bare B is the Blade tool, a mode this editor does not model.
+  splitAtPlayhead: [{ key: 'b', ctrl: true }],
+  // FCP has no comp-track compact command.
+  compactTake: [],
+  // FCP's Delete closes the gap and ⇧Delete replaces with a gap, the inverse of
+  // our defaults; Windows Backspace stands in for the Mac delete key.
+  deleteSelected: [{ key: 'Delete', shift: true }, { key: 'Backspace', shift: true }],
+  rippleDeleteSelected: [{ key: 'Delete' }, { key: 'Backspace' }],
+  // FCP extracts a marked range with the same Delete chord, already claimed by
+  // ripple delete; there is no distinct single-chord extract command.
+  extractMarkedRange: [],
+  // FCP redo is ⇧⌘Z only; Ctrl+Y is a Windows/Premiere chord it does not have.
+  redo: [{ key: 'z', ctrl: true, shift: true }],
+  // FCP's Clear Selected Ranges is ⌥X (its ⌥I/⌥O clear one end, not both).
+  clearMarkedRange: [{ key: 'x', alt: true }],
+  // FCP marks: Next Marker ⌃' and Previous Marker ⌃;.
+  nextMarker: [{ key: "'", ctrl: true }],
+  previousMarker: [{ key: ';', ctrl: true }],
+  // FCP's Deselect All is ⇧⌘A; Escape is kept because it dismisses every overlay,
+  // not because FCP binds it.
+  deselectAll: [{ key: 'Escape' }, { key: 'a', ctrl: true, shift: true }],
+  // FCP's Zoom In is ⌘+ (⇧⌘= on a US layout; keypad plus needs no shift).
+  zoomIn: [{ key: '+', ctrl: true, shift: true }, { key: '+', ctrl: true }],
+  // FCP's Zoom Out is ⌘– and Zoom to Fit is ⇧Z.
+  zoomOut: [{ key: '-', ctrl: true }],
+  fitToWindow: [{ key: 'z', shift: true }],
+  // FCP's Snapping is N; S is skimming in FCP, so the default S must go.
+  toggleSnap: [{ key: 'n' }],
+  // FCP has no default chord for viewer guides or workspace layouts.
+  toggleThirds: [],
+  toggleSafeAreas: [],
+  layoutDefault: [],
+  layoutMedia: [],
+  layoutVertical: [],
+  // FCP libraries save automatically and have no Save command.
+  saveProject: [],
+  // FCP shares to the default destination with ⌘E.
+  exportProject: [{ key: 'e', ctrl: true }],
+  // FCP has no shortcut-reference or command-palette chord; both stay reachable
+  // from the timeline toolbar buttons.
+  showShortcuts: [],
+  showCommandPalette: [],
+};
+
+const PRESET_BINDINGS: Record<ShortcutPresetId, Partial<Record<ShortcutId, readonly ShortcutBinding[]>>> = {
+  // Today's table exactly — an empty override set rather than a copy, so the
+  // default preset cannot drift from SHORTCUTS.
+  default: {},
+  fcp: FCP_BINDINGS,
+};
+
+/**
+ * The command catalogue with one preset's chords applied.
+ *
+ * Every preset returns all commands in catalogue order, so callers that group,
+ * search or dispatch keep seeing the same command set. An override of `[]`
+ * yields a definition with no bindings, which is how a command becomes
+ * deliberately unbound rather than missing.
+ */
+export function shortcutsForPreset(preset: ShortcutPresetId): readonly ShortcutDefinition[] {
+  const overrides = PRESET_BINDINGS[preset] ?? PRESET_BINDINGS[DEFAULT_SHORTCUT_PRESET];
+  if (overrides === PRESET_BINDINGS.default) return SHORTCUTS;
+  return SHORTCUTS.map((definition) => {
+    const bindings = overrides[definition.id];
+    return bindings === undefined ? definition : { ...definition, bindings };
+  });
+}
+
 /** The event fields shortcut matching needs, so callers can pass a plain object. */
 export interface ShortcutEventLike {
   key: string;
@@ -334,8 +451,11 @@ export function formatShortcut(binding: ShortcutBinding): string {
 }
 
 /** Primary chord per command, for compact UI labels and tooltips. */
-export function primaryShortcutLabel(id: ShortcutId): string {
-  const definition = SHORTCUTS.find((candidate) => candidate.id === id);
+export function primaryShortcutLabel(
+  id: ShortcutId,
+  shortcuts: readonly ShortcutDefinition[] = SHORTCUTS,
+): string {
+  const definition = shortcuts.find((candidate) => candidate.id === id);
   return definition && definition.bindings[0] ? formatShortcut(definition.bindings[0]) : '';
 }
 

@@ -10,13 +10,15 @@
  */
 
 import type {
+  GenerationExecutionContext,
   GenerationProvider,
   GenerationRequest,
   GenerationResult,
   GenerationProgress,
   GenerationType,
 } from './types';
-import { downloadFile } from './util';
+import { downloadFile, sleep } from './util';
+import { encodeReferenceImage } from './reference-image';
 
 const FAL_API_BASE = 'https://queue.fal.run';
 
@@ -24,6 +26,7 @@ export class FalProvider implements GenerationProvider {
   readonly id = 'fal';
   readonly name = 'fal.ai';
   readonly supportedTypes: GenerationType[] = ['image', 'video'];
+  readonly cancellationSupport = 'local-only' as const;
 
   private apiKey: string = '';
 
@@ -60,6 +63,7 @@ export class FalProvider implements GenerationProvider {
   async generate(
     request: GenerationRequest,
     onProgress?: (progress: GenerationProgress) => void,
+    execution?: GenerationExecutionContext,
   ): Promise<GenerationResult> {
     const startTime = Date.now();
     const model = (request.extra?.model as string) || this.getModels(request.type)[0];
@@ -72,6 +76,11 @@ export class FalProvider implements GenerationProvider {
     });
 
     try {
+      // Built before submitting: a reference that cannot be encoded must cost
+      // no provider call, and the model must not fall back to a bare prompt.
+      // fal reads image_url as a URL or a data URI, never a local path.
+      const payload = await this.buildPayload(request, model);
+
       // Submit to queue
       const submitResponse = await fetch(`${FAL_API_BASE}/${model}`, {
         method: 'POST',
@@ -79,7 +88,8 @@ export class FalProvider implements GenerationProvider {
           'Authorization': `Key ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(this.buildPayload(request)),
+        body: JSON.stringify(payload),
+        signal: execution?.signal,
       });
 
       if (!submitResponse.ok) {
@@ -87,7 +97,11 @@ export class FalProvider implements GenerationProvider {
         throw new Error(`fal.ai submit failed (${submitResponse.status}): ${err}`);
       }
 
-      const { request_id, status: initialStatus } = await submitResponse.json();
+      const { request_id } = await submitResponse.json();
+      if (typeof request_id !== 'string' || request_id.length === 0) {
+        throw new Error('fal.ai submit response did not include a request id');
+      }
+      execution?.onProviderRequest(request_id);
 
       // Poll for completion
       let result: any = null;
@@ -96,11 +110,14 @@ export class FalProvider implements GenerationProvider {
 
       while (attempts < maxAttempts) {
         attempts++;
-        await sleep(1000);
+        await sleep(1000, execution?.signal);
 
         const statusResponse = await fetch(
           `${FAL_API_BASE}/${model}/requests/${request_id}/status`,
-          { headers: { 'Authorization': `Key ${this.apiKey}` } },
+          {
+            headers: { 'Authorization': `Key ${this.apiKey}` },
+            signal: execution?.signal,
+          },
         );
 
         if (!statusResponse.ok) continue;
@@ -110,7 +127,10 @@ export class FalProvider implements GenerationProvider {
           // Fetch result
           const resultResponse = await fetch(
             `${FAL_API_BASE}/${model}/requests/${request_id}`,
-            { headers: { 'Authorization': `Key ${this.apiKey}` } },
+            {
+              headers: { 'Authorization': `Key ${this.apiKey}` },
+              signal: execution?.signal,
+            },
           );
           result = await resultResponse.json();
           break;
@@ -133,6 +153,7 @@ export class FalProvider implements GenerationProvider {
       if (!result) {
         throw new Error('Generation timed out');
       }
+      if (execution?.signal.aborted) throw new Error('Generation stopped');
 
       // Extract URL from result
       const outputUrl = this.extractUrl(result, request.type);
@@ -166,20 +187,33 @@ export class FalProvider implements GenerationProvider {
     }
   }
 
-  async cancel(_requestId: string): Promise<void> {
-    // fal.ai doesn't have a cancel endpoint for queued jobs
+  async cancel(_providerRequestId: string): Promise<void> {
+    // The REST contract used here exposes queue status/result but no cancel
+    // operation. The manager therefore stops polling locally and reports the
+    // provider job as continuing remotely.
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
-  private buildPayload(request: GenerationRequest): Record<string, unknown> {
+  private async buildPayload(
+    request: GenerationRequest,
+    model: string,
+  ): Promise<Record<string, unknown>> {
     const payload: Record<string, unknown> = {
       prompt: request.prompt,
     };
 
     if (request.width) payload.image_size = { width: request.width, height: request.height };
     if (request.negativePrompt) payload.negative_prompt = request.negativePrompt;
-    if (request.referenceImagePath) payload.image_url = request.referenceImagePath;
+    if (request.referenceImagePath) {
+      // Refused for a model that reads no image rather than dropped by fal.
+      payload.image_url = await encodeReferenceImage(request.referenceImagePath, {
+        provider: this.name,
+        model,
+        type: request.type,
+        field: 'image_url',
+      });
+    }
     if (request.durationSeconds) payload.duration = request.durationSeconds;
 
     return payload;
@@ -193,8 +227,4 @@ export class FalProvider implements GenerationProvider {
     if (result.url) return result.url;
     return null;
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

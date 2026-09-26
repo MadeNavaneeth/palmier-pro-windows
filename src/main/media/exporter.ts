@@ -2,8 +2,8 @@
  * FFmpeg Exporter — converts the timeline state into a filter_complex graph
  * and runs FFmpeg to produce the final video file.
  *
- * Uses geometry.rs export_filter_geometry() for pixel-exact transforms that
- * match the preview compositor exactly.
+ * The FFmpeg graph is built by the pure export-args module; this class owns
+ * process lifetime, cancellation, and delivery events.
  *
  * Supports: MP4 (H.264), MOV (ProRes proxy), WebM (VP9).
  * Reports progress back to the renderer via IPC events.
@@ -15,12 +15,66 @@ import { ipcMain, BrowserWindow, shell, dialog, app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
 import fsSync from 'fs';
-import type { Project } from '../../shared/types/project';
+import type { Clip, Project } from '../../shared/types/project';
+import { resolveRenderTimeline } from '../../shared/editor/compound';
 import { selectExportClips } from '../../shared/media/export-eligibility';
 import { offlineExportBlockers, formatOfflineNames } from '../../shared/media/offline';
 import { buildVtt } from '../../shared/editor/vtt';
 import { recordExport, loadExportHistory } from './export-history';
 import { buildFfmpegArgs as buildExportFfmpegArgs } from './export-args';
+import type { HdrProfile } from './export-args';
+import { validateLutFile } from './lut-loader';
+import type { SessionSender } from '../sessions';
+
+/**
+ * LUT preflight for one export: clips whose .cube file is missing or
+ * unreadable render without the LUT stage (the path is validated on use, so
+ * a file that moved after it was chosen degrades instead of failing).
+ * Appends one visible warning per stripped clip; returns the project itself
+ * when nothing was stripped. Main and nested timelines are stripped alike —
+ * the argument builder consumes the resolved (flattened) timeline.
+ */
+export function stripMissingLuts(project: Project, warnings: string[]): Project {
+  const stripClips = (clips: Clip[]): { clips: Clip[]; stripped: boolean } => {
+    let stripped = false;
+    const next = clips.map((clip) => {
+      if (!clip.lut) return clip;
+      if (validateLutFile(clip.lut.path).ok) return clip;
+      stripped = true;
+      const name = clip.lut.path.split(/[\\/]/).pop() ?? clip.lut.path;
+      warnings.push(
+        `Clip "${clip.label ?? clip.id}" renders without its LUT (${name} is missing or invalid).`,
+      );
+      const rest: Clip = { ...clip };
+      delete rest.lut;
+      return rest;
+    });
+    return { clips: next, stripped };
+  };
+  const main = stripClips(project.timeline.clips);
+  let stripped = main.stripped;
+  let timelines = project.timelines;
+  if (project.timelines) {
+    let timelinesChanged = false;
+    const next: NonNullable<Project['timelines']> = {};
+    for (const [id, nested] of Object.entries(project.timelines)) {
+      const result = stripClips(nested.clips);
+      next[id] = result.stripped ? { ...nested, clips: result.clips } : nested;
+      if (result.stripped) {
+        timelinesChanged = true;
+        stripped = true;
+      }
+    }
+    if (timelinesChanged) timelines = next;
+  }
+  if (!stripped) return project;
+  const next: Project = {
+    ...project,
+    timeline: { ...project.timeline, clips: main.clips },
+  };
+  if (timelines !== project.timelines) next.timelines = timelines;
+  return next;
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -38,8 +92,18 @@ export interface ExportOptions {
   /** Hardware encoder preference (mp4 only; others fall back to software). */
   hw?: 'x264' | 'nvenc' | 'qsv' | 'amf';
   /**
-   * Renderer-baked advanced title layers (#525/#529): full-canvas RGBA PNGs
-   * keyed by clip id, composited instead of drawtext for those clips.
+   * HDR delivery profile (upstream #59): absent/'sdr' keeps the Rec.709
+   * 8-bit path; 'hlg'/'pq' encode HEVC Main10 with BT.2020 conversion/tags
+   * (validated strictly by the argument builder — an invalid value refuses
+   * the export rather than downgrading to SDR). Preview stays SDR: the
+   * timeline preview is the 8-bit Rec.709 working space and is not
+   * re-tinted for the HDR selection.
+   */
+  hdr?: HdrProfile;
+  /**
+   * Renderer-baked layers (#525/#529, plus shape boxes): full-canvas RGBA
+   * PNGs for advanced titles and box-sized RGBA PNGs for shapes, keyed by
+   * clip id, composited instead of drawtext for those clips.
    */
   bakedTitles?: ReadonlyArray<{ clipId: string; path: string }>;
   /** Directory holding `bakedTitles`; removed when the export settles. */
@@ -67,17 +131,27 @@ export interface ExportEventSink {
 
 // ─── Exporter ────────────────────────────────────────────────────────────────
 
+/**
+ * One in-flight FFmpeg run. Jobs are tracked per owner — a session id for
+ * window exports, `'default'` for agent/MCP runs — so each job carries its
+ * own process and cancel flag and `cancel(owner)` can never flip or kill
+ * another session's export (#137 Slice 3).
+ */
+interface ExportJob {
+  process: ChildProcess | null;
+  cancelled: boolean;
+}
+
 export class Exporter {
-  private currentProcess: ChildProcess | null = null;
-  private cancelled = false;
-  private nativeAddon: any = null;
+  /** Live jobs by owner; entries appear at spawn and go when the run settles. */
+  private readonly jobs = new Map<string, ExportJob>();
 
-  setNativeAddon(addon: any): void {
-    this.nativeAddon = addon;
-  }
-
-  async export(project: Project, options: ExportOptions, sink: ExportEventSink): Promise<void> {
-    this.cancelled = false;
+  async export(
+    project: Project,
+    options: ExportOptions,
+    sink: ExportEventSink,
+    owner = 'default',
+  ): Promise<void> {
     const { outputPath } = options;
     const width = options.width || project.settings.width;
     const height = options.height || project.settings.height;
@@ -86,7 +160,11 @@ export class Exporter {
     // Calculate total frames over exactly the clips the export will consume,
     // so the reported duration and the rendered output cannot disagree
     // (muted-audio exclusion is shared with the argument builder, #544).
-    const clips = selectExportClips(project);
+    // Compound clips expand first: nested audio counts toward the audio-only
+    // check, and the extent matches the flattened timeline the graph builder
+    // consumes.
+    const view: Project = { ...project, timeline: resolveRenderTimeline(project) };
+    const clips = selectExportClips(view);
     const totalFrames = options.range
       ? options.range.end - options.range.start
       : clips.length > 0
@@ -106,7 +184,9 @@ export class Exporter {
     // Loud pre-flight: a missing source file would otherwise render as a
     // black hole or fail mid-encode. Refuse with the filenames named so the
     // user can relink from the media panel (upstream R0 offline state).
-    const blockers = offlineExportBlockers(project, (p) => fsSync.existsSync(p));
+    // Resolved like the extent above so media used only inside a nest blocks
+    // too, while the compound's own synthetic asset id never does.
+    const blockers = offlineExportBlockers(view, (p) => fsSync.existsSync(p));
     if (blockers.length > 0) {
       const message = `Media offline: ${formatOfflineNames(blockers)}. Relink or remove ${blockers.length === 1 ? 'it' : 'them'} before exporting.`;
       sink.send('export:error', message);
@@ -114,16 +194,35 @@ export class Exporter {
       throw new Error(message);
     }
 
+    // LUT preflight (#157 LUTs): a clip whose .cube file went missing or
+    // unreadable after it was chosen degrades to ungraded for that stage
+    // rather than failing the whole export — the stripped clip ids ride an
+    // `export:warning` event so the skip is visible, never silent.
+    const lutWarnings: string[] = [];
+    const exportProject: Project = stripMissingLuts(project, lutWarnings);
+    if (lutWarnings.length > 0) {
+      sink.send('export:warning', lutWarnings.join(' '));
+    }
+
     // Build the FFmpeg command
     let args: string[];
+    // Layers the graph could not render faithfully (a shape with no baked
+    // box, an advanced title degraded to drawtext). They ride the same
+    // `export:warning` channel as the LUT preflight, so every caller —
+    // the delivery panel's event listener and the agent's receipt alike —
+    // sees the shortfall instead of a plausible-looking wrong render.
+    const layerWarnings: string[] = [];
     try {
-      args = this.buildFfmpegArgs(project, options, width, height, fps, totalFrames);
+      args = this.buildFfmpegArgs(exportProject, options, width, height, fps, totalFrames, layerWarnings);
     } catch (err) {
       // Argument-building refusals (e.g. audio-only with no eligible audio)
       // are user-facing; surface them through the same channel as progress.
       const message = err instanceof Error ? err.message : String(err);
       sink.send('export:error', message);
       throw err;
+    }
+    for (const warning of layerWarnings) {
+      sink.send('export:warning', warning);
     }
     sink.send('export:progress', {
       percent: 0,
@@ -134,121 +233,138 @@ export class Exporter {
     } satisfies ExportProgress);
 
     // Run FFmpeg; the baked-title temp directory dies with the run whether it
-    // resolves, rejects, or is cancelled.
-    const run = new Promise<void>((resolve, reject) => {
-      const proc = spawn('ffmpeg', args, {
-        stdio: ['ignore', 'ignore', 'pipe'], // stderr for progress
-        windowsHide: true,
-      });
-      this.currentProcess = proc;
+    // resolves, rejects, or is cancelled. The job is registered for this owner
+    // so a cancel from the owning session reaches exactly this process.
+    const job: ExportJob = { process: null, cancelled: false };
+    this.jobs.set(owner, job);
+    try {
+      const run = new Promise<void>((resolve, reject) => {
+        const proc = spawn('ffmpeg', args, {
+          stdio: ['ignore', 'ignore', 'pipe'], // stderr for progress
+          windowsHide: true,
+        });
+        job.process = proc;
 
-      let stderrData = '';
+        let stderrData = '';
 
-      proc.stderr!.on('data', (chunk: Buffer) => {
-        stderrData += chunk.toString();
+        proc.stderr!.on('data', (chunk: Buffer) => {
+          stderrData += chunk.toString();
 
-        // Parse progress from FFmpeg stderr
-        const progress = this.parseProgress(stderrData, totalFrames);
-        if (progress) {
-          sink.send('export:progress', progress);
-        }
-      });
+          // Parse progress from FFmpeg stderr
+          const progress = this.parseProgress(stderrData, totalFrames);
+          if (progress) {
+            sink.send('export:progress', progress);
+          }
+        });
 
-      proc.on('close', (code) => {
-        this.currentProcess = null;
-        if (this.cancelled) {
-          sink.send('export:error', 'Export cancelled');
-          resolve();
-          return;
-        }
+        proc.on('close', (code) => {
+          job.process = null;
+          if (job.cancelled) {
+            sink.send('export:error', 'Export cancelled');
+            resolve();
+            return;
+          }
 
-        if (code !== 0) {
-          const errorLines = stderrData.split('\n').slice(-5).join('\n');
-          sink.send('export:error', `FFmpeg exited with code ${code}: ${errorLines}`);
-          reject(new Error(`FFmpeg exit code ${code}`));
-          return;
-        }
+          if (code !== 0) {
+            const errorLines = stderrData.split('\n').slice(-5).join('\n');
+            sink.send('export:error', `FFmpeg exited with code ${code}: ${errorLines}`);
+            reject(new Error(`FFmpeg exit code ${code}`));
+            return;
+          }
 
-        // Exit code 0 is NOT sufficient proof of success: a failed/partial
-        // write must not be reported as a finished export (upstream #182).
-        // Verify the output file actually exists and is non-empty before
-        // signalling completion.
-        fs.stat(outputPath)
-          .then(async (stat) => {
-            if (!stat.isFile() || stat.size === 0) {
-              sink.send(
-                'export:error',
-                `Export reported success but no output file was written to "${outputPath}".`,
-              );
-              reject(new Error('Export produced no output file'));
-              return;
-            }
-            // WebVTT sidecar (R3): title clips become a caption file next to
-            // the video. A sidecar write failure must not fail the finished
-            // video, so it is logged and skipped instead.
-            if (options.exportCaptions) {
-              try {
-                const cues = project.timeline.clips
-                  .filter((clip) => clip.type === 'title' && clip.text)
-                  .map((clip) => ({
-                    startSec: clip.startFrame / fps,
-                    endSec: (clip.startFrame + clip.durationFrames) / fps,
-                    text: clip.text ?? '',
-                  }));
-                const vttPath = outputPath.replace(/\.[^.]+$/, '') + '.vtt';
-                await fs.writeFile(vttPath, buildVtt(cues), 'utf8');
-              } catch (err) {
-                console.warn('[exporter] VTT sidecar write failed:', err);
+          // Exit code 0 is NOT sufficient proof of success: a failed/partial
+          // write must not be reported as a finished export (upstream #182).
+          // Verify the output file actually exists and is non-empty before
+          // signalling completion.
+          fs.stat(outputPath)
+            .then(async (stat) => {
+              if (!stat.isFile() || stat.size === 0) {
+                sink.send(
+                  'export:error',
+                  `Export reported success but no output file was written to "${outputPath}".`,
+                );
+                reject(new Error('Export produced no output file'));
+                return;
               }
-            }
-            recordExport({
-              outputPath,
-              format: options.format,
-              quality: options.quality,
-              projectName: project.name,
-              completedAt: new Date().toISOString(),
-              bytes: stat.size,
-              options: {
+              // WebVTT sidecar (R3): title clips become a caption file next to
+              // the video. A sidecar write failure must not fail the finished
+              // video, so it is logged and skipped instead. Cues come from the
+              // SAME resolved view the graph is built from, so a title inside a
+              // compound is both drawn and captioned at one timing — the
+              // unresolved timeline would drop the nested cues and leave a
+              // burned-in title with an empty sidecar beside it.
+              if (options.exportCaptions) {
+                try {
+                  const cues = view.timeline.clips
+                    .filter((clip) => clip.type === 'title' && clip.text)
+                    .map((clip) => ({
+                      startSec: clip.startFrame / fps,
+                      endSec: (clip.startFrame + clip.durationFrames) / fps,
+                      text: clip.text ?? '',
+                    }));
+                  const vttPath = outputPath.replace(/\.[^.]+$/, '') + '.vtt';
+                  await fs.writeFile(vttPath, buildVtt(cues), 'utf8');
+                } catch (err) {
+                  console.warn('[exporter] VTT sidecar write failed:', err);
+                }
+              }
+              recordExport({
+                outputPath,
                 format: options.format,
                 quality: options.quality,
-                width: options.width ?? project.settings.width,
-                height: options.height ?? project.settings.height,
-                fps: options.fps ?? project.settings.fps,
-                ...(options.range ? { range: options.range } : {}),
-                ...(options.exportCaptions !== undefined ? { exportCaptions: options.exportCaptions } : {}),
-              },
+                projectName: project.name,
+                completedAt: new Date().toISOString(),
+                bytes: stat.size,
+                options: {
+                  format: options.format,
+                  quality: options.quality,
+                  width: options.width ?? project.settings.width,
+                  height: options.height ?? project.settings.height,
+                  fps: options.fps ?? project.settings.fps,
+                  ...(options.range ? { range: options.range } : {}),
+                  ...(options.exportCaptions !== undefined ? { exportCaptions: options.exportCaptions } : {}),
+                  ...(options.hdr !== undefined ? { hdr: options.hdr } : {}),
+                },
+              });
+              sink.send('export:complete', { outputPath, bytes: stat.size });
+              resolve();
+            })
+            .catch((statErr: NodeJS.ErrnoException) => {
+              const reason = statErr.code === 'ENOENT'
+                ? `no output file was written to "${outputPath}"`
+                : statErr.message;
+              sink.send('export:error', `Export failed: ${reason}.`);
+              reject(new Error(`Export verification failed: ${reason}`));
             });
-            sink.send('export:complete', { outputPath, bytes: stat.size });
-            resolve();
-          })
-          .catch((statErr: NodeJS.ErrnoException) => {
-            const reason = statErr.code === 'ENOENT'
-              ? `no output file was written to "${outputPath}"`
-              : statErr.message;
-            sink.send('export:error', `Export failed: ${reason}.`);
-            reject(new Error(`Export verification failed: ${reason}`));
-          });
-      });
+        });
 
-      proc.on('error', (err) => {
-        this.currentProcess = null;
-        sink.send('export:error', `FFmpeg error: ${err.message}`);
-        reject(err);
+        proc.on('error', (err) => {
+          job.process = null;
+          sink.send('export:error', `FFmpeg error: ${err.message}`);
+          reject(err);
+        });
       });
-    });
-    void run.finally(() => {
-      if (options.bakedTempDir) {
-        void fs.rm(options.bakedTempDir, { recursive: true, force: true }).catch(() => {});
-      }
-    });
-    return run;
+      void run.finally(() => {
+        if (options.bakedTempDir) {
+          void fs.rm(options.bakedTempDir, { recursive: true, force: true }).catch(() => {});
+        }
+      });
+      return await run;
+    } finally {
+      // A later export from the same owner may already have replaced this
+      // job; only the owner's current job removes itself.
+      if (this.jobs.get(owner) === job) this.jobs.delete(owner);
+    }
   }
 
-  cancel(): void {
-    this.cancelled = true;
-    if (this.currentProcess) {
-      this.currentProcess.kill('SIGKILL');
-      this.currentProcess = null;
+  /** Cancel only this owner's in-flight export — never another session's. */
+  cancel(owner: string): void {
+    const job = this.jobs.get(owner);
+    if (!job) return;
+    job.cancelled = true;
+    if (job.process) {
+      job.process.kill('SIGKILL');
+      job.process = null;
     }
   }
 
@@ -261,9 +377,12 @@ export class Exporter {
     height: number,
     fps: number,
     totalFrames: number,
+    /** Layers the graph could not render; filled in, never read here. */
+    warnings?: string[],
   ): string[] {
-    // Graph construction lives in ./export-args (pure, unit-tested); this
-    // only supplies the native geometry callback (#546).
+    // Graph construction lives in ./export-args (pure, unit-tested). The
+    // native export_filter_geometry API predates this graph, omits anchor and
+    // alpha/pipeline ordering, and has no caller; keep export geometry here.
     return buildExportFfmpegArgs(
       project,
       {
@@ -274,13 +393,14 @@ export class Exporter {
         // of the full timeline, and the encoder selector never reached FFmpeg.
         ...(options.range ? { range: options.range } : {}),
         ...(options.hw ? { hw: options.hw } : {}),
+        ...(options.hdr !== undefined ? { hdr: options.hdr } : {}),
         ...(options.bakedTitles ? { bakedTitles: options.bakedTitles } : {}),
       },
       width,
       height,
       fps,
       totalFrames,
-      this.nativeAddon?.exportFilterGeometry ?? null,
+      warnings,
     );
   }
 
@@ -323,7 +443,26 @@ export function getExporter(): Exporter {
   return exporterInstance;
 }
 
-export function registerExportHandlers(getProject: () => Project | null): void {
+/** The session id + project an export IPC sender resolves to (#137). */
+export interface ExportRequestContext {
+  sessionId: string;
+  project: Project;
+}
+
+/**
+ * Register export IPC.
+ *
+ * `resolve` maps the requesting sender to its session id and session
+ * project (#137 Slice 3): `export:start` registers its FFmpeg job under
+ * that session id, and `export:cancel` resolves the session from its own
+ * sender and cancels only that session's job — a second window's export
+ * runs to completion untouched (jobs are process-per-export, so two
+ * sessions can export concurrently). Export history stays app-global
+ * shared preferences, not mid-export state.
+ */
+export function registerExportHandlers(
+  resolve: (sender: SessionSender) => ExportRequestContext | null,
+): void {
   const exporter = getExporter();
 
   ipcMain.handle('export:history', () => {
@@ -363,8 +502,9 @@ export function registerExportHandlers(getProject: () => Project | null): void {
   });
 
   ipcMain.handle('export:start', async (event, options: ExportOptions) => {
-    const project = getProject();
-    if (!project) return { success: false, error: 'No project loaded' };
+    const ctx = resolve(event.sender);
+    if (!ctx) return { success: false, error: 'No project loaded' };
+    const { sessionId, project } = ctx;
 
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return { success: false, error: 'No window' };
@@ -403,20 +543,21 @@ export function registerExportHandlers(getProject: () => Project | null): void {
     }
 
     try {
-      await exporter.export(project, options, win.webContents);
+      // Job keyed by this session: `export:cancel` from the same session
+      // reaches it; another session's cancel or export never does.
+      await exporter.export(project, options, win.webContents, sessionId);
       return { success: true, outputPath };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
   });
 
-  ipcMain.handle('export:cancel', () => {
-    exporter.cancel();
+  ipcMain.handle('export:cancel', (event) => {
+    // Cancel strictly the requesting session's export (#137 Slice 3) — a
+    // global flag here would kill whichever window happened to be encoding.
+    const ctx = resolve(event.sender);
+    if (ctx) exporter.cancel(ctx.sessionId);
     return { success: true };
-  });
-
-  ipcMain.handle('export:history', () => {
-    return { success: true, history: loadExportHistory() };
   });
 
   ipcMain.handle('export:reveal', (_event, outputPath: string) => {

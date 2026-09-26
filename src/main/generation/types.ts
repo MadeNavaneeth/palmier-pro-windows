@@ -4,7 +4,8 @@
  */
 
 export type GenerationType = 'image' | 'video' | 'audio';
-export type GenerationStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type GenerationStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+export type GenerationCancellationSupport = 'remote' | 'local-only';
 
 export interface GenerationRequest {
   id: string;
@@ -54,6 +55,13 @@ export interface GenerationProgress {
   message?: string;
 }
 
+export interface GenerationExecutionContext {
+  /** Publish the provider's own queued/job id as soon as submission returns it. */
+  onProviderRequest(providerRequestId: string): void;
+  /** Aborted when the user cancels or the local timeout wins. */
+  signal: AbortSignal;
+}
+
 /**
  * Provider adapter interface — each provider implements this.
  */
@@ -61,6 +69,11 @@ export interface GenerationProvider {
   readonly id: string;
   readonly name: string;
   readonly supportedTypes: GenerationType[];
+  /**
+   * Whether cancel() can stop provider-owned work. Omitted means remote for
+   * compatibility with third-party/fake adapters that predate this field.
+   */
+  readonly cancellationSupport?: GenerationCancellationSupport;
 
   /** Check if the provider is configured (has API key) */
   isConfigured(): boolean;
@@ -72,10 +85,11 @@ export interface GenerationProvider {
   generate(
     request: GenerationRequest,
     onProgress?: (progress: GenerationProgress) => void,
+    execution?: GenerationExecutionContext,
   ): Promise<GenerationResult>;
 
-  /** Cancel an in-progress generation */
-  cancel(requestId: string): Promise<void>;
+  /** Cancel provider work using the provider's own request identifier. */
+  cancel(providerRequestId: string): Promise<void>;
 
   /** List available models for this provider */
   getModels(type: GenerationType): string[];

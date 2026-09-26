@@ -7,27 +7,32 @@ import { z } from 'zod';
 import { execFile } from 'child_process';
 import fsSync from 'fs';
 import fs from 'fs/promises';
+import { writeProjectFile } from '../services/project-writer';
 import os from 'os';
 import path from 'path';
 import { nanoid } from 'nanoid';
-import { tools, getToolByName } from './tools';
+import { tools, getToolByName, MAX_REFERENCE_IMAGE_BYTES, REFERENCE_IMAGE_EXTENSIONS } from './tools';
+import { defaultSkillsDir, loadSkillBody } from './skills';
 import { clampFrame } from '../../shared/utils/safe-number';
 import type { TrimEdge } from '../../shared/editor/controller';
 import { detectSilenceForFile } from '../media/audio-envelope';
 import { loadSilenceSettings } from '../media/silence-settings';
 import { probeMedia } from '../media/probe';
+import { secondsToProjectFrames } from '../../shared/media/source-time';
 import {
   configuredProvidersFor,
   listGenerationProviders,
   runGeneration,
 } from '../generation/manager';
+import type { GenerationType } from '../generation/types';
 
 /** Bounded wait for a provider render; video gens can be minutes. */
 const GENERATION_TIMEOUT_MS = 600_000;
 import { resolveSilenceConfig, type SilenceConfig, type SilentRange } from '../../shared/audio/silence-detector';
 import {
+  mapSilenceRangesToTimeline,
   resolveSilenceScope,
-  timelineSilenceRanges,
+  type OmittedSilenceRange,
   type SilenceScopeResolution,
   type SilenceTrackScope,
 } from '../../shared/editor/silence-scoping';
@@ -35,18 +40,101 @@ import { mergeRippleRanges, type RippleRange } from '../../shared/editor/ripple'
 import { diffMarkers } from '../../shared/editor/markers';
 import { sanitizeCrop } from '../../shared/media/source-crop';
 import { sanitizeMotion } from '../../shared/media/motion';
+import {
+  SHAPE_ANIMATION_PRESETS,
+  sanitizeShapeFillColor,
+  sanitizeShapeKind,
+  sanitizeShapeStrokeColor,
+  sanitizeShapeStrokeWidth,
+  shapePresetMotion,
+  type ShapeAnimationPreset,
+} from '../../shared/editor/shape';
 import { mergeChromaKey } from '../../shared/editor/chroma-key';
-import { hasColorGrade, sanitizeColorGrade } from '../../shared/editor/color-grade';
+import {
+  sanitizeTitleText,
+  sanitizeTitleVariationItal,
+  sanitizeTitleVariationSlnt,
+  sanitizeTitleVariationWdth,
+  sanitizeTitleVariationWght,
+} from '../../shared/editor/title';
+import {
+  applyGradePresetTo,
+  capturePresetFromClip,
+  parseGradePresetPropagateMode,
+  resolveGradePresetPropagation,
+  type GradePresetPropagateMode,
+} from '../../shared/editor/grade-preset-store';
+import {
+  getGradePresetRepository,
+  type GradePresetRepository,
+} from '../grade-preset-repository';
+import {
+  gradeCurvesEqual,
+  gradeWheelsEqual,
+  hasColorGrade,
+  hueCurvesEqual,
+  isIdentityGradeCurve,
+  isIdentityGradeWheels,
+  isIdentityHueCurves,
+  parseGradeCurvePatch,
+  parseGradeWheelsPatch,
+  parseHueCurvesPatch,
+  sanitizeColorGrade,
+  sanitizeGradeCurve,
+  sanitizeGradeWheels,
+  sanitizeHueCurves,
+  type GradeCurve,
+  type GradeCurvePatch,
+  type GradeWheels,
+  type GradeWheelsPatch,
+  type HueCurves,
+  type HueCurvesPatch,
+} from '../../shared/editor/color-grade';
+import { lutRefsEqual, sanitizeLutRef, type LutRef } from '../../shared/editor/lut';
+import {
+  DEFAULT_GLOW,
+  DEFAULT_GRAIN,
+  DEFAULT_VIGNETTE,
+  EFFECT_LIMITS,
+  glowsEqual,
+  grainsEqual,
+  hasEffects,
+  parseGlowPatch,
+  parseGrainPatch,
+  parseVignettePatch,
+  sanitizeBlurRadius,
+  sanitizeGlow,
+  sanitizeGrain,
+  sanitizeVignette,
+  vignettesEqual,
+  type GlowPatch,
+  type GrainPatch,
+  type VignettePatch,
+} from '../../shared/editor/effects';
 import { sanitizeEq } from '../../shared/audio/eq';
 import { hasCompressor, mergeCompressor, normalizeCompressor } from '../../shared/audio/compressor';
+import { noiseReductionOf } from '../../shared/audio/denoise';
 import { diagnoseTimeline } from '../../shared/editor/diagnostics';
+import { folderAssetCount } from '../../shared/media/folders';
 import { normalizePlan, planSummary, type PlanStep } from '../../shared/editor/plan';
 import { sanitizeVolumeKeyframes } from '../../shared/audio/volume-keyframes';
 import { normalizeCaptionPlanOptions, planCaptions } from '../../shared/captions/planner';
+import { applyCaptionCues } from '../../shared/captions/apply';
+import type { TranscriptionResult } from './transcribe';
+import {
+  DEFAULT_LOCAL_MODEL,
+  isKnownLocalModel,
+  normalizeSttEngine,
+  probeLocalBinary,
+  resolveLocalSttPaths,
+  resolveSttEngine,
+  runLocalTranscription as runWhisperLocal,
+} from '../media/whisper-local';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
-import { exportFcpxml } from '../../shared/fcpxml/exporter';
+import { exportFcpxmlWithReport } from '../../shared/fcpxml/exporter';
 import { importedClipPatch } from '../../shared/fcpxml/apply';
 import { createHash } from 'crypto';
+import { validateLutFile } from '../media/lut-loader';
 import { inspectFramePath, rgbaToPng } from '../media/frame-png';
 import {
   MAX_CANVAS_EDGE,
@@ -65,6 +153,42 @@ export interface ToolResult {
   success: boolean;
   data?: unknown;
   error?: string;
+}
+
+/** Omitted detected spans grouped by reason, or null when none were omitted. */
+function omissionCounts(
+  omitted: readonly OmittedSilenceRange[],
+): Record<OmittedSilenceRange['reason'], number> | null {
+  if (omitted.length === 0) return null;
+  const counts = { 'outside-clip': 0, 'invalid-range': 0 } as Record<
+    OmittedSilenceRange['reason'],
+    number
+  >;
+  for (const span of omitted) counts[span.reason] += 1;
+  return counts;
+}
+
+/**
+ * A receipt note for detected spans that produced no cut.
+ *
+ * A span with no overlap in a clip is omitted rather than clamped to the
+ * nearest edge, because clamping would cut audio the detector never called
+ * silent. That decision is only honest if it is reported: without this note the
+ * receipt reads as an absence of silence in audio that has some.
+ */
+function omissionNote(
+  removedSomething: boolean,
+  counts: Record<OmittedSilenceRange['reason'], number>,
+): string {
+  const total = counts['outside-clip'] + counts['invalid-range'];
+  const why = [
+    ...(counts['outside-clip'] > 0 ? [`${counts['outside-clip']} outside any clip's trimmed window`] : []),
+    ...(counts['invalid-range'] > 0 ? [`${counts['invalid-range']} with invalid timings`] : []),
+  ].join(', ');
+  const spans = `silent span${total === 1 ? '' : 's'}`;
+  return removedSomething
+    ? `${total} detected ${spans} produced no cut: ${why}.`
+    : `The detector found ${total} ${spans}, but ${why} — nothing was removed.`;
 }
 
 /**
@@ -146,6 +270,79 @@ export function resolveProjectSettings(
   };
 }
 
+/** A validated reference image, or the exact reason the call is refused. */
+export type ReferenceImageCheck = { ok: true; path: string } | { ok: false; error: string };
+
+/**
+ * Boundary check for `generate_media`'s reference image.
+ *
+ * The path is untrusted input from a model or an MCP client, so every fact is
+ * established here, before a provider is contacted and before the project is
+ * touched: which model it is aimed at, that the path is absolute, that it is a
+ * readable file of a supported image type, and that it is within the size cap.
+ * Every refusal names its reason, mirroring the LUT-path contract, so a bad
+ * reference costs no provider call instead of silently degrading the result.
+ *
+ * A reference is only accepted for image generation: the fal.ai and Replicate
+ * adapters put it in the image input their image models read. Their video
+ * models take a first frame under a different parameter, and Higgs Field is
+ * video-only with a hosted-URL parameter, so a reference there would be
+ * dropped or rejected rather than shape the result. Refused, not ignored.
+ * Exported so the contract is testable without a generation transport.
+ */
+export function validateReferenceImage(
+  raw: string,
+  target: { type: GenerationType; providerName: string; model: string },
+): ReferenceImageCheck {
+  if (target.type !== 'image') {
+    return {
+      ok: false,
+      error: `${target.providerName} ${target.model} is a ${target.type} model and reads no reference image, so it would be ignored. Drop referenceImagePath, or generate the image first and place it on the timeline with add_clip.`,
+    };
+  }
+
+  const candidate = typeof raw === 'string' ? raw.trim() : '';
+  if (candidate.length === 0) {
+    return { ok: false, error: 'referenceImagePath is empty.' };
+  }
+  if (!path.isAbsolute(candidate)) {
+    return { ok: false, error: `referenceImagePath must be an absolute path (got "${candidate}").` };
+  }
+
+  let stats: fsSync.Stats;
+  try {
+    stats = fsSync.statSync(candidate);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ENOENT') return { ok: false, error: `Reference image not found: ${candidate}` };
+    return {
+      ok: false,
+      error: `Reference image could not be read: ${candidate} (${err instanceof Error ? err.message : String(err)})`,
+    };
+  }
+
+  if (!stats.isFile()) return { ok: false, error: `Reference image is not a file: ${candidate}` };
+
+  const extension = path.extname(candidate).toLowerCase();
+  if (!REFERENCE_IMAGE_EXTENSIONS.includes(extension)) {
+    return {
+      ok: false,
+      error: `Reference image must be one of ${REFERENCE_IMAGE_EXTENSIONS.join(', ')} (got "${extension || candidate}").`,
+    };
+  }
+
+  if (stats.size === 0) return { ok: false, error: `Reference image is empty: ${candidate}` };
+  if (stats.size > MAX_REFERENCE_IMAGE_BYTES) {
+    const mib = (bytes: number): string => `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+    return {
+      ok: false,
+      error: `Reference image is ${mib(stats.size)}; the cap is ${mib(MAX_REFERENCE_IMAGE_BYTES)}: ${candidate}`,
+    };
+  }
+
+  return { ok: true, path: candidate };
+}
+
 /** Injected capability seams — Electron-bound defaults live in ./ipc. */
 export interface ToolExecutorDeps {
   /**
@@ -153,6 +350,47 @@ export interface ToolExecutorDeps {
    * transcription. Null = no usable provider configured.
    */
   getTranscriptionRuntime?: () => Promise<{ baseUrl: string; apiKey: string } | null>;
+  /**
+   * Desktop app-data directory for the local whisper.cpp engine (#39).
+   * Null = local transcription unavailable (tests, non-Electron hosts).
+   * Defaults to Electron userData in the main process.
+   */
+  getLocalSttDir?: () => Promise<string | null> | string | null;
+  /**
+   * Local transcription runner. Defaults to the real whisper.cpp runner;
+   * tests inject a stub so `transcribe_audio` is covered without a binary.
+   */
+  runLocalTranscription?: (input: {
+    audioPath: string;
+    language?: string;
+    modelId: string;
+  }) => Promise<TranscriptionResult>;
+  /**
+   * Vision runtime for `describe_media` (BYOK; Anthropic or
+   * OpenAI-compatible). Null = no usable vision provider configured.
+   * Tests inject a stub so no network is needed.
+   */
+  getVisionRuntime?: () => Promise<{
+    kind: 'anthropic' | 'openai-compatible';
+    baseUrl?: string;
+    apiKey: string;
+    model: string;
+    providerId?: string;
+  } | null>;
+  /**
+   * Vision transport stub. Defaults to the real `./describe` module;
+   * tests inject a fake so `describe_media` is covered without network.
+   */
+  describeImage?: (
+    runtime: {
+      kind: 'anthropic' | 'openai-compatible';
+      baseUrl?: string;
+      apiKey: string;
+      model: string;
+      providerId?: string;
+    },
+    imagePath: string,
+  ) => Promise<{ description: string; model: string; provider: string }>;
   /**
    * FFmpeg export runner. Defaults to the real exporter (`media/exporter`);
    * tests inject a fake so `export_project` is covered without encoding.
@@ -167,12 +405,35 @@ export interface ToolExecutorDeps {
    * it outward instead of storing it anywhere near the project.
    */
   onPlanUpdate?: (plan: PlanStep[]) => void;
+  /**
+   * Skills root for `load_skill` (Track 2, L7). Defaults to the bundled
+   * `skills/` directory; tests inject a fixture root.
+   */
+  skillsDir?: string;
+  /** App-wide named preset repository shared by IPC, Agent, and MCP. */
+  gradePresets?: GradePresetRepository;
+}
+
+/**
+ * Electron userData for the local STT engine. Electron-absent hosts (unit
+ * tests) resolve null so the resolver treats local as unavailable.
+ */
+async function defaultLocalSttDir(): Promise<string | null> {
+  try {
+    const { app } = await import('electron');
+    const dir = (app as { getPath?: (name: string) => string } | undefined)?.getPath?.('userData');
+    return typeof dir === 'string' && dir.length > 0 ? dir : null;
+  } catch {
+    return null;
+  }
 }
 
 export class ToolExecutor {
   private deps: ToolExecutorDeps;
+  private gradePresets: GradePresetRepository;
   constructor(private editor: EditorController, deps: ToolExecutorDeps = {}) {
     this.deps = deps;
+    this.gradePresets = deps.gradePresets ?? getGradePresetRepository();
   }
 
   async execute(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -198,10 +459,10 @@ export class ToolExecutor {
    * rippling, as one undoable action (upstream `upstream/trim-clips`
    * 46b297e). Validation runs against the current state before any mutation,
    * so a refused call changes nothing; the edits then execute through the
-   * same trimClipEdge domain operation the UI drag uses, and the resulting
-   * history entries are squashed into a single undo step. Because each edit
-   * reads live state, an earlier extend that overwrites a later edit's clip
-   * is reported and skipped rather than corrupting the timeline.
+   * same trimClipEdge domain operation the UI drag uses, inside one
+   * controller transaction so the whole batch is a single undo step. Because
+   * each edit reads live state, an earlier extend that overwrites a later
+   * edit's clip is reported and skipped rather than corrupting the timeline.
    */
   private trimClips(args: {
     edits: { clipId: string; startFrame?: number; endFrame?: number }[];
@@ -291,66 +552,63 @@ export class ToolExecutor {
     }
 
     // Pass 2 — execute. Every trim goes through the shared undoable domain
-    // operation; commands are squashed into one step afterwards. Marker spans
-    // are snapshotted up front so the receipt reports the net marker delta of
-    // the whole batch (upstream #560) instead of per-edge fragments.
+    // operation, and the whole batch runs inside one transaction so it lands as
+    // a single undo step by construction rather than by counting entries.
+    // Marker spans are snapshotted up front so the receipt reports the net
+    // marker delta of the whole batch (upstream #560) instead of per-edge
+    // fragments.
     const markersBefore = this.editor.getMarkers();
-    let applied = 0;
-    for (const planned of edgeEdits) {
-      const live = this.editor.getClips().find((c) => c.id === planned.clipId);
-      if (!live) {
-        notes.push(`${planned.path}: clip was removed when an earlier edit extended over it — this trim was skipped.`);
-        continue;
-      }
-      const report = this.editor.trimClipEdge(planned.clipId, planned.edge, planned.delta, ripple);
-      if (!report) {
-        notes.push(
-          `${planned.path}: ${planned.edgeName} edge could not move ${planned.delta > 0 ? '+' : ''}${planned.delta} frames (no headroom, or a linked clip sits on a locked track) — skipped.`,
-        );
-        continue;
-      }
-      applied++;
-      if (report.durationDelta !== planned.requestedDurationDelta) {
-        notes.push(
-          `${planned.path}: ${planned.edgeName} edge clamped to ${Math.abs(report.durationDelta)} of the requested ${Math.abs(planned.requestedDurationDelta)} frames.`,
-        );
-      }
-
-      // ripple=false contract (upstream): extending overwrites whatever the
-      // new span overlaps on that track — through the same span-clearing the
-      // overwrite-placement mode uses, so partially overlapped neighbors are
-      // split and the covered middle dropped with source mapping intact.
-      if (!ripple && planned.edge === 'right') {
-        const lead = this.editor.getClips().find((c) => c.id === planned.clipId);
-        if (lead) {
-          const overwrite = this.editor.overwriteClearSpan(
-            { start: lead.startFrame + 1, end: lead.startFrame + lead.durationFrames },
-            this.editor.expandLinkedClipIds([planned.clipId]),
+    this.editor.transaction('Trim clips (Agent)', () => {
+      for (const planned of edgeEdits) {
+        const live = this.editor.getClips().find((c) => c.id === planned.clipId);
+        if (!live) {
+          notes.push(`${planned.path}: clip was removed when an earlier edit extended over it — this trim was skipped.`);
+          continue;
+        }
+        const report = this.editor.trimClipEdge(planned.clipId, planned.edge, planned.delta, ripple);
+        if (!report) {
+          notes.push(
+            `${planned.path}: ${planned.edgeName} edge could not move ${planned.delta > 0 ? '+' : ''}${planned.delta} frames (no headroom, or a linked clip sits on a locked track) — skipped.`,
           );
-          if (overwrite === null) {
-            notes.push(
-              `${planned.path}: the extended span overlaps a locked track — covered clips were left in place.`,
+          continue;
+        }
+        if (report.durationDelta !== planned.requestedDurationDelta) {
+          notes.push(
+            `${planned.path}: ${planned.edgeName} edge clamped to ${Math.abs(report.durationDelta)} of the requested ${Math.abs(planned.requestedDurationDelta)} frames.`,
+          );
+        }
+
+        // ripple=false contract (upstream): extending overwrites whatever the
+        // new span overlaps on that track — through the same span-clearing the
+        // overwrite-placement mode uses, so partially overlapped neighbors are
+        // split and the covered middle dropped with source mapping intact.
+        if (!ripple && planned.edge === 'right') {
+          const lead = this.editor.getClips().find((c) => c.id === planned.clipId);
+          if (lead) {
+            const overwrite = this.editor.overwriteClearSpan(
+              { start: lead.startFrame + 1, end: lead.startFrame + lead.durationFrames },
+              this.editor.expandLinkedClipIds([planned.clipId]),
             );
-          } else {
-            if (overwrite.removedClipIds.length > 0) {
-              applied++;
+            if (overwrite === null) {
               notes.push(
-                `${planned.path}: extending the end edge overwrote ${overwrite.removedClipIds.join(', ')} (fully covered).`,
+                `${planned.path}: the extended span overlaps a locked track — covered clips were left in place.`,
               );
-            }
-            if (overwrite.trimmedClipIds.length > 0) {
-              applied++;
-              notes.push(
-                `${planned.path}: extending the end edge trimmed covered parts of ${overwrite.trimmedClipIds.join(', ')}.`,
-              );
+            } else {
+              if (overwrite.removedClipIds.length > 0) {
+                notes.push(
+                  `${planned.path}: extending the end edge overwrote ${overwrite.removedClipIds.join(', ')} (fully covered).`,
+                );
+              }
+              if (overwrite.trimmedClipIds.length > 0) {
+                notes.push(
+                  `${planned.path}: extending the end edge trimmed covered parts of ${overwrite.trimmedClipIds.join(', ')}.`,
+                );
+              }
             }
           }
         }
       }
-    }
-    if (applied > 1) {
-      this.editor.squashLastCommands(applied, 'Trim clips (Agent)');
-    }
+    });
 
     // Receipt: report where every edge actually landed so the caller verifies
     // against the result instead of assuming the requested frames held, plus
@@ -389,21 +647,55 @@ export class ToolExecutor {
         // set_project_settings is only useful if the agent can read the canvas
         // back (upstream #417).
         const project = this.editor.getProject();
+        // Explicit scope only: an omitted scopeTimelineId reads the main
+        // timeline (exactly today's behavior), never the UI's open nest.
+        let timeline = project.timeline;
+        let scopeTimelineId: string | null = null;
+        if (args.scopeTimelineId !== undefined) {
+          try {
+            timeline = this.editor.getTimelineInScope(args.scopeTimelineId);
+            scopeTimelineId = args.scopeTimelineId;
+          } catch (err) {
+            return {
+              success: false,
+              error: err instanceof Error ? err.message : 'Scope lookup failed.',
+            };
+          }
+        }
+        const nested = project.timelines ?? {};
         return {
           success: true,
           data: {
-            ...project.timeline,
+            ...timeline,
             settings: project.settings,
             width: project.settings.width,
             height: project.settings.height,
             fps: project.settings.fps,
             aspectRatio: aspectRatioLabel(project.settings.width, project.settings.height),
+            scopeTimelineId,
+            ...(Object.keys(nested).length > 0
+              ? {
+                timelines: Object.entries(nested).map(([id, nestedTimeline]) => ({
+                  id,
+                  name: nestedTimeline.name ?? 'Nested sequence',
+                  clipCount: nestedTimeline.clips.length,
+                })),
+              }
+              : {}),
           },
         };
       }
 
       case 'get_clips': {
-        let clips = this.editor.getClips();
+        // Explicit scope only, like get_timeline: omitted means the main
+        // timeline even if the UI has a nest open elsewhere.
+        let scoped;
+        try {
+          scoped = this.editor.getTimelineInScope(args.scopeTimelineId ?? null);
+        } catch {
+          return { success: false, error: `Nested timeline "${args.scopeTimelineId}" no longer exists.` };
+        }
+        let clips = [...scoped.clips];
         if (args.trackId) {
           clips = clips.filter((c) => c.trackId === args.trackId);
         }
@@ -413,6 +705,9 @@ export class ToolExecutor {
       case 'get_media':
         return { success: true, data: this.editor.getMedia() };
 
+      case 'list_grade_presets':
+        return { success: true, data: { presets: this.gradePresets.list() } };
+
       case 'update_plan': {
         const steps = normalizePlan(args.steps);
         // Reported to the session, never persisted: no project change, no
@@ -421,6 +716,22 @@ export class ToolExecutor {
         return {
           success: true,
           data: { steps, summary: planSummary(steps), count: steps.length },
+        };
+      }
+
+      case 'load_skill': {
+        // L7: advisory text only. The body is returned as data; nothing in it
+        // is interpreted, dispatched, or executed — a skill cannot invoke
+        // tools or mutate state by itself. No project access, no undo entry.
+        const loaded = loadSkillBody(this.deps.skillsDir ?? defaultSkillsDir(), args.name);
+        if (!loaded.ok) return { success: false, error: loaded.reason };
+        return {
+          success: true,
+          data: {
+            name: loaded.skill.name,
+            description: loaded.skill.description,
+            body: loaded.skill.body,
+          },
         };
       }
 
@@ -574,6 +885,8 @@ export class ToolExecutor {
               entry.fontCase !== undefined, entry.fillMode !== undefined,
               entry.blurRadius !== undefined, entry.tiltX !== undefined,
               entry.tiltY !== undefined,
+              entry.variationWght !== undefined, entry.variationWdth !== undefined,
+              entry.variationSlnt !== undefined, entry.variationItal !== undefined,
             ];
             if (styleFields.some(Boolean)) {
               this.editor.applyClipProperties([clipId], 'Style title', (draft) => {
@@ -609,6 +922,28 @@ export class ToolExecutor {
                   if (entry.tiltY === 0) delete draft.titleTiltYDeg;
                   else draft.titleTiltYDeg = entry.tiltY;
                 }
+                // Variable-font axes (#50): sanitize maps defaults (400/100/
+                // 0/0) to undefined, so a default clears like blur/tilt zeros.
+                if (entry.variationWght !== undefined) {
+                  const clean = sanitizeTitleVariationWght(entry.variationWght);
+                  if (clean === undefined) delete draft.titleVariationWght;
+                  else draft.titleVariationWght = clean;
+                }
+                if (entry.variationWdth !== undefined) {
+                  const clean = sanitizeTitleVariationWdth(entry.variationWdth);
+                  if (clean === undefined) delete draft.titleVariationWdth;
+                  else draft.titleVariationWdth = clean;
+                }
+                if (entry.variationSlnt !== undefined) {
+                  const clean = sanitizeTitleVariationSlnt(entry.variationSlnt);
+                  if (clean === undefined) delete draft.titleVariationSlnt;
+                  else draft.titleVariationSlnt = clean;
+                }
+                if (entry.variationItal !== undefined) {
+                  const clean = sanitizeTitleVariationItal(entry.variationItal);
+                  if (clean === undefined) delete draft.titleVariationItal;
+                  else draft.titleVariationItal = clean;
+                }
                 return true;
               });
             }
@@ -624,28 +959,6 @@ export class ToolExecutor {
             error: err instanceof Error ? err.message : 'Title creation failed.',
           };
         }
-      }
-
-      case 'import_srt': {
-        const track = this.editor.getTracks().find((t) => t.id === args.trackId);
-        if (!track) {
-          return { success: false, error: `No track "${args.trackId}" on this timeline.` };
-        }
-        if (track.type !== 'video') {
-          return { success: false, error: 'SRT import requires a video track.' };
-        }
-        if (track.locked) {
-          return { success: false, error: `Track "${track.name}" is locked.` };
-        }
-        const ids = this.editor.importSrt(
-          args.trackId,
-          args.srtContent,
-          args.startFrame,
-        );
-        if (ids.length === 0) {
-          return { success: false, error: 'No usable subtitles found in that SRT content.' };
-        }
-        return { success: true, data: { importedClipIds: ids, count: ids.length } };
       }
 
       case 'import_srt': {
@@ -694,18 +1007,33 @@ export class ToolExecutor {
 
       case 'set_title_text': {
         try {
-          const hasStyle = args.fontSize !== undefined || args.color !== undefined
-            || args.bold !== undefined || args.fontFamily !== undefined
-            || args.backgroundColor !== undefined;
-          if (args.text !== undefined) {
-            const ok = this.editor.setTitleText(args.clipId, args.text);
-            if (!ok) {
-              return { success: false, error: 'Clip not found, is not a title, or text is invalid.' };
-            }
+          // Resolve and type-check before any mutation: a style-only call used
+          // to reach the mutator with no guard, so a non-title clip was
+          // reported as updated while the batch silently skipped it. Every
+          // sibling case (set_shape_style, set_clip_edge_effects, …) refuses
+          // the wrong clip type up front; this one now does too.
+          const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+          if (!clip) return { success: false, error: 'Clip not found.' };
+          if (clip.type !== 'title') {
+            return { success: false, error: 'Only title clips carry title text and styling.' };
           }
-          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding, args.lineSpacing, args.fontCase, args.fillMode, args.blurRadius, args.tiltX, args.tiltY];
-          if (styleFields.some((v) => v !== undefined)) {
-            this.editor.applyClipProperties([args.clipId], 'Style title', (draft) => {
+          // Validated here so setTitleText's false below can only mean "the
+          // text is already this", never "the text was unusable".
+          if (args.text !== undefined && !sanitizeTitleText(args.text)) {
+            return { success: false, error: 'Title text is invalid.' };
+          }
+          const styleFields = [args.fontSize, args.color, args.bold, args.fontFamily, args.backgroundColor, args.backgroundPadding, args.lineSpacing, args.fontCase, args.fillMode, args.blurRadius, args.tiltX, args.tiltY, args.variationWght, args.variationWdth, args.variationSlnt, args.variationItal];
+          // One tool call is one undo step: text and style land together, so a
+          // single undo reverts both. A scope collecting only one command
+          // publishes it as-is, so a text-only or style-only call keeps its
+          // exact existing history label.
+          let textChanged = false;
+          const styleReceipt = this.editor.transaction('Edit title text and style', () => {
+            if (args.text !== undefined) {
+              textChanged = this.editor.setTitleText(args.clipId, args.text);
+            }
+            if (!styleFields.some((v) => v !== undefined)) return null;
+            return this.editor.applyClipProperties([args.clipId], 'Style title', (draft) => {
               if (draft.type !== 'title') return false;
               if (args.fontSize !== undefined) {
                 draft.titleSizeRatio = args.fontSize / this.editor.getProject().settings.height;
@@ -739,8 +1067,34 @@ export class ToolExecutor {
                 if (args.tiltY === 0) delete draft.titleTiltYDeg;
                 else draft.titleTiltYDeg = args.tiltY;
               }
+              if (args.variationWght !== undefined) {
+                const clean = sanitizeTitleVariationWght(args.variationWght);
+                if (clean === undefined) delete draft.titleVariationWght;
+                else draft.titleVariationWght = clean;
+              }
+              if (args.variationWdth !== undefined) {
+                const clean = sanitizeTitleVariationWdth(args.variationWdth);
+                if (clean === undefined) delete draft.titleVariationWdth;
+                else draft.titleVariationWdth = clean;
+              }
+              if (args.variationSlnt !== undefined) {
+                const clean = sanitizeTitleVariationSlnt(args.variationSlnt);
+                if (clean === undefined) delete draft.titleVariationSlnt;
+                else draft.titleVariationSlnt = clean;
+              }
+              if (args.variationItal !== undefined) {
+                const clean = sanitizeTitleVariationItal(args.variationItal);
+                if (clean === undefined) delete draft.titleVariationItal;
+                else draft.titleVariationItal = clean;
+              }
               return true;
             });
+          });
+          // Report what actually happened: the batch mutator skips a clip it
+          // leaves unchanged, and setTitleText returns false for text that is
+          // already set, so "success" here would be a lie.
+          if (!textChanged && (styleReceipt?.changedClipIds.length ?? 0) === 0) {
+            return { success: true, data: { updated: args.clipId, changed: false } };
           }
           return { success: true, data: { updated: args.clipId } };
         } catch (err) {
@@ -751,8 +1105,133 @@ export class ToolExecutor {
         }
       }
 
-      case 'set_clip_pan': {
+      case 'add_shapes': {
         try {
+          const result = this.editor.addShapeClips(args.entries.map((entry: {
+            trackId: string;
+            startFrame: number;
+            durationFrames: number;
+            kind?: unknown;
+            x?: unknown;
+            y?: unknown;
+            width?: unknown;
+            height?: unknown;
+            strokeColor?: unknown;
+            strokeWidth?: unknown;
+            fillColor?: unknown;
+            preset?: unknown;
+          }) => ({
+            trackId: entry.trackId,
+            startFrame: entry.startFrame,
+            durationFrames: entry.durationFrames,
+            shapeKind: entry.kind,
+            ...(entry.x !== undefined ? { x: entry.x } : {}),
+            ...(entry.y !== undefined ? { y: entry.y } : {}),
+            ...(entry.width !== undefined ? { width: entry.width } : {}),
+            ...(entry.height !== undefined ? { height: entry.height } : {}),
+            ...(entry.strokeColor !== undefined ? { strokeColor: entry.strokeColor } : {}),
+            ...(entry.strokeWidth !== undefined ? { strokeWidth: entry.strokeWidth } : {}),
+            ...(entry.fillColor !== undefined ? { fillColor: entry.fillColor } : {}),
+            ...(entry.preset !== undefined ? { preset: entry.preset } : {}),
+          })));
+          if (result.errors.length > 0 && result.added.length === 0) {
+            return { success: false, error: result.errors[0] };
+          }
+          return { success: true, data: { added: result.added, errors: result.errors } };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Shape creation failed.',
+          };
+        }
+      }
+
+      case 'set_shape_style': {
+        try {
+          const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+          if (!clip) return { success: false, error: 'Clip not found.' };
+          if (clip.type !== 'shape') {
+            return { success: false, error: 'Only shape clips carry shape style.' };
+          }
+          const styleFields = [
+            args.kind, args.strokeColor, args.strokeWidth, args.fillColor, args.preset,
+          ];
+          if (styleFields.every((v) => v === undefined)) {
+            return { success: false, error: 'Pass at least one field to update.' };
+          }
+          if (args.kind !== undefined && sanitizeShapeKind(args.kind) === undefined) {
+            return { success: false, error: 'Unknown shape kind.' };
+          }
+          if (args.strokeColor !== undefined && sanitizeShapeStrokeColor(args.strokeColor) === undefined) {
+            return { success: false, error: 'strokeColor must be #RRGGBB.' };
+          }
+          if (args.strokeWidth !== undefined && sanitizeShapeStrokeWidth(args.strokeWidth) === undefined) {
+            return { success: false, error: 'strokeWidth must be a finite number.' };
+          }
+          if (
+            args.fillColor !== undefined && args.fillColor !== null
+            && sanitizeShapeFillColor(args.fillColor) === undefined
+          ) {
+            return { success: false, error: 'fillColor must be #RRGGBBAA or null.' };
+          }
+          let preset: ShapeAnimationPreset | undefined;
+          if (args.preset !== undefined) {
+            if (
+              typeof args.preset !== 'string'
+              || !(SHAPE_ANIMATION_PRESETS as readonly string[]).includes(args.preset)
+            ) {
+              return { success: false, error: 'Unknown animation preset.' };
+            }
+            preset = args.preset as ShapeAnimationPreset;
+          }
+          const fps = this.editor.getProject().settings.fps;
+          this.editor.applyClipProperties([args.clipId], 'Style shape', (draft) => {
+            if (draft.type !== 'shape') return false;
+            if (args.kind !== undefined) {
+              const kind = sanitizeShapeKind(args.kind)!;
+              draft.shapeKind = kind;
+              draft.label = kind.charAt(0).toUpperCase() + kind.slice(1);
+            }
+            if (args.strokeColor !== undefined) {
+              draft.shapeStrokeColor = sanitizeShapeStrokeColor(args.strokeColor)!;
+            }
+            if (args.strokeWidth !== undefined) {
+              const width = sanitizeShapeStrokeWidth(args.strokeWidth)!;
+              if (width === 0) delete draft.shapeStrokeWidth;
+              else draft.shapeStrokeWidth = width;
+            }
+            if (args.fillColor !== undefined) {
+              if (args.fillColor === null) delete draft.shapeFillColor;
+              else draft.shapeFillColor = sanitizeShapeFillColor(args.fillColor)!;
+            }
+            if (preset) {
+              const motion = shapePresetMotion(preset, {
+                startFrame: draft.startFrame,
+                durationFrames: draft.durationFrames,
+                fps,
+                x: draft.x,
+                y: draft.y,
+                width: draft.width,
+                height: draft.height,
+              });
+              if (motion.motionX) draft.motionX = motion.motionX;
+              if (motion.motionY) draft.motionY = motion.motionY;
+              if (motion.motionRot) draft.motionRot = motion.motionRot;
+              if (motion.motionScaleX) draft.motionScaleX = motion.motionScaleX;
+              if (motion.motionScaleY) draft.motionScaleY = motion.motionScaleY;
+            }
+            return true;
+          });
+          return { success: true, data: { updated: args.clipId } };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Shape update failed.',
+          };
+        }
+      }
+
+      case 'set_clip_pan': {        try {
           const ok = this.editor.setClipPan(args.clipId, args.pan);
           return ok
             ? { success: true, data: { clipId: args.clipId, pan: args.pan } }
@@ -854,6 +1333,40 @@ export class ToolExecutor {
             changed: receipt.changedClipIds.length > 0,
             compressor: updated && hasCompressor(updated) ? normalizeCompressor(updated.compressor) : null,
             cleared: !updated || !hasCompressor(updated),
+          },
+        };
+      }
+
+      case 'set_clip_noise_reduction': {
+        const clip = this.editor.getClips().find((c) => c.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'audio') {
+          return { success: false, error: 'Noise reduction applies to audio clips only.' };
+        }
+        // 0 and clear both DELETE the field — the same contract as the
+        // Inspector slider, which removes noiseReduction at 0 instead of
+        // storing an off value (absent and 0 are both "off" for readers).
+        const clear = args.clear === true || args.noiseReduction === 0;
+        const receipt = this.editor.applyClipProperties(
+          [clip.id],
+          clear ? 'Remove noise reduction' : 'Noise reduction',
+          (draft) => {
+            if (clear) {
+              delete draft.noiseReduction;
+              return true;
+            }
+            draft.noiseReduction = args.noiseReduction;
+            return true;
+          },
+        );
+        const updated = this.editor.getClips().find((candidate) => candidate.id === clip.id);
+        return {
+          success: true,
+          data: {
+            clipId: clip.id,
+            changed: receipt.changedClipIds.length > 0,
+            noiseReduction: updated ? noiseReductionOf(updated) : null,
+            cleared: !updated || noiseReductionOf(updated) === null,
           },
         };
       }
@@ -1003,6 +1516,69 @@ export class ToolExecutor {
         }
       }
 
+      case 'manage_media_folders': {
+        try {
+          if (args.action === 'list') {
+            const project = this.editor.getProject();
+            return {
+              success: true,
+              data: {
+                folders: this.editor.getMediaFolders().map((folder) => ({
+                  id: folder.id,
+                  name: folder.name,
+                  assetCount: folderAssetCount(project, folder.id),
+                })),
+                rootAssetCount: folderAssetCount(project, undefined),
+              },
+            };
+          }
+          if (args.action === 'create') {
+            if (args.name === undefined) {
+              return { success: false, error: 'Creating a folder requires name.' };
+            }
+            const folder = this.editor.createMediaFolder(args.name);
+            return { success: true, data: { folder } };
+          }
+          if (args.action === 'rename') {
+            if (args.folderId === undefined || args.folderId === null) {
+              return { success: false, error: 'Renaming a folder requires folderId.' };
+            }
+            if (args.name === undefined) {
+              return { success: false, error: 'Renaming a folder requires name.' };
+            }
+            const before = this.editor.getMediaFolders().find((f) => f.id === args.folderId);
+            const folder = this.editor.renameMediaFolder(args.folderId, args.name);
+            // renameMediaFolder returns the untouched target when the cleaned
+            // name case-insensitively matches the current one — a no-op that
+            // added no history, reported like every other no-op receipt.
+            if (before && before.name === folder.name) {
+              return { success: true, data: { noOp: true } };
+            }
+            return { success: true, data: { folder } };
+          }
+          if (args.action === 'delete') {
+            if (args.folderId === undefined || args.folderId === null) {
+              return { success: false, error: 'Deleting a folder requires folderId.' };
+            }
+            return { success: true, data: this.editor.deleteMediaFolder(args.folderId) };
+          }
+          // move_assets — an omitted or null folderId is the library root.
+          if (args.assetIds === undefined) {
+            return { success: false, error: 'Moving assets requires assetIds.' };
+          }
+          const receipt = this.editor.moveAssetsToFolder(args.assetIds, args.folderId ?? null);
+          if (receipt.movedAssetIds.length === 0) {
+            return { success: true, data: { noOp: true } };
+          }
+          return { success: true, data: receipt };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Folder operation failed.',
+          };
+        }
+      }
+
       // â”€â”€ Write operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       case 'add_clip': {
         if (args.mode !== undefined || args.source !== undefined) {
@@ -1110,9 +1686,33 @@ export class ToolExecutor {
       case 'split_clip': {
         const newClipId = this.editor.splitClip(args.clipId, clampFrame(args.atFrame));
         if (!newClipId) {
-          return { success: false, error: 'Split failed â€” invalid frame or clip not found.' };
+          return { success: false, error: 'Split failed — invalid frame or clip not found.' };
         }
         return { success: true, data: { originalClipId: args.clipId, newClipId } };
+      }
+
+      case 'nest_clips': {
+        try {
+          const receipt = this.editor.nestClips(args.clipIds, { name: args.name, scopeTimelineId: args.scopeTimelineId ?? null });
+          return { success: true, data: receipt };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Nest failed.',
+          };
+        }
+      }
+
+      case 'flatten_compound': {
+        try {
+          const receipt = this.editor.flattenCompound(args.clipId, { scopeTimelineId: args.scopeTimelineId ?? null });
+          return { success: true, data: receipt };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Flatten failed.',
+          };
+        }
       }
 
       case 'add_track': {
@@ -1173,8 +1773,25 @@ export class ToolExecutor {
           if (ranges.length === 0) {
             return { success: true, data: { removed: 0, message: 'No silence detected above threshold.' } };
           }
-          const removed = this.editor.removeSilence(args.clipId, ranges);
-          return { success: true, data: { removed, ranges: ranges.length } };
+          // The controller maps these spans for the cut; mapping here too is
+          // what makes an omitted span reportable instead of silently absent
+          // (0 from the controller means the ripple refused, e.g. a locked
+          // anchor, so nothing was cut even when spans mapped).
+          const mapping = mapSilenceRangesToTimeline(
+            clip,
+            this.editor.getProject().settings.fps,
+            ranges,
+          );
+          const committed = this.editor.removeSilence(args.clipId, ranges);
+          const omitted = omissionCounts(mapping.omitted);
+          return {
+            success: true,
+            data: {
+              removed: committed > 0 ? mapping.ranges.length : 0,
+              ranges: ranges.length,
+              ...(omitted ? { notes: [omissionNote(committed > 0, omitted)] } : {}),
+            },
+          };
         } catch (err: any) {
           return { success: false, error: `Silence detection failed: ${err.message}` };
         }
@@ -1312,12 +1929,9 @@ export class ToolExecutor {
         }
         try {
           const json = this.editor.serialize();
-          // Temp file + rename, so a crash mid-write cannot truncate an
-          // existing project (the same contract project-writer.ts uses for
-          // the GUI save path).
-          const tmp = `${args.path}.${process.pid}.tmp`;
-          await fs.writeFile(tmp, json, 'utf8');
-          await fs.rename(tmp, args.path);
+          // Share the GUI's per-destination FIFO and unique-temp atomic write
+          // contract so concurrent MCP saves cannot race on one staging path.
+          await writeProjectFile(args.path, json);
           return { success: true, data: { path: args.path, bytes: Buffer.byteLength(json, 'utf8') } };
         } catch (err) {
           return {
@@ -1334,13 +1948,26 @@ export class ToolExecutor {
         }
         const format = args.format ?? 'mp4';
         const quality = args.quality ?? 'normal';
-        const options = { outputPath, format, quality };
+        // HDR profile (upstream #59): rides the same options object as
+        // format/quality, schema-validated by the tool enum; absent means
+        // the SDR default. Export settings are delivery options, not project
+        // state, so like format/quality they enter no undo domain.
+        const hdr = args.hdr;
+        const options = {
+          outputPath,
+          format,
+          quality,
+          ...(hdr !== undefined ? { hdr } : {}),
+        };
 
         // The exporter reports through the same events the delivery panel
         // consumes; capture them so an error that only arrives as an event
         // (e.g. FFmpeg's stderr tail) reaches the caller instead of a bare
-        // exit-code message.
-        const events: { error?: string; bytes?: number } = {};
+        // exit-code message, and so a layer the graph could not render
+        // faithfully (a missing LUT, an unbaked shape, an advanced title
+        // degraded to drawtext) is named in the receipt rather than dropped
+        // silently by a zero exit code.
+        const events: { error?: string; bytes?: number; warnings: string[] } = { warnings: [] };
         const sink = {
           send: (channel: string, payload?: unknown) => {
             if (channel === 'export:complete') {
@@ -1348,6 +1975,9 @@ export class ToolExecutor {
             }
             if (channel === 'export:error') {
               events.error = typeof payload === 'string' ? payload : String(payload);
+            }
+            if (channel === 'export:warning') {
+              events.warnings.push(typeof payload === 'string' ? payload : String(payload));
             }
           },
         };
@@ -1362,9 +1992,18 @@ export class ToolExecutor {
           if (events.error) return { success: false, error: events.error };
           return {
             success: true,
-            data: { outputPath, format, quality, bytes: events.bytes ?? null },
+            data: {
+              outputPath,
+              format,
+              quality,
+              bytes: events.bytes ?? null,
+              ...(hdr !== undefined ? { hdr } : {}),
+              ...(events.warnings.length > 0 ? { warnings: events.warnings } : {}),
+            },
           };
         } catch (err) {
+          // A failed export is already loud; the warnings describe a render
+          // that never delivered, so they ride the success receipt only.
           return {
             success: false,
             error: events.error ?? (err instanceof Error ? err.message : String(err)),
@@ -1496,9 +2135,22 @@ export class ToolExecutor {
       }
 
       case 'export_fcpxml': {
-        const xmlOut = exportFcpxml(this.editor.getProject());
-        await fs.writeFile(args.path, xmlOut, 'utf8');
-        return { success: true, data: { path: args.path } };
+        const report = exportFcpxmlWithReport(this.editor.getProject());
+        await fs.writeFile(args.path, report.xml, 'utf8');
+        // Mirror import_fcpxml's unsupported list, truncated for context:
+        // one line per skipped clip, with counts so nothing is lost silently.
+        const unsupported = report.unsupported.slice(0, 20);
+        return {
+          success: true,
+          data: {
+            path: args.path,
+            exportedClips: report.exportedClips,
+            skippedClips: report.skippedClips,
+            unsupported,
+            unsupportedTotal: report.unsupported.length,
+            unsupportedTruncated: report.unsupported.length > unsupported.length,
+          },
+        };
       }
 
       case 'inspect_frame': {
@@ -1560,8 +2212,8 @@ export class ToolExecutor {
       case 'set_clip_motion': {
         const clip = this.editor.getClips().find((c) => c.id === args.clipId);
         if (!clip) return { success: false, error: 'Clip not found.' };
-        if (clip.type !== 'video' && clip.type !== 'image') {
-          return { success: false, error: 'Position animation applies to video and image clips only (titles are static in v1).' };
+        if (clip.type !== 'video' && clip.type !== 'image' && clip.type !== 'shape') {
+          return { success: false, error: 'Motion animation applies to video, image, and shape clips only (titles are static in v1).' };
         }
         if (Array.isArray(args.points) && args.points.length === 0) {
           this.editor.applyClipProperties([args.clipId], 'Clear motion', (draft) => {
@@ -1592,6 +2244,58 @@ export class ToolExecutor {
             clipId: args.clipId,
             axis: args.axis,
             keyframes: track,
+          },
+        };
+      }
+
+      case 'set_clip_opacity_keyframes': {
+        const clip = this.editor.getClips().find((candidate) => candidate.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        // Match the Inspector's decoded-media eligibility: video, image, and
+        // generated clips share the media alpha path. Titles, shapes, audio,
+        // and compound clips use separate render/transport paths.
+        if (clip.type !== 'video' && clip.type !== 'image' && clip.type !== 'generated') {
+          return {
+            success: false,
+            error: 'Opacity keyframes apply to video, image, and generated clips only; titles, shapes, audio, and compound clips use separate render/transport paths.',
+          };
+        }
+
+        if (args.points.length === 0) {
+          const changed = this.editor.setClipOpacityTrack(args.clipId, []);
+          const current = this.editor.getClips().find((candidate) => candidate.id === args.clipId)?.opacityTrack;
+          return {
+            success: true,
+            data: {
+              clipId: args.clipId,
+              changed,
+              cleared: changed,
+              keyframes: current ?? [],
+            },
+          };
+        }
+
+        // Validate the complete track before calling the sanctioned controller
+        // mutation. The schema has already rejected non-finite/out-of-range
+        // values; this catches short tracks and duplicate-frame collapse.
+        const track = sanitizeMotion(args.points);
+        const bounded = track?.filter((point) => point.value >= 0 && point.value <= 1) ?? [];
+        if (bounded.length < 2) {
+          return {
+            success: false,
+            error: 'Opacity keyframes need at least two distinct, finite points with values from 0 to 1.',
+          };
+        }
+
+        const changed = this.editor.setClipOpacityTrack(args.clipId, args.points);
+        const current = this.editor.getClips().find((candidate) => candidate.id === args.clipId)?.opacityTrack;
+        return {
+          success: true,
+          data: {
+            clipId: args.clipId,
+            changed,
+            cleared: false,
+            keyframes: current ?? bounded,
           },
         };
       }
@@ -1730,6 +2434,121 @@ export class ToolExecutor {
         };
       }
 
+      case 'save_grade_preset': {
+        const clip = this.editor.getClips().find((candidate) => candidate.id === args.clipId);
+        if (!clip) return { success: false, error: 'Clip not found.' };
+        if (clip.type !== 'video' && clip.type !== 'image') {
+          return { success: false, error: 'Color grading applies to video and image clips only.' };
+        }
+        const captured = capturePresetFromClip(clip, this.editor.getProject().settings);
+        const result = this.gradePresets.save(args.name, captured.grade, captured.shot);
+        if (!result.ok) return { success: false, error: result.error };
+        return {
+          success: true,
+          data: {
+            clipId: clip.id,
+            preset: result.preset,
+            presets: result.presets,
+          },
+        };
+      }
+
+      case 'rename_grade_preset': {
+        const result = this.gradePresets.rename(args.presetId, args.name);
+        if (!result.ok) return { success: false, error: result.error };
+        return {
+          success: true,
+          data: {
+            presetId: result.preset.id,
+            preset: result.preset,
+            presets: result.presets,
+          },
+        };
+      }
+
+      case 'delete_grade_preset': {
+        const referencingClipIds = this.editor.getClips()
+          .filter((clip) => clip.gradePresetId === args.presetId)
+          .map((clip) => clip.id);
+        const result = this.gradePresets.delete(args.presetId);
+        if (!result.ok) return { success: false, error: result.error };
+        return {
+          success: true,
+          data: {
+            presetId: args.presetId,
+            changed: result.changed,
+            referencingClipIds,
+            presets: result.presets,
+          },
+        };
+      }
+
+      case 'apply_grade_preset': {
+        const targetModes = [
+          args.clipId !== undefined,
+          args.clipIds !== undefined,
+          args.allProjectClips !== undefined,
+        ].filter(Boolean).length;
+        if (targetModes !== 1) {
+          return { success: false, error: 'Provide exactly one of clipId, clipIds, or allProjectClips:true.' };
+        }
+
+        const allProjectClips = args.allProjectClips === true;
+        const availableClips = this.editor.getClips();
+        const clipIds = allProjectClips
+          ? availableClips.map((clip) => clip.id)
+          : args.clipId !== undefined
+            ? [args.clipId as string]
+            : [...new Set(args.clipIds as string[])];
+        const clips = clipIds.map((clipId) => availableClips.find((candidate) => candidate.id === clipId));
+        for (const [index, clip] of clips.entries()) {
+          if (!clip) {
+            return { success: false, error: `Clip not found: ${clipIds[index]}` };
+          }
+          if (clip.type !== 'video' && clip.type !== 'image') {
+            return { success: false, error: 'Color grading applies to video and image clips only.' };
+          }
+        }
+        const preset = this.gradePresets.get(args.presetId);
+        if (!preset) return { success: false, error: 'Grade preset not found.' };
+
+        // Propagation is opt-in per call and never inferred: an omitted flag
+        // resolves to the requested clips alone, and a mode this tool does not
+        // know is refused rather than quietly downgraded to that.
+        let propagate: GradePresetPropagateMode | undefined;
+        if (args.propagate !== undefined) {
+          const parsed = parseGradePresetPropagateMode(args.propagate);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          propagate = parsed.mode;
+        }
+        const cover = resolveGradePresetPropagation(
+          this.editor,
+          clipIds,
+          propagate === undefined ? [] : [propagate],
+          (clip) => clip.type === 'video' || clip.type === 'image',
+        );
+        if (!cover.ok) return { success: false, error: cover.error };
+
+        const linkPreset = args.linkPreset !== false;
+        const report = applyGradePresetTo(this.editor, cover.cover.clipIds, preset, linkPreset);
+        return {
+          success: true,
+          data: {
+            presetId: preset.id,
+            label: preset.label,
+            clipIds: cover.cover.clipIds,
+            linkPreset,
+            ...(allProjectClips ? { allProjectClips: true } : {}),
+            ...(propagate === undefined
+              ? {}
+              : { propagate, relatedClipIds: cover.cover.relatedClipIds }),
+            changed: report.changedClipIds.length > 0,
+            changedClipIds: report.changedClipIds,
+            skippedClipIds: report.skippedClipIds,
+          },
+        };
+      }
+
       case 'set_clip_color_grade': {
         const clip = this.editor.getClips().find((c) => c.id === args.clipId);
         if (!clip) return { success: false, error: 'Clip not found.' };
@@ -1737,6 +2556,83 @@ export class ToolExecutor {
           return { success: false, error: 'Color grading applies to video and image clips only.' };
         }
         const clear = args.clear === true;
+        // Curves, wheels and hue curves are validated strictly: a malformed
+        // point refuses the call rather than silently dropping part of the
+        // requested look.
+        let curvesPatch: GradeCurvePatch | undefined;
+        if (args.curves !== undefined) {
+          const parsed = parseGradeCurvePatch(args.curves);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          curvesPatch = parsed.patch;
+        }
+        let wheelsPatch: GradeWheelsPatch | undefined;
+        if (args.wheels !== undefined) {
+          const parsed = parseGradeWheelsPatch(args.wheels);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          wheelsPatch = parsed.patch;
+        }
+        let hueCurvesPatch: HueCurvesPatch | undefined;
+        if (args.hueCurves !== undefined) {
+          const parsed = parseHueCurvesPatch(args.hueCurves);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          hueCurvesPatch = parsed.patch;
+        }
+        // Effect stages (#157 subgroups) are validated strictly like the
+        // wheels: a malformed component refuses the call rather than
+        // silently rendering a different look.
+        let vignettePatch: VignettePatch | undefined;
+        if (args.vignette !== undefined) {
+          const parsed = parseVignettePatch(args.vignette);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          vignettePatch = parsed.patch;
+        }
+        let grainPatch: GrainPatch | undefined;
+        if (args.grain !== undefined) {
+          const parsed = parseGrainPatch(args.grain);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          grainPatch = parsed.patch;
+        }
+        let glowPatch: GlowPatch | undefined;
+        if (args.glow !== undefined) {
+          const parsed = parseGlowPatch(args.glow);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          glowPatch = parsed.patch;
+        }
+        if (args.blurRadius !== undefined
+          && (!Number.isFinite(args.blurRadius)
+            || args.blurRadius < EFFECT_LIMITS.blurRadius.min
+            || args.blurRadius > EFFECT_LIMITS.blurRadius.max)) {
+          return { success: false, error: 'Blur radius must be between 0 and 100.' };
+        }
+        // LUT paths are validated at the boundary: a missing or invalid
+        // .cube file refuses the call with the reason instead of storing a
+        // dead reference that would silently render ungraded.
+        let lutRef: LutRef | 'clear' | undefined;
+        let lutIntensityArg: number | undefined;
+        if (args.lutPath !== undefined) {
+          if (args.lutPath === '') {
+            lutRef = 'clear';
+          } else {
+            if (typeof args.lutIntensity !== 'undefined'
+              && (!Number.isFinite(args.lutIntensity) || args.lutIntensity < 0 || args.lutIntensity > 1)) {
+              return { success: false, error: 'LUT intensity must be between 0 and 1.' };
+            }
+            const intensity = args.lutIntensity !== undefined
+              ? args.lutIntensity
+              : sanitizeLutRef(clip.lut)?.intensity ?? 1;
+            const validation = validateLutFile(args.lutPath, intensity);
+            if (!validation.ok) return { success: false, error: validation.error };
+            lutRef = validation.ref;
+          }
+        } else if (args.lutIntensity !== undefined) {
+          if (!Number.isFinite(args.lutIntensity) || args.lutIntensity < 0 || args.lutIntensity > 1) {
+            return { success: false, error: 'LUT intensity must be between 0 and 1.' };
+          }
+          if (!sanitizeLutRef(clip.lut)) {
+            return { success: false, error: 'No LUT is set on this clip — pass lutPath to choose one first.' };
+          }
+          lutIntensityArg = args.lutIntensity;
+        }
         const sanitized = sanitizeColorGrade({
           ...(args.brightness !== undefined ? { brightness: args.brightness } : {}),
           ...(args.contrast !== undefined ? { contrast: args.contrast } : {}),
@@ -1770,6 +2666,14 @@ export class ToolExecutor {
               delete draft.blacks;
               delete draft.whites;
               delete draft.invertColors;
+              delete draft.curves;
+              delete draft.wheels;
+              delete draft.hueCurves;
+              delete draft.lut;
+              delete draft.blurRadius;
+              delete draft.vignette;
+              delete draft.grain;
+              delete draft.glow;
               return true;
             }
             // A field passed at its default clears it, so a graded clip can
@@ -1784,6 +2688,107 @@ export class ToolExecutor {
             }
             if (args.invertColors === true) draft.invertColors = true;
             else if (args.invertColors === false) delete draft.invertColors;
+            if (curvesPatch) {
+              // Per-channel merge like upstream GradeState.apply: a provided
+              // channel replaces, an omitted one stays, and an empty channel
+              // clears it. All-identity drops the field entirely.
+              const existing: GradeCurve = sanitizeGradeCurve(draft.curves)
+                ?? { master: [], red: [], green: [], blue: [] };
+              const merged: GradeCurve = { ...existing, ...curvesPatch };
+              const next = isIdentityGradeCurve(merged) ? undefined : merged;
+              // Reference-stable no-op: clipsShallowEqual compares object
+              // identity, so an identical patch must not rewrite the field.
+              if (!gradeCurvesEqual(next, draft.curves)) {
+                if (next) draft.curves = next;
+                else delete draft.curves;
+              }
+            }
+            if (wheelsPatch) {
+              // Per-component merge like the scalar fields: a provided x, y,
+              // or m replaces, an omitted one stays. All-identity drops the
+              // field entirely, so steering every zone back to default clears
+              // the wheels without a separate clear call.
+              const existing: GradeWheels = sanitizeGradeWheels(draft.wheels)
+                ?? { lift: { x: 0, y: 0, m: 0 }, gamma: { x: 0, y: 0, m: 1 }, gain: { x: 0, y: 0, m: 1 } };
+              const merged: GradeWheels = {
+                lift: { ...existing.lift, ...wheelsPatch.lift },
+                gamma: { ...existing.gamma, ...wheelsPatch.gamma },
+                gain: { ...existing.gain, ...wheelsPatch.gain },
+              };
+              const next = isIdentityGradeWheels(merged) ? undefined : merged;
+              // Reference-stable no-op, like the curves stage above.
+              if (!gradeWheelsEqual(next, draft.wheels)) {
+                if (next) draft.wheels = next;
+                else delete draft.wheels;
+              }
+            }
+            if (hueCurvesPatch) {
+              // Per-channel merge like the tone curves: a provided channel
+              // replaces, an omitted one stays, and an empty channel clears
+              // it. All-neutral drops the field entirely.
+              const existing: HueCurves = sanitizeHueCurves(draft.hueCurves)
+                ?? { hueVsHue: [], hueVsSat: [], hueVsLum: [] };
+              const merged: HueCurves = { ...existing, ...hueCurvesPatch };
+              const next = isIdentityHueCurves(merged) ? undefined : merged;
+              // Reference-stable no-op, like the stages above.
+              if (!hueCurvesEqual(next, draft.hueCurves)) {
+                if (next) draft.hueCurves = next;
+                else delete draft.hueCurves;
+              }
+            }
+            if (lutRef === 'clear') {
+              delete draft.lut;
+            } else if (lutRef) {
+              // Reference-stable no-op, like the stages above: an identical
+              // path + intensity rewrites nothing, so the call adds no
+              // history entry.
+              if (!lutRefsEqual(lutRef, draft.lut)) draft.lut = lutRef;
+            } else if (lutIntensityArg !== undefined) {
+              // Re-blend the existing LUT (upstream's strength-only call):
+              // the boundary already refused a missing LUT.
+              const existing = sanitizeLutRef(draft.lut) ?? sanitizeLutRef(clip.lut);
+              if (existing) {
+                const next = { ...existing, intensity: lutIntensityArg };
+                if (!lutRefsEqual(next, draft.lut)) draft.lut = next;
+              }
+            }
+            // Blur radius is scalar-like: 0 clears the field, anything else
+            // sets it. An identical value rewrites nothing (no history).
+            if (args.blurRadius !== undefined) {
+              const clean = sanitizeBlurRadius(args.blurRadius);
+              if ((clean ?? null) !== (sanitizeBlurRadius(draft.blurRadius) ?? null)) {
+                if (clean === undefined) delete draft.blurRadius;
+                else draft.blurRadius = clean;
+              }
+            }
+            if (vignettePatch && Object.keys(vignettePatch).length > 0) {
+              // Per-component merge like the wheels: a provided component
+              // replaces, an omitted one stays. All-default drops the field
+              // entirely, so steering every slider back to default clears
+              // the vignette without a separate clear call.
+              const merged = { ...(sanitizeVignette(draft.vignette) ?? { ...DEFAULT_VIGNETTE }), ...vignettePatch };
+              const next = sanitizeVignette(merged);
+              if (!vignettesEqual(next, draft.vignette)) {
+                if (next) draft.vignette = next;
+                else delete draft.vignette;
+              }
+            }
+            if (grainPatch && Object.keys(grainPatch).length > 0) {
+              const merged = { ...(sanitizeGrain(draft.grain) ?? { ...DEFAULT_GRAIN }), ...grainPatch };
+              const next = sanitizeGrain(merged);
+              if (!grainsEqual(next, draft.grain)) {
+                if (next) draft.grain = next;
+                else delete draft.grain;
+              }
+            }
+            if (glowPatch && Object.keys(glowPatch).length > 0) {
+              const merged = { ...(sanitizeGlow(draft.glow) ?? { ...DEFAULT_GLOW }), ...glowPatch };
+              const next = sanitizeGlow(merged);
+              if (!glowsEqual(next, draft.glow)) {
+                if (next) draft.glow = next;
+                else delete draft.glow;
+              }
+            }
             return true;
           },
         );
@@ -1806,7 +2811,15 @@ export class ToolExecutor {
             blacks: updated?.blacks ?? 0,
             whites: updated?.whites ?? 0,
             invertColors: updated?.invertColors ?? false,
-            cleared: !updated || !hasColorGrade(updated),
+            curves: sanitizeGradeCurve(updated?.curves) ?? null,
+            wheels: sanitizeGradeWheels(updated?.wheels) ?? null,
+            hueCurves: sanitizeHueCurves(updated?.hueCurves) ?? null,
+            lut: sanitizeLutRef(updated?.lut) ?? null,
+            blurRadius: sanitizeBlurRadius(updated?.blurRadius) ?? 0,
+            vignette: sanitizeVignette(updated?.vignette) ?? null,
+            grain: sanitizeGrain(updated?.grain) ?? null,
+            glow: sanitizeGlow(updated?.glow) ?? null,
+            cleared: !updated || (!hasColorGrade(updated) && !hasEffects(updated)),
           },
         };
       }
@@ -1815,32 +2828,101 @@ export class ToolExecutor {
         const asset = this.editor.getMedia().find((m) => m.id === args.assetId);
         if (!asset) return { success: false, error: 'Asset not found.' };
 
-        // Preference order (#287): an explicit custom STT server, then the
-        // AI provider runtime.
-        let runtime: { baseUrl: string; apiKey: string } | null = null;
+        // Engine resolution (#39 local half / #287): per-job `engine`, else
+        // the persisted choice; `auto` prefers local when its binary + model
+        // are present, then the custom endpoint, then cloud BYOK. Explicit
+        // engines never fall back — the resolver refuses instead.
+        let transcribeConfig: {
+          baseUrl?: string; apiKey?: string; model?: string;
+          engine?: unknown; localModel?: unknown; localBinaryPath?: string;
+        } = {};
         try {
           const { getTranscribeConfig } = await import('../media/transcribe-config');
-          const override = getTranscribeConfig();
-          if (override.baseUrl && override.apiKey) {
-            runtime = { baseUrl: override.baseUrl, apiKey: override.apiKey };
-            args = { ...args, model: args.model ?? override.model };
-          }
+          transcribeConfig = getTranscribeConfig();
         } catch { /* electron absent in tests */ }
-        if (!runtime) {
-          runtime = await (this.deps.getTranscriptionRuntime?.() ?? Promise.resolve(null));
-        }
-        if (!runtime) {
-          return {
-            success: false,
-            error: 'No OpenAI-compatible provider with an API key is configured for transcription. Add one under AI Settings.',
+        const customRuntime = transcribeConfig.baseUrl && transcribeConfig.apiKey
+          ? { baseUrl: transcribeConfig.baseUrl, apiKey: transcribeConfig.apiKey }
+          : null;
+        // An explicit local job never consults cloud credentials at all —
+        // not just "no fallback request", no key lookup either.
+        const localOnly = normalizeSttEngine(args.engine ?? transcribeConfig.engine) === 'local';
+        const cloudRuntime = localOnly
+          ? customRuntime
+          : (customRuntime
+            ?? await (this.deps.getTranscriptionRuntime?.() ?? Promise.resolve(null)));
+
+        const localModelId = isKnownLocalModel(args.model)
+          ? args.model
+          : (typeof transcribeConfig.localModel === 'string' ? transcribeConfig.localModel : DEFAULT_LOCAL_MODEL);
+        let localDir: string | null = null;
+        try {
+          localDir = await (this.deps.getLocalSttDir?.() ?? defaultLocalSttDir());
+        } catch { /* unavailable host */ }
+        let localAvailability = {
+          binaryPresent: false,
+          binaryMissingOverride: false,
+          modelId: localModelId,
+          modelPresent: false,
+        };
+        if (localDir) {
+          const probe = await probeLocalBinary({
+            userDataDir: localDir,
+            override: transcribeConfig.localBinaryPath,
+          });
+          const modelPath = resolveLocalSttPaths(localDir).modelPath(localModelId);
+          localAvailability = {
+            binaryPresent: probe.found,
+            binaryMissingOverride: probe.missingOverride,
+            modelId: localModelId,
+            modelPresent: !!modelPath && fsSync.existsSync(modelPath),
           };
         }
 
-        const { transcribeAudio } = await import('./transcribe');
-        const transcription = await transcribeAudio(runtime, asset.path, {
-          model: args.model,
-          language: args.language,
-        });
+        const resolution = resolveSttEngine(
+          { requested: args.engine, language: args.language, cloudAvailable: !!cloudRuntime },
+          transcribeConfig,
+          localAvailability,
+        );
+        if (resolution.kind === 'refusal') {
+          return { success: false, error: resolution.error };
+        }
+
+        let transcription: TranscriptionResult;
+        if (resolution.kind === 'local') {
+          const runLocal = this.deps.runLocalTranscription ?? ((input) => runWhisperLocal({
+            userDataDir: localDir,
+            binaryOverride: transcribeConfig.localBinaryPath,
+            audioPath: input.audioPath,
+            language: input.language,
+            modelId: input.modelId,
+          }));
+          try {
+            transcription = await runLocal({
+              audioPath: asset.path,
+              language: typeof args.language === 'string' ? args.language : undefined,
+              modelId: resolution.modelId,
+            });
+          } catch (err: unknown) {
+            return { success: false, error: err instanceof Error ? err.message : String(err) };
+          }
+        } else {
+          const runtime = resolution.kind === 'custom' ? customRuntime : cloudRuntime;
+          if (!runtime) {
+            return { success: false, error: 'The transcription runtime became unavailable — try again.' };
+          }
+          if (resolution.kind === 'custom') {
+            args = { ...args, model: args.model ?? transcribeConfig.model };
+          }
+          try {
+            const { transcribeAudio } = await import('./transcribe');
+            transcription = await transcribeAudio(runtime, asset.path, {
+              model: args.model,
+              language: args.language,
+            });
+          } catch (err: unknown) {
+            return { success: false, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
         if (transcription.words.length === 0 && transcription.segments.length === 0) {
           return {
             success: true,
@@ -1855,30 +2937,15 @@ export class ToolExecutor {
           ...(args.pauseBreakSec !== undefined ? { pauseBreakSec: args.pauseBreakSec } : {}),
         });
         const cues = planCaptions(transcription.words, planOptions);
-        const fps = this.editor.getProject().settings.fps;
-        const trackId = this.editor.addTrack('video');
-
-        let placed = 0;
-        for (const cue of cues) {
-          const startFrame = Math.max(0, Math.round(cue.startSec * fps));
-          const durationFrames = Math.max(
-            1,
-            Math.round(cue.endSec * fps) - startFrame,
-          );
-          this.editor.addTitleClip({
-            trackId,
-            text: cue.text,
-            startFrame,
-            durationFrames,
-          });
-          placed += 1;
-        }
+        // Anchored on the source asset, so cues land over the clip the speech
+        // is in rather than at frame 0 (see shared/captions/apply.ts).
+        const applied = applyCaptionCues(this.editor, cues, { assetId: asset.id });
 
         return {
           success: true,
           data: {
-            cues: placed,
-            trackId,
+            cues: applied.count,
+            trackId: applied.trackId,
             words: transcription.words.length,
             model: transcription.model,
             previewText: cues[0]?.text ?? '',
@@ -1916,6 +2983,20 @@ export class ToolExecutor {
           ?? configured[0]!;
         const modelId = args.modelId ?? provider.getModels(args.type)[0];
 
+        // A reference image is validated against the resolved model before the
+        // request exists, so a refused path costs no provider call and leaves
+        // the project untouched. Omitted means text-to-image exactly as before.
+        let referenceImagePath: string | undefined;
+        if (args.referenceImagePath !== undefined) {
+          const reference = validateReferenceImage(args.referenceImagePath, {
+            type: args.type,
+            providerName: provider.name,
+            model: modelId,
+          });
+          if (!reference.ok) return { success: false, error: reference.error };
+          referenceImagePath = reference.path;
+        }
+
         // The generated file lands in the generation cache; import it as a
         // first-class library asset so the model can place it like anything
         // else. A probe failure still imports nothing but reports cleanly.
@@ -1928,6 +3009,7 @@ export class ToolExecutor {
             width: args.width,
             height: args.height,
             negativePrompt: args.negativePrompt,
+            ...(referenceImagePath ? { referenceImagePath } : {}),
             extra: { model: modelId },
           },
           { timeoutMs: GENERATION_TIMEOUT_MS },
@@ -1948,10 +3030,17 @@ export class ToolExecutor {
             id: assetId,
             addedAt: new Date().toISOString(),
             ...probed,
+            duration: Math.max(
+              0,
+              secondsToProjectFrames(probed.duration, this.editor.getProject().settings.fps),
+            ),
             generatedBy: {
               provider: provider.id,
               model: modelId,
-              costCredits: result.costCredits,
+              ...(typeof result.costCredits === 'number' && Number.isFinite(result.costCredits)
+                ? { costCredits: result.costCredits }
+                : {}),
+              ...(referenceImagePath ? { referenceImagePath } : {}),
             },
           });
           return {
@@ -1963,6 +3052,7 @@ export class ToolExecutor {
               provider: provider.id,
               model: modelId,
               durationSec: probed.duration,
+              ...(referenceImagePath ? { referenceImagePath } : {}),
             },
           };
         } catch (err: unknown) {
@@ -1970,6 +3060,101 @@ export class ToolExecutor {
             success: false,
             error: `Generated file could not be probed: ${err instanceof Error ? err.message : String(err)}`,
           };
+        }
+      }
+
+      case 'describe_media': {
+        const asset = this.editor.getMedia().find((m) => m.id === args.assetId);
+        if (!asset) return { success: false, error: 'Asset not found.' };
+        if (asset.type === 'audio') {
+          return { success: false, error: 'Audio assets have no frames to describe.' };
+        }
+        // An injected null (tests, headless) means "no provider" and is
+        // respected; the Electron store is only consulted when no injector
+        // was provided at all.
+        let runtime = this.deps.getVisionRuntime
+          ? await this.deps.getVisionRuntime()
+          : null;
+        if (!runtime && !this.deps.getVisionRuntime) {
+          try {
+            const { getVisionRuntime } = await import('./ipc-vision');
+            runtime = await getVisionRuntime();
+          } catch { /* electron absent in tests */ }
+        }
+        if (!runtime) {
+          return {
+            success: false,
+            error: 'No vision-capable provider with an API key is configured. Add one under AI Settings.',
+          };
+        }
+        // Lightweight frame source: the tile thumbnail when it exists on
+        // disk, the image file itself for stills, otherwise a single capped
+        // decode (never the full video) — the same source the media tile
+        // shows, so the model describes what the user sees.
+        let imagePath: string | null = null;
+        try {
+          if (asset.thumbnailPath && fsSync.existsSync(asset.thumbnailPath)) {
+            imagePath = asset.thumbnailPath;
+          } else if (asset.type === 'image') {
+            imagePath = asset.path;
+          } else {
+            const { getFrameDecoder } = await import('../media/frame-decoder');
+            const width = 640;
+            const height = Math.max(
+              90,
+              Math.round((width / (asset.width ?? 16)) * (asset.height ?? 9)),
+            );
+            const decoded = await getFrameDecoder().getFrame({
+              assetPath: asset.path,
+              width,
+              height,
+              sourceSeconds: 1,
+            });
+            if (!decoded?.data) {
+              return { success: false, error: 'Could not decode a frame — check the source file is readable.' };
+            }
+            let baseDir: string;
+            try {
+              type ElectronAppHost = { app?: { getPath(name: string): string }; default?: { app?: { getPath(name: string): string } } };
+              const electronModule = (await import('electron')) as unknown as ElectronAppHost;
+              const app = electronModule.app ?? electronModule.default?.app;
+              baseDir = app ? app.getPath('userData') : path.join(os.tmpdir(), 'palmier-inspect-frames');
+            } catch {
+              baseDir = path.join(os.tmpdir(), 'palmier-inspect-frames');
+            }
+            const hash = createHash('sha1')
+              .update(`describe|${asset.path}|${width}`)
+              .digest('hex')
+              .slice(0, 12);
+            const outPath = inspectFramePath(baseDir, hash);
+            await rgbaToPng(decoded.data, width, height, outPath);
+            imagePath = outPath;
+          }
+        } catch (err: unknown) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+        try {
+          const runDescribe =
+            this.deps.describeImage
+            ?? (await import('./describe')).describeImage;
+          const { truncateForReceipt } = await import('./describe');
+          const out = await runDescribe(runtime, imagePath!);
+          // One undoable media-field write, same path as the UI Describe
+          // button (ReplaceMediaCommand via setAssetDescription).
+          this.editor.setAssetDescription(asset.id, out.description);
+          return {
+            success: true,
+            data: {
+              assetId: asset.id,
+              description: truncateForReceipt(out.description),
+              fullLength: out.description.length,
+              model: out.model,
+              provider: out.provider,
+              updated: true,
+            },
+          };
+        } catch (err: unknown) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
       }
 
@@ -2009,41 +3194,70 @@ export class ToolExecutor {
     clipIds?: string[],
   ): Promise<ToolResult> {
     const fps = this.editor.getProject().settings.fps;
-    const tracksById = new Map(
-      this.editor.getProject().timeline.tracks.map((track) => [track.id, track]),
-    );
-    const clipsById = new Map(this.editor.getClips().map((clip) => [clip.id, clip]));
+    const initialClipsById = new Map(this.editor.getClips().map((clip) => [clip.id, clip]));
     const mediaById = new Map(this.editor.getMedia().map((asset) => [asset.id, asset]));
+
+    // Analyze every source before the first ripple. A missing asset or detector
+    // failure must not leave earlier tracks edited while the call reports
+    // failure. Keep the cache outside the scope loop so a source shared by
+    // multiple tracks is read once for the whole operation.
+    const detectedByPath = new Map<string, SilentRange[]>();
+    const sourceRangesByClip = new Map<string, SilentRange[]>();
+    for (const scope of scopes) {
+      for (const clipId of scope.clipIds) {
+        const clip = initialClipsById.get(clipId);
+        if (!clip) {
+          return { success: false, error: `Source media for clip ${clipId} not found.` };
+        }
+        const asset = mediaById.get(clip.assetId);
+        if (!asset) {
+          return { success: false, error: `Source media for clip ${clipId} not found.` };
+        }
+        if (!detectedByPath.has(asset.path)) {
+          try {
+            detectedByPath.set(asset.path, await detectSilenceForFile(asset.path, config));
+          } catch (err: unknown) {
+            return { success: false, error: `Silence detection failed: ${err instanceof Error ? err.message : String(err)}` };
+          }
+        }
+        sourceRangesByClip.set(clipId, detectedByPath.get(asset.path)!);
+      }
+    }
 
     let sections = 0;
     let removedFrames = 0;
     let editedAnyTrack = false;
     const notes: string[] = [];
+    const omitted: OmittedSilenceRange[] = [];
 
     for (const scope of scopes) {
+      // A preceding ripple may have shifted this track (or a sync-locked
+      // follower) left. Re-read the clip positions for every pass and map the
+      // cached source ranges onto the current clip window; never reuse the
+      // pre-ripple timeline snapshot.
+      const currentClipsById = new Map(this.editor.getClips().map((clip) => [clip.id, clip]));
       const detection: RippleRange[] = [];
-      const detectedByPath = new Map<string, SilentRange[]>();
       for (const clipId of scope.clipIds) {
-        const clip = clipsById.get(clipId)!;
-        const asset = mediaById.get(clip.assetId);
-        if (!asset) {
-          return { success: false, error: `Source media for clip ${clipId} not found.` };
-        }
-        let ranges = detectedByPath.get(asset.path);
-        if (!ranges) {
-          try {
-            ranges = await detectSilenceForFile(asset.path, config);
-          } catch (err: unknown) {
-            return { success: false, error: `Silence detection failed: ${err instanceof Error ? err.message : String(err)}` };
-          }
-          detectedByPath.set(asset.path, ranges);
-        }
-        detection.push(...timelineSilenceRanges(clip, fps, ranges));
+        const clip = currentClipsById.get(clipId);
+        if (!clip) continue;
+        // Spans that meet no part of the clip are kept for the receipt rather
+        // than dropped: the detector reports the whole asset, the clip shows a
+        // trimmed part of it, and "no dead air" over found silence is false.
+        const mapping = mapSilenceRangesToTimeline(
+          clip,
+          fps,
+          sourceRangesByClip.get(clipId) ?? [],
+        );
+        detection.push(...mapping.ranges);
+        omitted.push(...mapping.omitted);
       }
 
       const merged = mergeRippleRanges(detection);
       if (merged.length === 0) continue;
 
+      const tracksById = new Map(
+        this.editor.getProject().timeline.tracks.map((track) => [track.id, track]),
+      );
       const track = tracksById.get(scope.trackId);
       if (!track || track.locked) {
         if (editedAnyTrack) {
@@ -2059,7 +3273,7 @@ export class ToolExecutor {
         // nothing changed. A locked sync-locked track elsewhere blocks the
         // shift for every pass, which must surface rather than skip quietly.
         const shiftsLockedTrack = [...tracksById.values()].some(
-          (track) => track.locked && track.syncLocked !== false && track.id !== scope.trackId,
+          (candidate) => candidate.locked && candidate.syncLocked !== false && candidate.id !== scope.trackId,
         );
         if (!shiftsLockedTrack) continue;
         const reason = 'the ripple shifts a locked track';
@@ -2073,6 +3287,11 @@ export class ToolExecutor {
       removedFrames += report.removedFrames;
       editedAnyTrack = true;
     }
+
+    // Named before the "no dead air" branch, because silence that was found and
+    // then left in place is not the same fact as audio with no quiet sections.
+    const omittedCounts = omissionCounts(omitted);
+    if (omittedCounts) notes.push(omissionNote(sections > 0, omittedCounts));
 
     if (sections === 0 && notes.length === 0) {
       return {

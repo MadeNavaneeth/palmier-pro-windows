@@ -1,14 +1,15 @@
 /**
- * Track solo (upstream PR #428): solo is UI-only derived state that never
- * creates an undo entry, never persists to the project file, and never
- * mutates `visible` or `locked`.
- *
- * When any track is soloed, only soloed tracks are active for preview,
- * export, and audio playback.
+ * Track solo (upstream PR #428): solo is a live audition state that never
+ * creates an undo entry and never mutates `visible` or `locked`. The flag is
+ * carried in the renderer/main snapshot so preview and export share the same
+ * selection; loading a project clears the session-only state.
  */
 
 import { describe, it, expect } from 'vitest';
 import { EditorController } from './controller';
+import { visualClipsAtFrame } from '../../main/media/visible-clips';
+import { selectExportClips } from '../media/export-eligibility';
+import type { Project } from '../types/project';
 
 function project() {
   const ctrl = new EditorController();
@@ -53,14 +54,29 @@ describe('track solo (upstream PR #428)', () => {
     expect(ctrl.canUndo()).toBe(before);
   });
 
-  it('solo does NOT persist through serialization', () => {
+  it('carries solo in the live snapshot used by preview and export', () => {
+    const ctrl = project();
+    const soloTrackId = ctrl.getTracks()[0].id;
+    ctrl.toggleTrackSolo(soloTrackId);
+
+    const snapshot = JSON.parse(ctrl.serialize()) as Project;
+    expect(snapshot.timeline.tracks.find((track) => track.id === soloTrackId)?.soloed).toBe(true);
+    const mainMirror = new EditorController();
+    mainMirror.setProjectSilent(snapshot);
+    expect(mainMirror.getTracks().find((track) => track.id === soloTrackId)?.soloed).toBe(true);
+    const preview = visualClipsAtFrame(snapshot, 0);
+    const exported = selectExportClips(snapshot);
+    expect(preview.length).toBeGreaterThan(0);
+    expect(exported.length).toBeGreaterThan(0);
+    expect(preview.every((clip) => clip.trackId === soloTrackId)).toBe(true);
+    expect(exported.every((clip) => clip.trackId === soloTrackId)).toBe(true);
+  });
+
+  it('clears solo when a serialized project is loaded as durable state', () => {
     const ctrl = project();
     ctrl.toggleTrackSolo(ctrl.getTracks()[0].id);
-    expect(ctrl.getTracks()[0].soloed).toBe(true);
 
-    const json = ctrl.serialize();
-    const restored = new EditorController(JSON.parse(json));
-    // soloed is optional and must not survive serialization
+    const restored = new EditorController(JSON.parse(ctrl.serialize()));
     expect(restored.getTracks()[0].soloed).toBeFalsy();
   });
 

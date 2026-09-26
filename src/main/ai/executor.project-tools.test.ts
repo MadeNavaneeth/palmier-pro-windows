@@ -10,6 +10,7 @@ import path from 'path';
 import os from 'os';
 import { ToolExecutor } from './executor';
 import { EditorController } from '../../shared/editor/controller';
+import { drainWrites, pendingWriteCount } from '../services/project-writer';
 
 let tmpDir = '';
 
@@ -18,6 +19,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await drainWrites();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -63,6 +65,24 @@ describe('project file tools (MCP batch workflows)', () => {
     expect(reopened.editor.getClips()[0].startFrame).toBe(30);
   });
 
+  it('serializes concurrent MCP saves to the same destination', async () => {
+    const { editor, executor } = harness();
+    const file = path.join(tmpDir, 'concurrent.vproj');
+
+    const first = executor.execute('save_project', { path: file });
+    editor.addMedia({
+      id: 'newer', path: '/x/newer.mp4', filename: 'newer.mp4', type: 'video',
+      duration: 10, fileSize: 1, addedAt: new Date().toISOString(),
+    });
+    const second = executor.execute('save_project', { path: file });
+
+    expect(pendingWriteCount(file)).toBe(2);
+    const results = await Promise.all([first, second]);
+    expect(results.map((result) => result.success)).toEqual([true, true]);
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).media).toHaveLength(1);
+    expect((await fs.readdir(tmpDir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('refuses a missing file, malformed JSON, and empty paths', async () => {
     const { executor } = harness();
     const missing = await executor.execute('open_project', { path: path.join(tmpDir, 'nope.vproj') });
@@ -80,11 +100,14 @@ describe('project file tools (MCP batch workflows)', () => {
     expect((await executor.execute('open_project', {})).success).toBe(false);
   });
 
-  it('surfaces an unwritable destination without leaving a temp file', async () => {
+  it('surfaces a failed write without leaving a temp file', async () => {
     const { executor } = harness();
-    const missingDir = path.join(tmpDir, 'does-not-exist', 'x.vproj');
+    // A directory in place of the destination makes the atomic rename fail
+    // after the unique temp file has already been written.
+    const blocked = path.join(tmpDir, 'blocked.vproj');
+    await fs.mkdir(blocked);
 
-    const result = await executor.execute('save_project', { path: missingDir });
+    const result = await executor.execute('save_project', { path: blocked });
 
     expect(result.success).toBe(false);
     expect((result as { error?: string }).error).toMatch(/could not save/i);

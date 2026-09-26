@@ -22,13 +22,12 @@ records the acceptance criteria for both.
 
 ## Track 1 — Parity to the frozen baseline
 
-Baseline: upstream `8805801f` (2026-08-24), snapshot `b4b1333` (appcast only).
-Remaining work is the closed backlog in the ledger, not future commits.
+Baseline: upstream `eeafde2` (v0.10.1 appcast, 2026-09-26; source retired via PR #578); snapshot `eeafde2`. The `21f756e` → `eeafde2` move is `appcast.xml` only. Previous source-era baselines: `b4b1333` (v0.9.0) and `8805801f` (v0.7.7+). Remaining work is the closed backlog in the ledger, not future commits.
 
 | Phase | Items | Exit criterion |
 |---|---|---|
-| P1 — close Partial rows | #154 effects/blend in FCPXML, #157 shot settings, #286 panel tabs/detach, #532 protocol revision, #118 AI descriptions, #20 linux artifacts, #39 local STT | Every Partial row either moves to Implemented with coverage or names its blocker in one line |
-| P2 — big Planned items | #45 shape annotations, #50 variable fonts, #59 HDR export, #137 multi-session, #142 Codex CLI provider, #155 compound clips, #156 library hierarchy, #165 noise reduction, #430 adaptive light theme | Each item has a domain owner, tests, and a rendered/exported check where applicable |
+| P1 — close Partial rows | #154 remaining delta = **the absent XMEML/Premiere exporter** only (needs a go/no-go; it is a whole second export target, not a delta fix) — keyframed opacity, `adjust-conform`, still-image `<video>`, `timeMap` speed, title transform/blend, compound `ref-clip` export **and** import round trip, and explicit omission reporting all now ship, and grade/effects/layer-blend-mode are correct exclusions; #157 effect controls, #286 panel tabs/detach, #20 linux artifacts | Every Partial row either moves to Implemented with coverage or names its blocker in one line |
+| P2 — big Planned items | #580 CapCut draft export (#137 multi-session is now Implemented) | Each item has a domain owner, tests, and a rendered/exported check where applicable |
 
 Sequence: P1 before P2 except when a P2 item is a prerequisite (#155 gates
 #154's nested-sequence note; #59 needs the compositor color contract first).
@@ -219,6 +218,8 @@ baseline; a skill that does not beat baseline is deleted.
 Acceptance:
 - Loader + activation test; user-facing enable/disable list.
 - Prompt-injection review recorded per skill (skills are user files).
+
+Shipped 2026-09-19: strict filesystem loader (`main/ai/skills.ts`), read-only `load_skill` as the sole activation path (index in the prompt, bodies on explicit trigger only, advisory-text structural proof), enable/disable list in AI Settings, and 3 reviewed skills with anti-rot tests (podcast-cleanup, shorts-reframe, subtitle-burn-in + REVIEW.md each). Model-backed A/B vs the no-skill baseline left for a live-model harness.
 
 ## What we deliberately do not adopt
 

@@ -19,6 +19,7 @@ import {
   TITLE_BACKGROUND_PADDING_DEFAULT,
   applyTitleFontCase,
   titleTiltCorners,
+  titleVariationSettings,
 } from '../../shared/editor/title';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -32,18 +33,6 @@ function makeLayer(width: number, height: number): { canvas: OffscreenCanvas; ct
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
   return { canvas, ctx };
-}
-
-/** True when the clip needs the bake pipeline instead of drawtext. */
-export function isAdvancedTitle(clip: Clip): boolean {
-  return clip.type === 'title'
-    && Boolean(clip.text)
-    && (
-      clip.titleFillMode !== undefined
-      || (clip.titleBlurRadius ?? 0) > 0
-      || (clip.titleTiltXDeg ?? 0) !== 0
-      || (clip.titleTiltYDeg ?? 0) !== 0
-    );
 }
 
 /**
@@ -132,6 +121,14 @@ export function drawTitle(
     g.save();
     g.globalAlpha = clip.opacity;
     g.font = font;
+    // Variable-font axes (#50): any loaded variable font responds; a
+    // non-variable font ignores unknown axes harmlessly. The cast is only
+    // because this TS lib predates the property — every Electron Chromium
+    // supports fontVariationSettings.
+    const variationSettings = titleVariationSettings(clip);
+    if (variationSettings) {
+      (g as Ctx2D & { fontVariationSettings: string }).fontVariationSettings = variationSettings;
+    }
 
     if (clip.titleBackgroundColor) {
       let maxW = 0;

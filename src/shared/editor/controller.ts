@@ -17,7 +17,7 @@ import type {
 } from '../types/project';
 import { MAX_CANVAS_EDGE } from '../project/aspect-ratio';
 import { createEmptyProject } from '../types/project';
-import { clampFrame, asValidFrame, MAX_FRAME } from '../utils/safe-number';
+import { clampFrame, asValidFrame } from '../utils/safe-number';
 import {
   CommandHistory,
   AddClipCommand,
@@ -34,9 +34,10 @@ import type { Command } from './commands';
 import { resolveLayoutPreset, type GridLayoutPreset } from './grid-layout';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
-import { planSilenceRemoval, type FrameRange, type SilentRange } from '../audio/silence-detector';
+import type { SilentRange } from '../audio/silence-detector';
 import { eqOf } from '../audio/eq';
 import { compressorEquals, compressorOf } from '../audio/compressor';
+import { noiseReductionOf } from '../audio/denoise';
 import { resolveTrackName, TRACK_NAME_MAX_LENGTH } from './track-name';
 import {
   MARKER_DEFAULT_COLOR,
@@ -54,15 +55,51 @@ import {
 import { DEFAULT_MARKER_SETTINGS } from './marker-settings';
 import { hasEmbeddedAudio, isMediaCompatibleWithTrack, placementDuration } from './placement';
 import { fileKindOf } from '../media/file-kind';
-import { assetDurationSeconds } from '../media/source-time';
+import { assetDurationSeconds, effectiveSpeed } from '../media/source-time';
 import {
   DEFAULT_TITLE_STYLE,
+  narrowTitleVariationClip,
   sanitizeTitleText,
 } from './title';
+import {
+  DEFAULT_SHAPE_STYLE,
+  SHAPE_ANIMATION_PRESETS,
+  SHAPE_ASSET_ID,
+  narrowShapeClip,
+  sanitizeShapeFillColor,
+  sanitizeShapeKind,
+  sanitizeShapeStrokeColor,
+  sanitizeShapeStrokeWidth,
+  shapePresetMotion,
+  type ShapeAnimationPreset,
+} from './shape';
 import { parseSrt } from './srt';
 import { parseVtt } from './vtt-parse';
-import { colorGradeOf } from './color-grade';
+import { placeCaptionCue } from '../captions/apply';
+import { colorGradeOf, gradeCurvesEqual, gradeWheelsEqual, hueCurvesEqual, sanitizeGradeCurve, sanitizeGradeWheels, sanitizeHueCurves } from './color-grade';
+import { normalizeEasing, sanitizeMotion, type MotionTrack } from '../media/motion';
+import { narrowProjectGradePresetLinks } from './grade-preset-store';
+import { clipEffectsEqual, effectsOf, sanitizeBlurRadius, sanitizeGlow, sanitizeGrain, sanitizeVignette } from './effects';
+import { lutRefsEqual, sanitizeLutRef } from './lut';
 import { migrateProject, CURRENT_SCHEMA_VERSION } from './migrations';
+import { folderNamesMatch, narrowMediaFolders, sanitizeFolderName } from '../media/folders';
+import type { MediaFolder } from '../types/project';
+import { narrowAiDescription, sanitizeAiDescription } from '../media/ai-description';
+import {
+  MAX_COMPOUND_DEPTH,
+  nestedSubtreeDepth,
+  planFlatten,
+  planNest,
+  sanitizeCompoundTimelineId,
+  scopeDisplayName,
+  timelineBreadcrumbs,
+  timelineInScope,
+  withTimelineInScope,
+  withNarrowedCompounds,
+  type FlattenReceipt,
+  type NestReceipt,
+  type TimelineBreadcrumb,
+} from './compound';
 
 /**
  * One copied clip and its position relative to the copy anchor  the
@@ -77,6 +114,7 @@ interface ClipClipboardEntry {
   sourceTrackId: string;
 }
 import { computeRippleShifts, mergeRippleRanges, type RippleRange } from './ripple';
+import { timelineSilenceRanges } from './silence-scoping';
 
 export type StateChangeListener = (project: Project) => void;
 
@@ -155,6 +193,22 @@ function clipsShallowEqual(a: Clip, b: Clip): boolean {
   return aKeys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && a[key] === b[key]);
 }
 
+/** Apply the same rounded, clamped frame conversion used by timeline rescale. */
+function rescaleFrame(frame: Frame, scale: number): Frame {
+  return clampFrame(Math.round(frame * scale), 0);
+}
+
+/** Rescale keyframe times while preserving each point's value and easing. */
+function rescaleKeyframeTrack(
+  track: MotionTrack | undefined,
+  scale: number,
+): MotionTrack | undefined {
+  return track?.map((point) => ({
+    ...point,
+    frame: rescaleFrame(point.frame, scale),
+  }));
+}
+
 /**
  * Rescale every frame-valued field in a timeline by `scale`.
  *
@@ -177,11 +231,8 @@ function rescaleTimelineFrames(timeline: Timeline, scale: number): Timeline {
   for (const clips of byTrack.values()) {
     let previousEnd: Frame | null = null;
     for (const clip of [...clips].sort((a, b) => a.startFrame - b.startFrame)) {
-      const scaledStart = clampFrame(Math.round(clip.startFrame * scale), 0);
-      const scaledEnd = clampFrame(
-        Math.round((clip.startFrame + clip.durationFrames) * scale),
-        0,
-      );
+      const scaledStart = rescaleFrame(clip.startFrame, scale);
+      const scaledEnd = rescaleFrame(clip.startFrame + clip.durationFrames, scale);
       const startFrame: Frame =
         previousEnd === null ? scaledStart : Math.max(scaledStart, previousEnd);
       const durationFrames = clampFrame(Math.max(1, scaledEnd - startFrame), 1);
@@ -190,16 +241,16 @@ function rescaleTimelineFrames(timeline: Timeline, scale: number): Timeline {
         ...clip,
         startFrame,
         durationFrames,
-        inPoint: clampFrame(Math.round(clip.inPoint * scale), 0),
-        outPoint: clampFrame(Math.round(clip.outPoint * scale), 0),
+        inPoint: rescaleFrame(clip.inPoint, scale),
+        outPoint: rescaleFrame(clip.outPoint, scale),
       };
       if (clip.fadeInFrames !== undefined) {
-        const value = Math.min(durationFrames, clampFrame(Math.round(clip.fadeInFrames * scale), 0));
+        const value = Math.min(durationFrames, rescaleFrame(clip.fadeInFrames, scale));
         if (value > 0) next.fadeInFrames = value;
         else delete next.fadeInFrames;
       }
       if (clip.fadeOutFrames !== undefined) {
-        const value = Math.min(durationFrames, clampFrame(Math.round(clip.fadeOutFrames * scale), 0));
+        const value = Math.min(durationFrames, rescaleFrame(clip.fadeOutFrames, scale));
         if (value > 0) next.fadeOutFrames = value;
         else delete next.fadeOutFrames;
       }
@@ -208,10 +259,17 @@ function rescaleTimelineFrames(timeline: Timeline, scale: number): Timeline {
           ...clip.transitionIn,
           frames: Math.min(
             durationFrames,
-            clampFrame(Math.round(clip.transitionIn.frames * scale), 1),
+            Math.max(1, rescaleFrame(clip.transitionIn.frames, scale)),
           ),
         };
       }
+      if (next.motionX !== undefined) next.motionX = rescaleKeyframeTrack(next.motionX, scale);
+      if (next.motionY !== undefined) next.motionY = rescaleKeyframeTrack(next.motionY, scale);
+      if (next.motionRot !== undefined) next.motionRot = rescaleKeyframeTrack(next.motionRot, scale);
+      if (next.motionScaleX !== undefined) next.motionScaleX = rescaleKeyframeTrack(next.motionScaleX, scale);
+      if (next.motionScaleY !== undefined) next.motionScaleY = rescaleKeyframeTrack(next.motionScaleY, scale);
+      if (next.opacityTrack !== undefined) next.opacityTrack = rescaleKeyframeTrack(next.opacityTrack, scale);
+      if (next.volumeDb !== undefined) next.volumeDb = rescaleKeyframeTrack(next.volumeDb, scale);
 
       rescaled.set(clip.id, next);
       previousEnd = startFrame + durationFrames;
@@ -219,7 +277,7 @@ function rescaleTimelineFrames(timeline: Timeline, scale: number): Timeline {
   }
 
   const scaleMarker = (frame: Frame | undefined): Frame | undefined =>
-    frame === undefined ? undefined : clampFrame(Math.round(frame * scale), 0);
+    frame === undefined ? undefined : rescaleFrame(frame, scale);
 
   const next: Timeline = {
     ...timeline,
@@ -229,7 +287,7 @@ function rescaleTimelineFrames(timeline: Timeline, scale: number): Timeline {
     ...(timeline.markers
       ? { markers: timeline.markers.map((marker) => rescaleMarker(marker, scale)) }
       : {}),
-    playheadFrame: clampFrame(Math.round(timeline.playheadFrame * scale), 0),
+    playheadFrame: rescaleFrame(timeline.playheadFrame, scale),
   };
   const inFrame = scaleMarker(timeline.inFrame);
   const outFrame = scaleMarker(timeline.outFrame);
@@ -238,6 +296,58 @@ function rescaleTimelineFrames(timeline: Timeline, scale: number): Timeline {
   if (outFrame === undefined) delete next.outFrame;
   else next.outFrame = outFrame;
   return next;
+}
+
+/**
+ * Source frame reached at a timeline boundary inside `clip`.
+ *
+ * The frames-level form of the shared source-time model's
+ * `sourceOffset = clip.inPoint + (timelineFrame - clip.startFrame) * speed`
+ * (`sourceSecondsForTimelineFrame`, and the rounding
+ * `timelineFrameForSourceSeconds` applies coming back). Every edit that
+ * rebuilds a clip's trim from timeline frames goes through here, so a
+ * fragment cannot be mapped without the `speed` term: rebuilt without it, a
+ * 2x clip's fragment claims half the source material it actually plays and
+ * mis-trims on preview and export, exactly the omission `setClipSpeed` does
+ * not make.
+ */
+function sourceFrameAtBoundary(clip: Clip, timelineFrame: Frame): Frame {
+  return clip.inPoint
+    + Math.round((timelineFrame - clip.startFrame) * effectiveSpeed(clip.speed));
+}
+
+/**
+ * Source trim window for the timeline slice [start, end) of `clip`.
+ *
+ * Rounding: the start boundary rounds once (above) and the span rounds once,
+ * with `outPoint` derived from the already-rounded `inPoint`. That is the same
+ * shape `setClipSpeed` writes -- `outPoint = inPoint + round(durationFrames *
+ * speed)` -- so `outPoint - inPoint === round(durationFrames * speed)` holds
+ * exactly for any speed and a fragment can never claim more or less source than
+ * its own duration says. Rounding the two ends independently instead lets the
+ * span disagree with the duration by a frame, and the error lands on a
+ * different fragment at each end of a cut.
+ *
+ * No gap, no overlap: the mapping is monotone in the timeline frame, so a later
+ * slice's window can never start before an earlier one ends, and one boundary
+ * always resolves to one source frame no matter which path asks for it -- a
+ * split's left `outPoint` is the right `inPoint` because both are the same
+ * boundary. At a whole-number speed every product is already an integer, so the
+ * surviving windows and the cut-out ones tile the original window exactly; at a
+ * fractional speed a cut-out span can differ from `(cut length) * speed` by
+ * under one source frame, which is the same per-boundary rounding the mapping
+ * that produced those ranges already applied.
+ */
+function sourceWindowForSlice(
+  clip: Clip,
+  start: Frame,
+  end: Frame,
+): { inPoint: Frame; outPoint: Frame } {
+  const inPoint = sourceFrameAtBoundary(clip, start);
+  return {
+    inPoint,
+    outPoint: inPoint + Math.round((end - start) * effectiveSpeed(clip.speed)),
+  };
 }
 
 /**
@@ -320,6 +430,160 @@ function pickSettings(
   return out;
 }
 
+/**
+ * Narrow every title clip's stored variable-font axes on load (title.ts).
+ * A hostile or hand-edited value degrades to absent; the load never throws.
+ */
+function withNarrowedTitleVariations(project: Project): Project {
+  let changed = false;
+  const clips = project.timeline.clips.map((clip) => {
+    const narrowed = narrowTitleVariationClip(clip);
+    if (narrowed !== clip) changed = true;
+    return narrowed;
+  });
+  return changed ? { ...project, timeline: { ...project.timeline, clips } } : project;
+}
+
+/**
+ * Narrow every shape clip's stored style on load (shape.ts). A hostile or
+ * hand-edited value degrades to absent; the load never throws.
+ */
+function withNarrowedShapes(project: Project): Project {
+  let changed = false;
+  const clips = project.timeline.clips.map((clip) => {
+    const narrowed = narrowShapeClip(clip);
+    if (narrowed !== clip) changed = true;
+    return narrowed;
+  });
+  return changed ? { ...project, timeline: { ...project.timeline, clips } } : project;
+}
+
+/**
+ * Normalize opacity automation through the shared motion engine. Opacity is
+ * range-limited by dropping invalid points rather than clamping them, so a
+ * hostile project cannot create an out-of-range alpha animation.
+ */
+function sanitizeOpacityTrack(input: unknown): MotionTrack | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const track = sanitizeMotion(input as Array<{ frame?: number; value?: number; easing?: unknown }>);
+  if (!track) return undefined;
+  const bounded = track.filter((point) => point.value >= 0 && point.value <= 1);
+  return bounded.length >= 2 ? bounded : undefined;
+}
+
+function sameOpacityTrack(left: unknown, right: MotionTrack | undefined): boolean {
+  if (!Array.isArray(left) || !right || left.length !== right.length) return false;
+  return left.every((raw, index) => {
+    const point = raw as { frame?: unknown; value?: unknown; easing?: unknown } | null;
+    const expected = right[index]!;
+    return point?.frame === expected.frame
+      && point?.value === expected.value
+      && normalizeEasing(point?.easing) === normalizeEasing(expected.easing);
+  });
+}
+
+function narrowOpacityTrackClip(clip: Clip): Clip {
+  const raw = (clip as Clip & { opacityTrack?: unknown }).opacityTrack;
+  const track = sanitizeOpacityTrack(raw);
+  if (track) return sameOpacityTrack(raw, track) ? clip : { ...clip, opacityTrack: track };
+  if (!Object.prototype.hasOwnProperty.call(clip, 'opacityTrack') || raw === undefined) return clip;
+  const copy = { ...clip };
+  delete copy.opacityTrack;
+  return copy;
+}
+
+function narrowTimelineOpacityTracks(timeline: Timeline): Timeline {
+  let changed = false;
+  const clips = timeline.clips.map((clip) => {
+    const narrowed = narrowOpacityTrackClip(clip);
+    if (narrowed !== clip) changed = true;
+    return narrowed;
+  });
+  return changed ? { ...timeline, clips } : timeline;
+}
+
+/** Narrow opacity tracks on the main and every nested timeline during project read. */
+function withNarrowedOpacityTracks(project: Project): Project {
+  const timeline = narrowTimelineOpacityTracks(project.timeline);
+  let timelines = project.timelines;
+  if (timelines) {
+    let nestedChanged = false;
+    const nextTimelines: Record<string, Timeline> = {};
+    for (const [id, nested] of Object.entries(timelines)) {
+      const narrowed = narrowTimelineOpacityTracks(nested);
+      nextTimelines[id] = narrowed;
+      if (narrowed !== nested) nestedChanged = true;
+    }
+    if (nestedChanged) timelines = nextTimelines;
+  }
+  if (timeline === project.timeline && timelines === project.timelines) return project;
+  return {
+    ...project,
+    timeline,
+    ...(timelines === project.timelines ? {} : { timelines }),
+  };
+}
+
+/**
+ * Narrow every asset's stored AI description on load (#118 AI half).
+ * A hostile or hand-edited value degrades to absent; the load never throws.
+ */
+function withNarrowedDescriptions(project: Project): Project {
+  let changed = false;
+  const media = project.media.map((asset) => {
+    if (asset.aiDescription === undefined) return asset;
+    const narrowed = narrowAiDescription(asset.aiDescription);
+    if (narrowed === asset.aiDescription) return asset;
+    changed = true;
+    if (narrowed === undefined) {
+      const copy = { ...asset };
+      delete copy.aiDescription;
+      return copy;
+    }
+    return { ...asset, aiDescription: narrowed };
+  });
+  return changed ? { ...project, media } : project;
+}
+
+/**
+ * Clear the session-only solo flag when a project is loaded from durable
+ * state. Live renderer/main synchronization deliberately does not call this:
+ * a solo chosen for the current audition must be visible to the main
+ * compositor and exporter.
+ */
+function clearSoloState(project: Project): Project {
+  const clearTimeline = (timeline: Timeline): Timeline => {
+    let changed = false;
+    const tracks = timeline.tracks.map((track) => {
+      if (track.soloed === undefined) return track;
+      changed = true;
+      const copy = { ...track };
+      delete copy.soloed;
+      return copy;
+    });
+    return changed ? { ...timeline, tracks } : timeline;
+  };
+
+  const timeline = clearTimeline(project.timeline);
+  let timelines = project.timelines;
+  if (timelines) {
+    let nestedChanged = false;
+    const next: NonNullable<Project['timelines']> = {};
+    for (const [id, nested] of Object.entries(timelines)) {
+      const cleared = clearTimeline(nested);
+      next[id] = cleared;
+      if (cleared !== nested) nestedChanged = true;
+    }
+    if (nestedChanged) timelines = next;
+  }
+  if (timeline === project.timeline && timelines === project.timelines) return project;
+  return {
+    ...project,
+    timeline,
+    ...(timelines === project.timelines ? {} : { timelines }),
+  };
+}
+
 export class EditorController {  private project: Project;
   private history: CommandHistory;
   private listeners: Set<StateChangeListener> = new Set();
@@ -331,7 +595,15 @@ export class EditorController {  private project: Project;
    * occurrence wins per id, matching what the linear `Array.find` it replaced
    * returned.
    */
-  private clipByIdCache?: { project: Project; byId: Map<string, Clip> };
+  private clipByIdCache?: { project: Project; scope: string | null; byId: Map<string, Clip> };
+  /**
+   * Active editing scope (upstream issue #155 slice 2): nested timeline ids
+   * from the root down to the open timeline; empty = main timeline. View
+   * state, like selection — never an undo entry, never serialized. Commands
+   * snapshot the whole project, so undo/redo are scope-agnostic and the path
+   * only needs coercing (dropping timelines that no longer exist) afterwards.
+   */
+  private activeTimelinePath: string[] = [];
   /** In-app clipboard for copy/cut/paste (R1). Not OS-shared by design. */
   private clipClipboard: ClipClipboardEntry[] = [];
   /**
@@ -342,7 +614,12 @@ export class EditorController {  private project: Project;
   private rippleTimelineMarkers: boolean = DEFAULT_MARKER_SETTINGS.rippleTimelineMarkers;
 
   constructor(project?: Project) {
-    this.project = project || createEmptyProject();
+    const narrowed = project
+      ? withNarrowedOpacityTracks(narrowProjectGradePresetLinks(narrowMediaFolders(withNarrowedDescriptions(project))))
+      : createEmptyProject();
+    this.project = clearSoloState(
+      withNarrowedCompounds(withNarrowedTitleVariations(withNarrowedShapes(narrowed))),
+    );
     this.history = new CommandHistory();
   }
 
@@ -353,30 +630,34 @@ export class EditorController {  private project: Project;
   }
 
   getTimeline() {
-    return this.project.timeline;
+    return this.scopedTimeline();
   }
 
   getClips(): Clip[] {
-    return this.project.timeline.clips;
+    return this.scopedTimeline().clips;
   }
 
   getTracks(): Track[] {
-    return this.project.timeline.tracks;
+    return this.scopedTimeline().tracks;
   }
 
   getMedia(): MediaAsset[] {
     return this.project.media;
   }
 
-  expandLinkedClipIds(clipIds: Iterable<string>): string[] {
+  getMediaFolders(): MediaFolder[] {
+    return this.project.mediaFolders ?? [];
+  }
+
+  expandLinkedClipIds(clipIds: Iterable<string>, clips: readonly Clip[] = this.scopedTimeline().clips): string[] {
     const requested = new Set(clipIds);
     const groupIds = new Set(
-      this.project.timeline.clips
+      clips
         .filter((clip) => requested.has(clip.id) && clip.linkGroupId)
         .map((clip) => clip.linkGroupId!),
     );
 
-    for (const clip of this.project.timeline.clips) {
+    for (const clip of clips) {
       if (clip.linkGroupId && groupIds.has(clip.linkGroupId)) {
         requested.add(clip.id);
       }
@@ -386,13 +667,14 @@ export class EditorController {  private project: Project;
 
   /** O(1) clip lookup, rebuilt lazily once per project revision (#486). */
   private findClipById(clipId: string): Clip | undefined {
+    const scope = this.getActiveTimelineId();
     let cache = this.clipByIdCache;
-    if (!cache || cache.project !== this.project) {
+    if (!cache || cache.project !== this.project || cache.scope !== scope) {
       const byId = new Map<string, Clip>();
-      for (const clip of this.project.timeline.clips) {
+      for (const clip of this.scopedTimeline().clips) {
         if (!byId.has(clip.id)) byId.set(clip.id, clip);
       }
-      cache = { project: this.project, byId };
+      cache = { project: this.project, scope, byId };
       this.clipByIdCache = cache;
     }
     return cache.byId.get(clipId);
@@ -401,37 +683,229 @@ export class EditorController {  private project: Project;
   private canEditClipIds(clipIds: Iterable<string>): boolean {
     const ids = new Set(clipIds);
     const lockedTrackIds = new Set(
-      this.project.timeline.tracks.filter((track) => track.locked).map((track) => track.id),
+      this.scopedTimeline().tracks.filter((track) => track.locked).map((track) => track.id),
     );
-    return this.project.timeline.clips
+    return this.scopedTimeline().clips
       .filter((clip) => ids.has(clip.id))
       .every((clip) => !lockedTrackIds.has(clip.trackId));
   }
 
   getPlayhead(): Frame {
-    return this.project.timeline.playheadFrame;
+    return this.scopedTimeline().playheadFrame;
   }
 
-  //  Command execution 
+  // ─── Editing scope (upstream issue #155 slice 2) ──────────────────────────
+  //
+  // The active timeline is VIEW state owned here, next to the project it
+  // views: every editing op below routes through scopedTimeline(), so the
+  // full toolset works inside a nest unchanged, while undo stays coherent —
+  // commands snapshot the whole project, so undo/redo never depend on which
+  // scope is open, and the path is only coerced (dropping timelines that no
+  // longer exist) afterwards. Switching scope notifies (the timeline panel
+  // re-renders) but never touches history and is never serialized.
+
+  /** Open-scope leaf id, or null on the main timeline. */
+  getActiveTimelineId(): string | null {
+    const leaf = this.activeTimelinePath[this.activeTimelinePath.length - 1];
+    return leaf ?? null;
+  }
+
+  /** Breadcrumb chain from the root to the open scope (root alone at main). */
+  getTimelineBreadcrumbs(): TimelineBreadcrumb[] {
+    const path = this.activeTimelinePath;
+    const crumbs: TimelineBreadcrumb[] = [
+      { id: null, name: scopeDisplayName(this.project, null) },
+    ];
+    for (const id of path) {
+      crumbs.push({ id, name: scopeDisplayName(this.project, id) });
+    }
+    return crumbs;
+  }
+
+  /**
+   * The timeline the editor is currently inside (main at the root). Falls
+   * back to the main timeline when the open scope no longer exists — every
+   * commit coerces the path, so this is only a transient between a foreign
+   * state adoption and the next commit.
+   */
+  getActiveTimeline(): Timeline {
+    const leaf = this.getActiveTimelineId();
+    if (leaf === null) return this.project.timeline;
+    return this.project.timelines?.[leaf] ?? this.project.timeline;
+  }
+
+  /**
+   * Explicit scope read for agent/MCP tools: `null` is always the main
+   * timeline (omitted scope = root, exactly today's behavior), otherwise the
+   * nested timeline or a precise dangling error. Never falls back — unlike
+   * the ambient view above, a tool addressing a scope must know it is gone.
+   */
+  getTimelineInScope(scopeId: string | null): Timeline {
+    return timelineInScope(this.project, scopeId);
+  }
+
+  /** The timeline every editing op below reads and writes. */
+  private scopedTimeline(): Timeline {
+    return this.getActiveTimeline();
+  }
+
+  /** Replant a timeline into the ambient scope slot. */
+  private withScopedTimeline(next: Timeline): Project {
+    return withTimelineInScope(this.project, this.getActiveTimelineId(), next);
+  }
+
+  /** Drop open-scope ids whose timelines no longer exist (deepest survivor wins). */
+  private coerceScope(): void {
+    const timelines = this.project.timelines;
+    while (this.activeTimelinePath.length > 0) {
+      const leaf = this.activeTimelinePath[this.activeTimelinePath.length - 1]!;
+      if (timelines?.[leaf] !== undefined) break;
+      this.activeTimelinePath.pop();
+    }
+  }
+
+  /**
+   * Open a nested timeline for in-place editing. Refuses precisely when the
+   * id dangles, is unreachable from the main timeline (orphan or cycle), or
+   * the recursion reachable through it would pass the depth cap (breadcrumb
+   * distance plus the subtree below — the same bound the planner and the
+   * render resolution enforce). Not an undo entry.
+   */
+  openNestedTimeline(timelineId: string): TimelineBreadcrumb[] {
+    if (this.project.timelines?.[timelineId] === undefined) {
+      throw new Error(`Nested timeline "${timelineId}" no longer exists.`);
+    }
+    const chain = timelineBreadcrumbs(this.project, timelineId);
+    if (chain === null) {
+      throw new Error(
+        `Nested timeline "${timelineId}" is not reachable from the main timeline.`,
+      );
+    }
+    const reachable = (chain.length - 1) + nestedSubtreeDepth(this.project, timelineId);
+    if (reachable > MAX_COMPOUND_DEPTH) {
+      throw new Error(
+        `Nested timeline "${timelineId}" reaches ${reachable} levels deep, past the maximum of ${MAX_COMPOUND_DEPTH}.`,
+      );
+    }
+    this.activeTimelinePath = chain.slice(1).map((crumb) => crumb.id as string);
+    this.notify();
+    return chain;
+  }
+
+  /**
+   * Open the timeline a compound clip in the ACTIVE scope points at
+   * (double-click / explicit Open action). Dangling compounds refuse with
+   * the same wording flatten uses.
+   */
+  openCompoundClip(compoundClipId: string): TimelineBreadcrumb[] {
+    const clip = this.scopedTimeline().clips.find((candidate) => candidate.id === compoundClipId);
+    if (!clip) throw new Error(`Clip not found: ${compoundClipId}`);
+    if (clip.type !== 'compound') {
+      throw new Error(`Clip "${compoundClipId}" is not a compound clip.`);
+    }
+    const ref = sanitizeCompoundTimelineId(clip.compoundTimelineId);
+    if (ref === undefined) {
+      throw new Error(`Compound clip "${compoundClipId}" has no nested timeline reference.`);
+    }
+    return this.openNestedTimeline(ref);
+  }
+
+  /** Navigate one level up (no-op at the root). Not an undo entry. */
+  navigateTimelineUp(): TimelineBreadcrumb[] {
+    if (this.activeTimelinePath.length > 0) {
+      this.activeTimelinePath.pop();
+      this.notify();
+    }
+    return this.getTimelineBreadcrumbs();
+  }
+
+  /**
+   * Jump to a breadcrumb (an ancestor scope or the root). Refuses ids outside
+   * the current path — breadcrumbs navigate up, never sideways into an
+   * unrelated timeline. Not an undo entry.
+   */
+  navigateToScope(scopeId: string | null): TimelineBreadcrumb[] {
+    if (scopeId === null) {
+      if (this.activeTimelinePath.length > 0) {
+        this.activeTimelinePath = [];
+        this.notify();
+      }
+      return this.getTimelineBreadcrumbs();
+    }
+    const at = this.activeTimelinePath.indexOf(scopeId);
+    if (at === -1) {
+      throw new Error(`Timeline "${scopeId}" is not on the current breadcrumb path.`);
+    }
+    this.activeTimelinePath = this.activeTimelinePath.slice(0, at + 1);
+    this.notify();
+    return this.getTimelineBreadcrumbs();
+  }
+
+  /**
+   * Move the playhead of one explicit scope (the preview transport drives
+   * the ROOT playhead: delivery lives in root frame space even while a nest
+   * is open for editing).
+   */
+  setPlayheadInScope(frame: Frame, scopeId: string | null): void {
+    const target = timelineInScope(this.project, scopeId);
+    this.execute(new ReplaceProjectCommand(
+      withTimelineInScope(this.project, scopeId, {
+        ...target,
+        playheadFrame: clampFrame(frame),
+      }),
+      'Move playhead',
+    ));
+  }
+
+  //  Command execution
 
   execute(command: Command): void {
     this.project = this.history.execute(command, this.project);
+    this.coerceScope();
     this.notify();
   }
 
   /**
-   * Fold the newest `count` history entries into one undoable step named
-   * `label` — the batch single-undo contract shared by trim_clips. No-op
-   * unless at least two entries were actually added.
+   * Run `body` as ONE undoable action named `label`.
+   *
+   * Every command `body` executes through this controller is collected and
+   * published as a single history entry, so a multi-command operation is
+   * grouped by construction rather than by counting how many entries it
+   * happened to push. `body` may nest inside an enclosing transaction, in which
+   * case it joins it (see CommandHistory.commitTransaction).
+   *
+   * The three ways out are all deliberate:
+   *
+   * - **no command** — nothing is published, so a no-op, a validation refusal,
+   *   or an early return that changed nothing adds no history entry.
+   * - **normal return, including an early return or a cancellation** after
+   *   partial mutation — the commands produced so far commit as exactly one
+   *   entry. Never a fragment, never one entry per command.
+   * - **throw** — the scope is aborted: nothing is published and the commands
+   *   it produced are undone in reverse, restoring the pre-action project. An
+   *   exception after a mutation therefore never leaves a mix of unrelated
+   *   commands on the stack.
    */
-  squashLastCommands(count: number, label: string): void {
-    this.history.squashLast(count, label);
+  transaction<T>(label: string, body: () => T): T {
+    this.history.beginTransaction(label);
+    try {
+      const result = body();
+      this.history.commitTransaction();
+      return result;
+    } catch (error) {
+      this.project = [...this.history.abortTransaction()].reverse()
+        .reduce((state, command) => command.undo(state), this.project);
+      this.coerceScope();
+      this.notify();
+      throw error;
+    }
   }
 
   undo(): boolean {
     const result = this.history.undo(this.project);
     if (result) {
       this.project = result;
+      this.coerceScope();
       this.notify();
       return true;
     }
@@ -442,6 +916,7 @@ export class EditorController {  private project: Project;
     const result = this.history.redo(this.project);
     if (result) {
       this.project = result;
+      this.coerceScope();
       this.notify();
       return true;
     }
@@ -476,7 +951,7 @@ export class EditorController {  private project: Project;
     const startFrame = clampFrame(params.startFrame);
     const duration = clampFrame(params.durationFrames || asset?.duration || 150, 1); // default 5s at 30fps
     const type = params.type || asset?.type || 'video';
-    const track = this.project.timeline.tracks.find((candidate) => candidate.id === params.trackId);
+    const track = this.scopedTimeline().tracks.find((candidate) => candidate.id === params.trackId);
 
     // Refuse an unknown track rather than placing a clip nothing can reach.
     // Tracks are what the timeline, the compositor and the exporter all iterate,
@@ -511,7 +986,7 @@ export class EditorController {  private project: Project;
         );
       }
 
-      this.execute(new AddMediaAndClipsCommand([], clips, 'Add clip', tracks));
+      this.execute(new AddMediaAndClipsCommand([], clips, 'Add clip', tracks, this.getActiveTimelineId()));
       return clip.id;
     }
 
@@ -530,7 +1005,7 @@ export class EditorController {  private project: Project;
       startFrame,
       duration,
     );
-    this.execute(new AddClipCommand(clip));
+    this.execute(new AddClipCommand(clip, this.getActiveTimelineId()));
     return clip.id;
   }
 
@@ -548,7 +1023,7 @@ export class EditorController {  private project: Project;
     span: { start: Frame; end: Frame },
     protectedIds: Iterable<string>,
   ): { removedClipIds: string[]; trimmedClipIds: string[] } | null {
-    const before = this.project.timeline.clips;
+    const before = this.scopedTimeline().clips;
     const keep = new Set(protectedIds);
     const others = before.filter((clip) => !keep.has(clip.id));
     const affectedTracks = new Set(
@@ -592,7 +1067,7 @@ export class EditorController {  private project: Project;
     if (removedClipIds.length === 0 && trimmedClipIds.length === 0) {
       return { removedClipIds, trimmedClipIds };
     }
-    this.execute(new ReplaceClipsCommand(final, 'Overwrite trim extension'));
+    this.execute(new ReplaceClipsCommand(final, 'Overwrite trim extension', this.getActiveTimelineId()));
     return { removedClipIds, trimmedClipIds };
   }
 
@@ -628,12 +1103,13 @@ export class EditorController {  private project: Project;
       // Head/tail fragments keep their source mapping; the covered middle goes.
       return kept.map((segment) => {
         const headKept = segment.start === clip.startFrame;
+        const window = sourceWindowForSlice(clip, segment.start, segment.end);
         return {
           ...clip,
           startFrame: segment.start,
           durationFrames: segment.end - segment.start,
-          inPoint: clip.inPoint + (segment.start - clip.startFrame),
-          outPoint: clip.inPoint + (segment.end - clip.startFrame),
+          inPoint: window.inPoint,
+          outPoint: window.outPoint,
           fadeInFrames: headKept ? clip.fadeInFrames : 0,
           fadeOutFrames:
             segment.end === clip.startFrame + clip.durationFrames ? clip.fadeOutFrames : 0,
@@ -668,7 +1144,7 @@ export class EditorController {  private project: Project;
     source?: [number, number];
   }): { clipIds: string[] } | null {
     const asset = this.project.media.find((m) => m.id === params.assetId);
-    const track = this.project.timeline.tracks.find((t) => t.id === params.trackId);
+    const track = this.scopedTimeline().tracks.find((t) => t.id === params.trackId);
     if (!asset || !track || track.locked) return null;
     if (!isMediaCompatibleWithTrack(asset.type, track.type)) return null;
 
@@ -715,14 +1191,14 @@ export class EditorController {  private project: Project;
 
     let start: Frame;
     if (mode === 'append') {
-      start = this.project.timeline.clips
+      start = this.scopedTimeline().clips
         .filter((c) => c.trackId === params.trackId)
         .reduce((max, c) => Math.max(max, c.startFrame + c.durationFrames), 0);
     } else {
       start = clampFrame(params.startFrame ?? this.getPlayhead());
     }
 
-    let clips = [...this.project.timeline.clips];
+    let clips = [...this.scopedTimeline().clips];
     const newTracks: Track[] = [];
 
     if (mode === 'overwrite') {
@@ -760,9 +1236,9 @@ export class EditorController {  private project: Project;
     const finalClips = [...clips, ...createdClips];
 
     if (newTracks.length > 0) {
-      this.execute(new AddMediaAndClipsCommand([], finalClips, mode === 'insert' ? 'Insert clip' : 'Place clip', newTracks));
+      this.execute(new AddMediaAndClipsCommand([], finalClips, mode === 'insert' ? 'Insert clip' : 'Place clip', newTracks, this.getActiveTimelineId()));
     } else {
-      this.execute(new ReplaceClipsCommand(finalClips, mode === 'insert' ? 'Insert clip' : 'Place clip'));
+      this.execute(new ReplaceClipsCommand(finalClips, mode === 'insert' ? 'Insert clip' : 'Place clip', this.getActiveTimelineId()));
     }
     return { clipIds: createdClips.map((clip) => clip.id) };
   }
@@ -774,12 +1250,13 @@ export class EditorController {  private project: Project;
   removeClips(clipIds: Iterable<string>, includeLinked = true): boolean {
     const requested = [...clipIds];
     const ids = new Set(includeLinked ? this.expandLinkedClipIds(requested) : requested);
-    if (!this.project.timeline.clips.some((clip) => ids.has(clip.id))) return false;
+    if (!this.scopedTimeline().clips.some((clip) => ids.has(clip.id))) return false;
     if (!this.canEditClipIds(ids)) return false;
     this.execute(
       new ReplaceClipsCommand(
-        this.project.timeline.clips.filter((clip) => !ids.has(clip.id)),
+        this.scopedTimeline().clips.filter((clip) => !ids.has(clip.id)),
         ids.size > 1 ? 'Remove linked clips' : 'Remove clip',
+        this.getActiveTimelineId(),
       ),
     );
     return true;
@@ -787,7 +1264,7 @@ export class EditorController {  private project: Project;
 
   rippleDeleteClips(clipIds: Iterable<string>): RippleDeleteReport | null {
     const ids = new Set(this.expandLinkedClipIds(clipIds));
-    const selected = this.project.timeline.clips.filter((clip) => ids.has(clip.id));
+    const selected = this.scopedTimeline().clips.filter((clip) => ids.has(clip.id));
     if (selected.length === 0 || !this.canEditClipIds(ids)) return null;
 
     const globalRanges: RippleRange[] = selected.map((clip) => ({
@@ -797,7 +1274,7 @@ export class EditorController {  private project: Project;
     const shifts = new Map<string, Frame>();
     const trackHoles: RippleRange[][] = [];
 
-    for (const track of this.project.timeline.tracks) {
+    for (const track of this.scopedTimeline().tracks) {
       if (track.locked) continue;
 
       const removedOnTrack = selected.filter((clip) => clip.trackId === track.id);
@@ -812,7 +1289,7 @@ export class EditorController {  private project: Project;
       if (ranges.length === 0) continue;
       trackHoles.push(ranges);
 
-      const remaining = this.project.timeline.clips.filter(
+      const remaining = this.scopedTimeline().clips.filter(
         (clip) => clip.trackId === track.id && !ids.has(clip.id),
       );
       for (const shift of computeRippleShifts(remaining, ranges)) {
@@ -820,7 +1297,7 @@ export class EditorController {  private project: Project;
       }
     }
 
-    const clips = this.project.timeline.clips
+    const clips = this.scopedTimeline().clips
       .filter((clip) => !ids.has(clip.id))
       .map((clip) => {
         const startFrame = shifts.get(clip.id);
@@ -836,12 +1313,12 @@ export class EditorController {  private project: Project;
   }
 
   rippleDeleteGap(trackId: string, range: RippleRange): RippleDeleteReport | null {
-    const track = this.project.timeline.tracks.find((candidate) => candidate.id === trackId);
+    const track = this.scopedTimeline().tracks.find((candidate) => candidate.id === trackId);
     const start = asValidFrame(range.start);
     const end = asValidFrame(range.end);
     if (!track || track.locked || start === null || end === null || end <= start) return null;
 
-    const anchorClips = this.project.timeline.clips.filter((clip) => clip.trackId === trackId);
+    const anchorClips = this.scopedTimeline().clips.filter((clip) => clip.trackId === trackId);
     if (anchorClips.some((clip) =>
       clip.startFrame < end && clip.startFrame + clip.durationFrames > start
     )) {
@@ -849,9 +1326,9 @@ export class EditorController {  private project: Project;
     }
 
     const shifts = new Map<string, Frame>();
-    for (const candidate of this.project.timeline.tracks) {
+    for (const candidate of this.scopedTimeline().tracks) {
       if (candidate.locked || (candidate.id !== trackId && candidate.syncLocked === false)) continue;
-      const clips = this.project.timeline.clips.filter((clip) => clip.trackId === candidate.id);
+      const clips = this.scopedTimeline().clips.filter((clip) => clip.trackId === candidate.id);
       const moving = clips.filter((clip) => clip.startFrame >= end);
       if (moving.length === 0) continue;
 
@@ -866,7 +1343,7 @@ export class EditorController {  private project: Project;
     }
 
     if (shifts.size === 0) return null;
-    const clips = this.project.timeline.clips.map((clip) => {
+    const clips = this.scopedTimeline().clips.map((clip) => {
       const startFrame = shifts.get(clip.id);
       return startFrame === undefined ? clip : { ...clip, startFrame };
     });
@@ -879,7 +1356,7 @@ export class EditorController {  private project: Project;
   }
 
   rippleDeleteRanges(trackId: string, ranges: RippleRange[]): RippleRangesReport | null {
-    const anchorTrack = this.project.timeline.tracks.find((track) => track.id === trackId);
+    const anchorTrack = this.scopedTimeline().tracks.find((track) => track.id === trackId);
     const validRanges = ranges.flatMap((range) => {
       const start = asValidFrame(range.start);
       const end = asValidFrame(range.end);
@@ -889,7 +1366,7 @@ export class EditorController {  private project: Project;
     if (!anchorTrack || anchorTrack.locked || merged.length === 0) return null;
 
     const clearTrackIds = new Set(
-      this.project.timeline.tracks
+      this.scopedTimeline().tracks
         .filter((track) => track.id === trackId || track.syncLocked !== false)
         .map((track) => track.id),
     );
@@ -899,7 +1376,7 @@ export class EditorController {  private project: Project;
     while (expanded) {
       expanded = false;
       const overlappingGroupIds = new Set(
-        this.project.timeline.clips
+        this.scopedTimeline().clips
           .filter((clip) =>
             clearTrackIds.has(clip.trackId)
             && clip.linkGroupId
@@ -909,7 +1386,7 @@ export class EditorController {  private project: Project;
           )
           .map((clip) => clip.linkGroupId!),
       );
-      for (const clip of this.project.timeline.clips) {
+      for (const clip of this.scopedTimeline().clips) {
         if (
           clip.linkGroupId
           && overlappingGroupIds.has(clip.linkGroupId)
@@ -921,7 +1398,7 @@ export class EditorController {  private project: Project;
       }
     }
 
-    if (this.project.timeline.tracks.some((track) =>
+    if (this.scopedTimeline().tracks.some((track) =>
       clearTrackIds.has(track.id) && track.locked
     )) {
       return null;
@@ -933,7 +1410,7 @@ export class EditorController {  private project: Project;
     const fragmentGroups = new Map<string, string>();
     let changed = false;
 
-    const clips = this.project.timeline.clips.flatMap((clip) => {
+    const clips = this.scopedTimeline().clips.flatMap((clip) => {
       if (!clearTrackIds.has(clip.trackId)) return [clip];
 
       const clipStart = clip.startFrame;
@@ -985,14 +1462,15 @@ export class EditorController {  private project: Project;
               return created;
             })()
           : undefined;
+        const { inPoint, outPoint } = sourceWindowForSlice(clip, segment.start, segment.end);
         return {
           ...clip,
           id,
           linkGroupId,
           startFrame: segment.start - shift,
           durationFrames: segment.end - segment.start,
-          inPoint: clip.inPoint + segment.start - clipStart,
-          outPoint: clip.inPoint + segment.end - clipStart,
+          inPoint,
+          outPoint,
           fadeInFrames: segment.start === clipStart ? clip.fadeInFrames : 0,
           fadeOutFrames: segment.end === clipEnd ? clip.fadeOutFrames : 0,
           transitionIn: segment.start === clipStart ? clip.transitionIn : undefined,
@@ -1006,27 +1484,21 @@ export class EditorController {  private project: Project;
     );
     const markerDelta = diffMarkers(this.getMarkers(), markers);
     if (markers === null) {
-      const project: Project = {
-        ...this.project,
-        timeline: {
-          ...this.project.timeline,
-          clips,
-          inFrame: undefined,
-          outFrame: undefined,
-        },
-      };
+      const project: Project = this.withScopedTimeline({
+        ...this.scopedTimeline(),
+        clips,
+        inFrame: undefined,
+        outFrame: undefined,
+      });
       this.execute(new ReplaceProjectCommand(project, 'Ripple delete ranges'));
     } else {
-      this.execute(new ReplaceProjectCommand({
-        ...this.project,
-        timeline: {
-          ...this.project.timeline,
-          clips,
-          markers,
-          inFrame: undefined,
-          outFrame: undefined,
-        },
-      }, 'Ripple delete ranges'));
+      this.execute(new ReplaceProjectCommand(this.withScopedTimeline({
+        ...this.scopedTimeline(),
+        clips,
+        markers,
+        inFrame: undefined,
+        outFrame: undefined,
+      }), 'Ripple delete ranges'));
     }
     return {
       removedFrames: merged.reduce((total, range) => total + range.end - range.start, 0),
@@ -1046,10 +1518,10 @@ export class EditorController {  private project: Project;
     const delta = targetFrame - clip.startFrame;
     const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
     if (!this.canEditClipIds(linkedIds)) return;
-    if (newTrackId && this.project.timeline.tracks.find((track) => track.id === newTrackId)?.locked) {
+    if (newTrackId && this.scopedTimeline().tracks.find((track) => track.id === newTrackId)?.locked) {
       return;
     }
-    const clips = this.project.timeline.clips.map((candidate) => {
+    const clips = this.scopedTimeline().clips.map((candidate) => {
       if (!linkedIds.has(candidate.id)) return candidate;
       return {
         ...candidate,
@@ -1057,7 +1529,7 @@ export class EditorController {  private project: Project;
         trackId: candidate.id === clipId && newTrackId ? newTrackId : candidate.trackId,
       };
     });
-    this.execute(new ReplaceClipsCommand(clips, linkedIds.size > 1 ? 'Move linked clips' : 'Move clip'));
+    this.execute(new ReplaceClipsCommand(clips, linkedIds.size > 1 ? 'Move linked clips' : 'Move clip', this.getActiveTimelineId()));
   }
 
   trimClip(clipId: string, newInPoint: Frame, newOutPoint: Frame): void {
@@ -1066,11 +1538,11 @@ export class EditorController {  private project: Project;
     const inPoint = clampFrame(newInPoint);
     const outPoint = clampFrame(newOutPoint, inPoint + 1);
     const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
-    if (!linkedIds.has(clipId) || !this.project.timeline.clips.some((clip) => clip.id === clipId)) {
+    if (!linkedIds.has(clipId) || !this.scopedTimeline().clips.some((clip) => clip.id === clipId)) {
       return;
     }
     if (!this.canEditClipIds(linkedIds)) return;
-    const clips = this.project.timeline.clips.map((clip) =>
+    const clips = this.scopedTimeline().clips.map((clip) =>
       linkedIds.has(clip.id)
         ? {
             ...clip,
@@ -1080,7 +1552,7 @@ export class EditorController {  private project: Project;
           }
         : clip,
     );
-    this.execute(new ReplaceClipsCommand(clips, linkedIds.size > 1 ? 'Trim linked clips' : 'Trim clip'));
+    this.execute(new ReplaceClipsCommand(clips, linkedIds.size > 1 ? 'Trim linked clips' : 'Trim clip', this.getActiveTimelineId()));
   }
 
   trimClipEdge(
@@ -1099,13 +1571,26 @@ export class EditorController {  private project: Project;
     // the pair keeps moving together afterwards.
     const targetIds = new Set(scope === 'single' ? [clipId] : this.expandLinkedClipIds([clipId]));
     if (!this.canEditClipIds(targetIds)) return null;
-    const targets = this.project.timeline.clips.filter((clip) => targetIds.has(clip.id));
+    const targets = this.scopedTimeline().clips.filter((clip) => targetIds.has(clip.id));
     const durationDeltaRequested = edge === 'right' ? requestedDelta : -requestedDelta;
 
     let minDurationDelta = Math.max(...targets.map((clip) => -(clip.durationFrames - 1)));
     let maxDurationDelta = Math.min(...targets.map((clip) => {
       if (edge === 'left') {
         return ripple ? clip.inPoint : Math.min(clip.inPoint, clip.startFrame);
+      }
+      if (clip.type === 'compound') {
+        // A compound's source length is its nested content: extending past it
+        // would open a dead window that renders nothing, so headroom ends at
+        // the content end exactly like a media clip's ends at its duration.
+        const ref = sanitizeCompoundTimelineId(clip.compoundTimelineId);
+        const nested = ref !== undefined ? this.project.timelines?.[ref] : undefined;
+        if (!nested) return 0;
+        const contentEnd = nested.clips.reduce(
+          (latest, inner) => Math.max(latest, inner.startFrame + inner.durationFrames),
+          0,
+        );
+        return Math.max(0, contentEnd - clip.outPoint);
       }
       const asset = this.project.media.find((candidate) => candidate.id === clip.assetId);
       return asset && asset.duration > 0
@@ -1116,7 +1601,7 @@ export class EditorController {  private project: Project;
     const targetTrackIds = new Set(targets.map((clip) => clip.trackId));
     const leadEnd = lead.startFrame + lead.durationFrames;
     if (ripple && durationDeltaRequested < 0) {
-      for (const track of this.project.timeline.tracks) {
+      for (const track of this.scopedTimeline().tracks) {
         if (
           track.locked
           || targetTrackIds.has(track.id)
@@ -1124,7 +1609,7 @@ export class EditorController {  private project: Project;
         ) {
           continue;
         }
-        const clips = this.project.timeline.clips.filter((clip) => clip.trackId === track.id);
+        const clips = this.scopedTimeline().clips.filter((clip) => clip.trackId === track.id);
         const followers = clips.filter((clip) => clip.startFrame >= leadEnd);
         if (followers.length === 0) continue;
         const firstFollower = Math.min(...followers.map((clip) => clip.startFrame));
@@ -1143,13 +1628,13 @@ export class EditorController {  private project: Project;
 
     const shifts = new Map<string, Frame>();
     if (ripple) {
-      for (const track of this.project.timeline.tracks) {
+      for (const track of this.scopedTimeline().tracks) {
         if (track.locked || (track.syncLocked === false && !targetTrackIds.has(track.id))) continue;
         const trackTarget = targets.find((clip) => clip.trackId === track.id);
         const shiftPoint = trackTarget
           ? trackTarget.startFrame + trackTarget.durationFrames
           : leadEnd;
-        for (const clip of this.project.timeline.clips) {
+        for (const clip of this.scopedTimeline().clips) {
           if (
             clip.trackId === track.id
             && !targetIds.has(clip.id)
@@ -1161,7 +1646,7 @@ export class EditorController {  private project: Project;
       }
     }
 
-    const clips = this.project.timeline.clips.map((clip) => {
+    const clips = this.scopedTimeline().clips.map((clip) => {
       if (targetIds.has(clip.id)) {
         if (edge === 'right') {
           return {
@@ -1200,6 +1685,49 @@ export class EditorController {  private project: Project;
   }
 
   splitClip(clipId: string, atFrame: Frame): string | null {
+    const plan = this.planClipSplit(clipId, atFrame);
+    if (!plan) return null;
+    this.execute(new ReplaceClipsCommand(plan.clips, plan.label, this.getActiveTimelineId()));
+    return plan.rightId;
+  }
+
+  /**
+   * Split every named clip at one frame as ONE undoable edit, linked partners
+   * included (the same per-clip contract splitClip has, applied to each target
+   * in turn). Targets are resolved against live state inside the transaction,
+   * so a target an earlier split made unsplittable is skipped rather than
+   * corrupting the timeline.
+   *
+   * Returns the new right-hand clip id for each clip actually split, in input
+   * order. A clip the frame does not fall strictly inside, or that the
+   * controller refuses (unknown, invalid frame, locked track), contributes
+   * nothing, and a run that splits nothing adds no history entry.
+   */
+  splitClips(clipIds: Iterable<string>, atFrame: Frame): string[] {
+    const frame = asValidFrame(atFrame);
+    const rightIds: string[] = [];
+    if (frame === null) return rightIds;
+    this.transaction('Split clips at playhead', () => {
+      for (const clipId of clipIds) {
+        const plan = this.planClipSplit(clipId, frame);
+        if (!plan) continue;
+        this.execute(new ReplaceClipsCommand(plan.clips, plan.label, this.getActiveTimelineId()));
+        rightIds.push(plan.rightId);
+      }
+    });
+    return rightIds;
+  }
+
+  /**
+   * Resolve one split against the CURRENT project without executing it, so both
+   * splitClip and splitClips apply identical per-clip rules. Returns the next
+   * clip array, the label its own history entry would carry, and the new
+   * right-hand id for the requested clip — or null when the split is refused.
+   */
+  private planClipSplit(
+    clipId: string,
+    atFrame: Frame,
+  ): { clips: Clip[]; label: string; rightId: string } | null {
     const clip = this.findClipById(clipId);
     if (!clip) return null;
 
@@ -1211,7 +1739,7 @@ export class EditorController {  private project: Project;
     if (relativeFrame <= 0 || relativeFrame >= clip.durationFrames) return null;
 
     const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
-    const splitTargets = this.project.timeline.clips.filter((candidate) =>
+    const splitTargets = this.scopedTimeline().clips.filter((candidate) =>
       linkedIds.has(candidate.id)
       && frame > candidate.startFrame
       && frame < candidate.startFrame + candidate.durationFrames,
@@ -1221,17 +1749,20 @@ export class EditorController {  private project: Project;
 
     const rightLinkGroupId = splitTargets.length > 1 ? nanoid() : undefined;
     const rightIds = new Map<string, string>();
-    const clips = this.project.timeline.clips.flatMap((candidate) => {
+    const clips = this.scopedTimeline().clips.flatMap((candidate) => {
       if (!splitTargets.some((target) => target.id === candidate.id)) return [candidate];
 
       const relativeFrame = frame - candidate.startFrame;
       const rightId = nanoid();
       rightIds.set(candidate.id, rightId);
+      // The left half's out point IS the right half's in point: one boundary,
+      // rounded once, so a split cannot open a source gap at a fractional speed.
+      const boundary = sourceFrameAtBoundary(candidate, frame);
       return [
         {
           ...candidate,
           durationFrames: relativeFrame,
-          outPoint: candidate.inPoint + relativeFrame,
+          outPoint: boundary,
         },
         {
           ...candidate,
@@ -1239,17 +1770,20 @@ export class EditorController {  private project: Project;
           linkGroupId: rightLinkGroupId,
           startFrame: frame,
           durationFrames: candidate.durationFrames - relativeFrame,
-          inPoint: candidate.inPoint + relativeFrame,
+          inPoint: boundary,
         },
       ];
     });
 
-    this.execute(new ReplaceClipsCommand(clips, splitTargets.length > 1 ? 'Split linked clips' : 'Split clip'));
-    return rightIds.get(clipId) || null;
+    return {
+      clips,
+      label: splitTargets.length > 1 ? 'Split linked clips' : 'Split clip',
+      rightId: rightIds.get(clipId)!,
+    };
   }
 
   addTrack(type: 'video' | 'audio', name?: string): string {
-    const existing = this.project.timeline.tracks.filter((t) => t.type === type);
+    const existing = this.scopedTimeline().tracks.filter((t) => t.type === type);
     const trackName = name || `${type === 'video' ? 'Video' : 'Audio'} ${existing.length + 1}`;
     const track: Track = {
       id: nanoid(),
@@ -1258,9 +1792,9 @@ export class EditorController {  private project: Project;
       locked: false,
       visible: true,
       syncLocked: true,
-      order: this.project.timeline.tracks.length,
+      order: this.scopedTimeline().tracks.length,
     };
-    this.execute(new AddTrackCommand(track));
+    this.execute(new AddTrackCommand(track, this.getActiveTimelineId()));
     return track.id;
   }
 
@@ -1285,13 +1819,15 @@ export class EditorController {  private project: Project;
   }
 
   /**
-   * Toggle solo on a track (upstream PR #428). Solo is UI-only derived state
-   * that is never persisted and does not create an undo entry. When any track
-   * is soloed, only soloed tracks of the same type are considered active for
-   * preview, export, and audio playback.
+   * Toggle solo on a track (upstream PR #428). Solo is session audition state:
+   * it does not create an undo entry, but it is carried in the live serialized
+   * snapshot so the main compositor and exporter apply the same selection.
+   * Project-load initialization clears it again. When any track is soloed,
+   * only soloed tracks are considered active for preview, export, and audio
+   * playback.
    */
   toggleTrackSolo(trackId: string): void {
-    const track = this.project.timeline.tracks.find((t) => t.id === trackId);
+    const track = this.scopedTimeline().tracks.find((t) => t.id === trackId);
     if (!track) return;
     track.soloed = !track.soloed;
     this.notify();
@@ -1303,7 +1839,7 @@ export class EditorController {  private project: Project;
    * tracks are soloed, only soloed tracks are active.
    */
   activeTrackIds(): Set<string> {
-    const tracks = this.project.timeline.tracks;
+    const tracks = this.scopedTimeline().tracks;
     const anySoloed = tracks.some((t) => t.soloed);
     if (!anySoloed) {
       return new Set(tracks.filter((t) => t.visible !== false).map((t) => t.id));
@@ -1324,7 +1860,7 @@ export class EditorController {  private project: Project;
    * history entry.
    */
   setTrackName(trackId: string, rawName: string): boolean {
-    const track = this.project.timeline.tracks.find((candidate) => candidate.id === trackId);
+    const track = this.scopedTimeline().tracks.find((candidate) => candidate.id === trackId);
     if (!track) return false;
     const name = resolveTrackName(rawName, this.generatedTrackLabel(track));
     if (name === null || name === track.name) return false;
@@ -1333,7 +1869,7 @@ export class EditorController {  private project: Project;
 
   /** The automatic label for a track's position among tracks of its type. */
   private generatedTrackLabel(track: Track): string {
-    return generatedTrackLabelIn(track, this.project.timeline.tracks);
+    return generatedTrackLabelIn(track, this.scopedTimeline().tracks);
   }
 
   /**
@@ -1375,7 +1911,7 @@ export class EditorController {  private project: Project;
       entry: { trackId?: string; index?: number },
       path: string,
     ): { id: string } => {
-      const tracks = this.project.timeline.tracks;
+      const tracks = this.scopedTimeline().tracks;
       const hasId = typeof entry.trackId === 'string' && entry.trackId.length > 0;
       const hasIndex = entry.index !== undefined;
       if (hasId === hasIndex) {
@@ -1429,7 +1965,7 @@ export class EditorController {  private project: Project;
     );
 
     //  Apply: reorders  sets  removes, mirroring upstream's order 
-    let working = [...this.project.timeline.tracks];
+    let working = [...this.scopedTimeline().tracks];
     const reordered: Array<{ trackId: string; from: number; to: number; changed: boolean }> = [];
     for (const r of reorders) {
       const from = working.findIndex((track) => track.id === r.id);
@@ -1475,7 +2011,7 @@ export class EditorController {  private project: Project;
     const removeSet = new Set(removeIds);
     for (const id of removeIds) {
       const track = working.find((candidate) => candidate.id === id)!;
-      const clipCount = this.project.timeline.clips.filter((clip) => clip.trackId === id).length;
+      const clipCount = this.scopedTimeline().clips.filter((clip) => clip.trackId === id).length;
       if (clipCount > 0) {
         throw new Error(
           `"${track.name}" still has ${clipCount} clip(s)  move or remove them first.`,
@@ -1517,7 +2053,7 @@ export class EditorController {  private project: Project;
     });
 
     // No-op calls add no history entry.
-    const current = this.project.timeline.tracks;
+    const current = this.scopedTimeline().tracks;
     if (
       nextTracks.length === current.length
       && nextTracks.every((track, i) =>
@@ -1531,7 +2067,7 @@ export class EditorController {  private project: Project;
       return null;
     }
 
-    this.execute(new ReplaceTracksCommand(nextTracks, 'Manage tracks'));
+    this.execute(new ReplaceTracksCommand(nextTracks, 'Manage tracks', this.getActiveTimelineId()));
 
     return {
       tracks: nextTracks.map((track, i) => ({
@@ -1551,8 +2087,8 @@ export class EditorController {  private project: Project;
   /** Snapshot the given clips into the in-app clipboard; returns the count. */
   copyClips(clipIds: Iterable<string>): number {
     const requested = new Set(clipIds);
-    const tracks = this.project.timeline.tracks;
-    const captures = this.project.timeline.clips
+    const tracks = this.scopedTimeline().tracks;
+    const captures = this.scopedTimeline().clips
       .filter((clip) => requested.has(clip.id))
       .map((clip) => ({
         clip,
@@ -1601,7 +2137,7 @@ export class EditorController {  private project: Project;
    */
   pasteClips(options?: { trackId?: string; startFrame?: Frame }): string[] {
     if (this.clipClipboard.length === 0) return [];
-    const tracks = this.project.timeline.tracks;
+    const tracks = this.scopedTimeline().tracks;
 
     // Title/generated clips are visual media for placement purposes.
     const mediaKindOf = (clip: Clip): 'video' | 'audio' | 'image' =>
@@ -1662,7 +2198,7 @@ export class EditorController {  private project: Project;
     // Overwrite via the shared span-clearing helper: split survivors, drop
     // covered middles, no ripple shift.
     const clips = [
-      ...this.clearTrackSpans(this.project.timeline.clips, spansByTrack),
+      ...this.clearTrackSpans(this.scopedTimeline().clips, spansByTrack),
     ];
 
     for (const placement of placements) {
@@ -1682,6 +2218,7 @@ export class EditorController {  private project: Project;
     this.execute(new ReplaceClipsCommand(
       ordered,
       placements.length > 1 ? 'Paste clips' : 'Paste clip',
+      this.getActiveTimelineId(),
     ));
     return newIds;
   }
@@ -1696,9 +2233,10 @@ export class EditorController {  private project: Project;
    * transfer â€” timing, trims, source, linkage, and fades stay the target's:
    *
    * - audio targets receive `volume`;
-   * - visual targets receive opacity, position, rotation, scale, and blend
-   *   mode (this port has no crop/effect stack yet, so those upstream fields
-   *   have no counterpart);
+   * - visual targets receive opacity, position, rotation, scale, blend
+   *   mode, the color grade, the LUT reference, and the effect stages
+   *   (blur, vignette, grain, glow) — a source carrying grade or effects
+   *   replaces the target's wholesale, clearing the stages it lacks;
    * - title/generated targets count as visual.
    *
    * Targets must be the same media kind as the source; refusals carry
@@ -1734,9 +2272,10 @@ export class EditorController {  private project: Project;
             ? {
                 ...target,
                 volume: source.volume,
-                // Pan travels like volume (a scalar). EQ and compressor
-                // follow the color grade rule below: wholesale-replaced when
-                // the source has one, left alone when the source is neutral.
+                // Pan travels like volume (a scalar). EQ, compressor, and
+                // noise reduction follow the color grade rule below:
+                // wholesale-replaced when the source has one, left alone
+                // when the source is neutral.
                 pan: source.pan,
                 ...(eqOf(source)
                   ? {
@@ -1746,6 +2285,9 @@ export class EditorController {  private project: Project;
                     }
                   : {}),
                 ...(compressorOf(source) ? { compressor: source.compressor } : {}),
+                ...(noiseReductionOf(source) !== null
+                  ? { noiseReduction: source.noiseReduction }
+                  : {}),
               }
             : {
                 ...target,
@@ -1758,8 +2300,20 @@ export class EditorController {  private project: Project;
                 ...(source.blendMode !== undefined || target.blendMode !== undefined
                   ? { blendMode: source.blendMode }
                   : {}),
+                // Shape styling travels shape-to-shape like the grade rule
+                // below: wholesale when the source draws one, left alone
+                // otherwise. Each key is explicit so an absent style clears
+                // the target's, and sanitizers clone nothing shared.
+                ...(source.type === 'shape'
+                  ? {
+                      shapeKind: sanitizeShapeKind(source.shapeKind),
+                      shapeStrokeColor: sanitizeShapeStrokeColor(source.shapeStrokeColor),
+                      shapeStrokeWidth: sanitizeShapeStrokeWidth(source.shapeStrokeWidth),
+                      shapeFillColor: sanitizeShapeFillColor(source.shapeFillColor),
+                    }
+                  : {}),
                 // Color grading (R4): transfer non-default fields only.
-                ...(colorGradeOf(source)
+                ...(colorGradeOf(source) || effectsOf(source)
                   ? {
                       brightness: source.brightness,
                       contrast: source.contrast,
@@ -1774,6 +2328,34 @@ export class EditorController {  private project: Project;
                       blacks: source.blacks,
                       whites: source.whites,
                       invertColors: source.invertColors,
+                      // Curves travel with the grade wholesale: sanitize
+                      // clones the points so the two clips never share a
+                      // mutable array, and an ungraded source clears the
+                      // target's curve like it clears the scalars.
+                      curves: sanitizeGradeCurve(source.curves),
+                      // Wheels travel the same way: sanitize clones the zones
+                      // so the two clips never share a mutable object, and a
+                      // graded source without wheels clears the target's.
+                      wheels: sanitizeGradeWheels(source.wheels),
+                      // Hue curves travel the same way: sanitize clones the
+                      // points so the two clips never share a mutable array,
+                      // and a graded source without hue curves clears them.
+                      hueCurves: sanitizeHueCurves(source.hueCurves),
+                      // The LUT reference travels the same way: sanitize
+                      // clones the ref so the two clips never share a
+                      // mutable object, and a graded source without a LUT
+                      // clears the target's.
+                      lut: sanitizeLutRef(source.lut),
+                      // Effect stages travel wholesale with the same rule: a
+                      // source carrying grade or effects replaces the
+                      // target's stages, clearing the ones it lacks. Each
+                      // key is explicit (not a spread) so an absent stage
+                      // overwrites the target's with undefined, and each
+                      // sanitizer clones, so clips never share objects.
+                      blurRadius: sanitizeBlurRadius(source.blurRadius),
+                      vignette: sanitizeVignette(source.vignette),
+                      grain: sanitizeGrain(source.grain),
+                      glow: sanitizeGlow(source.glow),
                     }
                   : {}),
               };
@@ -1792,6 +2374,7 @@ export class EditorController {  private project: Project;
           || (a.eqMidDb ?? 0) !== (b.eqMidDb ?? 0)
           || (a.eqHighDb ?? 0) !== (b.eqHighDb ?? 0)
           || !compressorEquals(a.compressor, b.compressor)
+          || noiseReductionOf(a) !== noiseReductionOf(b)
         );
       }
       return (
@@ -1802,6 +2385,10 @@ export class EditorController {  private project: Project;
         || a.scaleX !== b.scaleX
         || a.scaleY !== b.scaleY
         || (a.blendMode ?? null) !== (b.blendMode ?? null)
+        || (a.shapeKind ?? null) !== (b.shapeKind ?? null)
+        || (a.shapeStrokeColor ?? null) !== (b.shapeStrokeColor ?? null)
+        || (a.shapeStrokeWidth ?? null) !== (b.shapeStrokeWidth ?? null)
+        || (a.shapeFillColor ?? null) !== (b.shapeFillColor ?? null)
         || (a.brightness ?? null) !== (b.brightness ?? null)
         || (a.contrast ?? null) !== (b.contrast ?? null)
         || (a.saturation ?? null) !== (b.saturation ?? null)
@@ -1815,6 +2402,14 @@ export class EditorController {  private project: Project;
         || (a.blacks ?? null) !== (b.blacks ?? null)
         || (a.whites ?? null) !== (b.whites ?? null)
         || (a.invertColors ?? null) !== (b.invertColors ?? null)
+        || !gradeCurvesEqual(a.curves, b.curves)
+        || !gradeWheelsEqual(a.wheels, b.wheels)
+        || !hueCurvesEqual(a.hueCurves, b.hueCurves)
+        || !lutRefsEqual(a.lut, b.lut)
+        || !clipEffectsEqual(
+          { blurRadius: a.blurRadius, vignette: a.vignette, grain: a.grain, glow: a.glow },
+          { blurRadius: b.blurRadius, vignette: b.vignette, grain: b.grain, glow: b.glow },
+        )
       );
     };
 
@@ -1829,10 +2424,10 @@ export class EditorController {  private project: Project;
     }
 
     const changedSet = new Set(changedClipIds);
-    const clips = this.project.timeline.clips.map((clip) =>
+    const clips = this.scopedTimeline().clips.map((clip) =>
       changedSet.has(clip.id) ? replacements.get(clip.id)! : clip,
     );
-    this.execute(new ReplaceClipsCommand(clips, actionName));
+    this.execute(new ReplaceClipsCommand(clips, actionName, this.getActiveTimelineId()));
     return {
       changedClipIds,
       unchangedClipIds: targets.filter((id) => !changedSet.has(id)),
@@ -1939,10 +2534,10 @@ export class EditorController {  private project: Project;
     }
 
     const changedSet = new Set(changedClipIds);
-    const clips = this.project.timeline.clips.map((clip) =>
+    const clips = this.scopedTimeline().clips.map((clip) =>
       changedSet.has(clip.id) ? replacements.get(clip.id)! : clip,
     );
-    this.execute(new ReplaceClipsCommand(clips, actionName));
+    this.execute(new ReplaceClipsCommand(clips, actionName, this.getActiveTimelineId()));
     return {
       changedClipIds,
       unchangedClipIds: targets.filter((id) => !changedSet.has(id)),
@@ -2044,6 +2639,23 @@ export class EditorController {  private project: Project;
     return true;
   }
 
+  /**
+   * Set or clear an asset's AI description (#118 AI half). Sanitized on
+   * write; null/blank clears the field. Undoable like every other
+   * media-field change (ReplaceMediaCommand), so one Describe is one undo
+   * step and the agent write below rides the same path as the UI button.
+   */
+  setAssetDescription(assetId: string, raw: string | null | undefined): boolean {
+    const asset = this.project.media.find((a) => a.id === assetId);
+    if (!asset) return false;
+    const cleaned = sanitizeAiDescription(raw ?? '');
+    const next: MediaAsset = { ...asset };
+    if (cleaned === null) delete next.aiDescription;
+    else next.aiDescription = cleaned;
+    this.execute(new ReplaceMediaCommand(next, 'Describe media'));
+    return true;
+  }
+
   // â”€â”€â”€ Title clips (R3 foundation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   /**
@@ -2058,7 +2670,7 @@ export class EditorController {  private project: Project;
   }): string | '' {
     const text = sanitizeTitleText(params.text);
     if (!text) return '';
-    const track = this.project.timeline.tracks.find((t) => t.id === params.trackId);
+    const track = this.scopedTimeline().tracks.find((t) => t.id === params.trackId);
     if (!track || track.type !== 'video' || track.locked) return '';
 
     const start = clampFrame(params.startFrame ?? this.getPlayhead());
@@ -2080,8 +2692,9 @@ export class EditorController {  private project: Project;
       titleColor: DEFAULT_TITLE_STYLE.colorHex,
     };
     this.execute(new ReplaceClipsCommand(
-      [...this.project.timeline.clips, clip],
+      [...this.scopedTimeline().clips, clip],
       'Add title',
+      this.getActiveTimelineId(),
     ));
     return clip.id;
   }
@@ -2099,23 +2712,241 @@ export class EditorController {  private project: Project;
     return receipt.changedClipIds.length > 0;
   }
 
+  // ─── Shape clips (tutorial-overlay annotations) ───────────────────────────
+
+  /**
+   * Add a shape clip — a self-contained vector layer needing no media asset.
+   * Geometry defaults to a centered half-canvas box; style defaults to a
+   * white outline. Refused (returns '') on a missing/non-video/locked track
+   * or an unusable duration. One undoable step.
+   */
+  addShapeClip(params: {
+    trackId: string;
+    startFrame?: Frame;
+    durationFrames?: Frame;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    shapeKind?: unknown;
+    strokeColor?: unknown;
+    strokeWidth?: unknown;
+    fillColor?: unknown;
+    preset?: unknown;
+  }): string | '' {
+    const added = this.addShapeClips([params]);
+    return added.added.length > 0 ? added.added[0]!.clipId : '';
+  }
+
+  /**
+   * Add several shape clips as ONE undoable step, so one agent `add_shapes`
+   * call is one undo entry even with per-entry presets. Entries that fail
+   * validation are reported and skipped; a batch with zero usable entries
+   * adds no history entry.
+   */
+  addShapeClips(
+    entries: Array<{
+      trackId: string;
+      startFrame?: Frame;
+      durationFrames?: Frame;
+      x?: number;
+      y?: number;
+      width?: number;
+      height?: number;
+      shapeKind?: unknown;
+      strokeColor?: unknown;
+      strokeWidth?: unknown;
+      fillColor?: unknown;
+      preset?: unknown;
+    }>,
+  ): { added: Array<{ clipId: string; kind: string }>; errors: string[] } {
+    const settings = this.project.settings;
+    const added: Array<{ clipId: string; kind: string }> = [];
+    const errors: string[] = [];
+    const created: Clip[] = [];
+
+    entries.forEach((entry, index) => {
+      const track = this.scopedTimeline().tracks.find((t) => t.id === entry.trackId);
+      if (!track || track.type !== 'video' || track.locked) {
+        errors.push(`entries[${index}]: could not place shape on track "${entry.trackId}".`);
+        return;
+      }
+      const durationFrames = clampFrame(
+        entry.durationFrames ?? Math.round(settings.fps * 3), 1,
+      );
+      if (durationFrames < 1) {
+        errors.push(`entries[${index}]: duration is unusable.`);
+        return;
+      }
+      const start = clampFrame(entry.startFrame ?? this.getPlayhead());
+      const boxWidth = entry.width !== undefined && Number.isFinite(entry.width)
+        ? Math.max(1, Math.round(entry.width))
+        : Math.max(1, Math.round(settings.width / 2));
+      const boxHeight = entry.height !== undefined && Number.isFinite(entry.height)
+        ? Math.max(1, Math.round(entry.height))
+        : Math.max(1, Math.round(settings.height / 2));
+      const boxX = entry.x !== undefined && Number.isFinite(entry.x)
+        ? Math.round(entry.x)
+        : Math.round((settings.width - boxWidth) / 2);
+      const boxY = entry.y !== undefined && Number.isFinite(entry.y)
+        ? Math.round(entry.y)
+        : Math.round((settings.height - boxHeight) / 2);
+
+      const kind = sanitizeShapeKind(entry.shapeKind) ?? DEFAULT_SHAPE_STYLE.kind;
+      const strokeColor = sanitizeShapeStrokeColor(entry.strokeColor)
+        ?? DEFAULT_SHAPE_STYLE.strokeColor;
+      const strokeWidth = sanitizeShapeStrokeWidth(entry.strokeWidth)
+        ?? DEFAULT_SHAPE_STYLE.strokeWidth;
+      const fillColor = sanitizeShapeFillColor(entry.fillColor);
+
+      const clip: Clip = {
+        ...this.createPlacedClip(
+          {
+            id: SHAPE_ASSET_ID, path: '', filename: kind, type: 'video',
+            duration: durationFrames, fileSize: 0, addedAt: new Date().toISOString(),
+          },
+          'shape',
+          entry.trackId,
+          start,
+          durationFrames,
+        ),
+        label: kind.charAt(0).toUpperCase() + kind.slice(1),
+        x: boxX,
+        y: boxY,
+        width: boxWidth,
+        height: boxHeight,
+        shapeKind: kind,
+        shapeStrokeColor: strokeColor,
+        shapeStrokeWidth: strokeWidth,
+        ...(fillColor !== undefined ? { shapeFillColor: fillColor } : {}),
+      };
+
+      const preset = typeof entry.preset === 'string'
+        && (SHAPE_ANIMATION_PRESETS as readonly string[]).includes(entry.preset)
+        ? (entry.preset as ShapeAnimationPreset)
+        : undefined;
+      if (preset) {
+        const motion = shapePresetMotion(preset, {
+          startFrame: start,
+          durationFrames,
+          fps: settings.fps,
+          x: boxX,
+          y: boxY,
+          width: boxWidth,
+          height: boxHeight,
+        });
+        if (motion.motionX) clip.motionX = motion.motionX;
+        if (motion.motionY) clip.motionY = motion.motionY;
+        if (motion.motionRot) clip.motionRot = motion.motionRot;
+        if (motion.motionScaleX) clip.motionScaleX = motion.motionScaleX;
+        if (motion.motionScaleY) clip.motionScaleY = motion.motionScaleY;
+      }
+
+      created.push(clip);
+      added.push({ clipId: clip.id, kind });
+    });
+
+    if (created.length === 0) return { added, errors };
+    this.execute(new ReplaceClipsCommand(
+      [...this.scopedTimeline().clips, ...created],
+      created.length === 1 ? 'Add shape' : `Add ${created.length} shapes`,
+      this.getActiveTimelineId(),
+    ));
+    return { added, errors };
+  }
+
   /**
    * Set constant playback speed on a visual clip (roadmap R4 groundwork).
    *
    * Timeline duration is unchanged -- the clip consumes speed× more source,
    * expressed by scaling outPoint from inPoint so every consumer that trusts
    * the trim window (export, waveforms, relink checks) follows automatically.
-   * Audio clips are refused: time-stretching audio is an R5 concern with
-   * different quality machinery.
+   * A visual clip's linked audio partners receive the same speed and trim
+   * window, keeping an embedded A/V pair synchronized. Audio-only targets and
+   * locked or otherwise ineligible groups are refused without partial edits.
+   *
+   * A COMPOUND is ineligible, exactly as it already is for
+   * `setClipOpacityTrack`, and the refusal is loud rather than a bare `false`.
+   * A compound's `inPoint`/`outPoint` ARE its window into the nested
+   * timeline, and compound validation requires
+   * `durationFrames === outPoint - inPoint` (`planFlatten`, `expandTimeline`).
+   * The scaling below breaks that by construction, so accepting a compound
+   * wrote a clip that drops out of `resolveRenderTimeline` and refuses to
+   * flatten: a nested sequence silently disappears from preview and export
+   * while the caller is told the edit succeeded. Speed belongs on the clips
+   * INSIDE the nest, which stay legal -- a sped-up child is mapped through
+   * the shared source-time model by `expandTimeline`.
    */
   setClipSpeed(clipId: string, speed: number): boolean {
     if (!Number.isFinite(speed) || speed < 0.25 || speed > 4) return false;
-    const receipt = this.applyClipProperties([clipId], `Set speed to ${speed}x`, (draft) => {
-      if (draft.type === 'audio' || draft.type === 'title') return false;
-      draft.speed = speed;
-      draft.outPoint = draft.inPoint + Math.round(draft.durationFrames * speed);
-      return true;
-    });
+    const anchor = this.findClipById(clipId);
+    if (!anchor || anchor.type === 'audio' || anchor.type === 'title') return false;
+    if (anchor.type === 'compound') {
+      // Thrown, not returned: both callers drop a `false` on the floor (the
+      // timeline context menu ignores the return, and the agent boundary
+      // reports a boolean refusal with a generic reason), so a returned
+      // refusal is the silent one this guard exists to end. The compound-area
+      // convention is a precise Error, which the agent tool receipt carries
+      // verbatim as its `error`.
+      throw new Error(
+        `Compound clip "${clipId}" cannot be sped up. Set the speed on its clips inside the nest instead.`,
+      );
+    }
+
+    const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
+    const targets = this.scopedTimeline().clips.filter((clip) => linkedIds.has(clip.id));
+    if (targets.length === 0 || !this.canEditClipIds(linkedIds)) return false;
+    // Do not let the mutator below leave a linked group half-updated. Titles
+    // have no source window to speed, so a group containing one is ineligible.
+    if (targets.some((clip) => clip.type === 'title')) return false;
+    // Same all-or-nothing rule for a compound member: `linkClips` links any
+    // two clips of different media types and 'compound' is one, so a linked
+    // group CAN hold a nest, and speeding the group would break that member's
+    // nested window while its partner looked fine. The whole group is
+    // ineligible, like the title case above.
+    const nestedMember = targets.find((clip) => clip.type === 'compound');
+    if (nestedMember) {
+      throw new Error(
+        `Linked group of "${clipId}" contains compound clip "${nestedMember.id}", which cannot be sped up. Set the speed inside the nest instead.`,
+      );
+    }
+
+    const receipt = this.applyClipProperties(
+      linkedIds,
+      `Set speed to ${speed}x`,
+      (draft) => {
+        // Audio is ineligible as a direct target, but is the linked partner
+        // that must follow a visual clip's speed change.
+        draft.speed = speed;
+        draft.outPoint = draft.inPoint + Math.round(draft.durationFrames * speed);
+        return true;
+      },
+    );
+    return receipt.changedClipIds.length > 0;
+  }
+
+  /**
+   * Set or clear one visual clip's opacity automation track. An empty array
+   * clears it; invalid/short tracks are refused. Valid values are narrowed
+   * through the shared motion sanitizer and the edit is one undo step.
+   */
+  setClipOpacityTrack(clipId: string, points: unknown): boolean {
+    const clip = this.findClipById(clipId);
+    if (!clip || clip.type === 'audio' || clip.type === 'compound') return false;
+    const clear = Array.isArray(points) && points.length === 0;
+    const track = clear ? undefined : sanitizeOpacityTrack(points);
+    if (!clear && !track) return false;
+    if (clear ? clip.opacityTrack === undefined : sameOpacityTrack(clip.opacityTrack, track)) return false;
+
+    const receipt = this.applyClipProperties(
+      [clipId],
+      clear ? 'Clear opacity track' : 'Set opacity track',
+      (draft) => {
+        if (track) draft.opacityTrack = track;
+        else delete draft.opacityTrack;
+        return true;
+      },
+    );
     return receipt.changedClipIds.length > 0;
   }
 
@@ -2123,9 +2954,13 @@ export class EditorController {  private project: Project;
    * Import SRT content as title clips on a video track (roadmap R3).
    *
    * Each cue becomes one clip spanning [start, end) relative to
-   * `startFrame` (the playhead by default). The whole import is ONE
+   * the playhead by default. The whole import is ONE
    * undoable step; cues that fail sanitization are skipped, and an import
    * with zero usable cues adds no history entry and returns [].
+   *
+   * Placement goes through the shared caption contract (`placeCaptionCue`),
+   * the same one the transcriber path uses, so both surfaces anchor, clamp,
+   * and sanitize identically.
    */
   importSrt(trackId: string, srtContent: string, startFrame?: Frame): string[] {
     return this.importSubtitleContent(trackId, parseSrt(srtContent), startFrame);
@@ -2141,7 +2976,7 @@ export class EditorController {  private project: Project;
     cues: Array<{ startSec: number; endSec: number; text: string }>,
     startFrame?: Frame,
   ): string[] {
-    const track = this.project.timeline.tracks.find((t) => t.id === trackId);
+    const track = this.scopedTimeline().tracks.find((t) => t.id === trackId);
     if (!track || track.type !== 'video' || track.locked) return [];
 
     const base = Math.max(0, Math.round(startFrame ?? this.getPlayhead()));
@@ -2152,14 +2987,7 @@ export class EditorController {  private project: Project;
     for (const cue of cues) {
       const text = sanitizeTitleText(cue.text);
       if (!text) continue;
-      const start = clampFrame(base + Math.round(cue.startSec * fps));
-      const duration = Math.max(
-        1,
-        Math.min(
-          Math.round(cue.endSec * fps) - Math.round(cue.startSec * fps),
-          MAX_FRAME - start,
-        ),
-      );
+      const { startFrame: start, durationFrames: duration } = placeCaptionCue(base, cue, fps);
       const id = nanoid();
       newIds.push(id);
       created.push({
@@ -2180,8 +3008,9 @@ export class EditorController {  private project: Project;
     if (created.length === 0) return [];
 
     this.execute(new ReplaceClipsCommand(
-      [...this.project.timeline.clips, ...created],
+      [...this.scopedTimeline().clips, ...created],
       created.length === 1 ? 'Import subtitle' : `Import ${created.length} subtitles`,
+      this.getActiveTimelineId(),
     ));
     return newIds;
   }
@@ -2192,10 +3021,10 @@ export class EditorController {  private project: Project;
    * points. One undoable step. Returns count of boundaries crossfaded.
    */
   autoCrossfadeAudio(trackId: string, fadeFrames?: Frame): number {
-    const track = this.project.timeline.tracks.find((t) => t.id === trackId);
+    const track = this.scopedTimeline().tracks.find((t) => t.id === trackId);
     if (!track || track.type !== 'audio') return -1;
 
-    const clips = this.project.timeline.clips
+    const clips = this.scopedTimeline().clips
       .filter((c) => c.trackId === trackId && !c.muted)
       .sort((a, b) => a.startFrame - b.startFrame);
     if (clips.length < 2) return -1;
@@ -2217,13 +3046,13 @@ export class EditorController {  private project: Project;
     if (changedCount === 0) return 0;
 
     const clipMap = new Map(nextClips.map((c) => [c.id, c]));
-    const merged = this.project.timeline.clips.map((c) => clipMap.get(c.id) ?? c);
-    this.execute(new ReplaceClipsCommand(merged, 'Auto-crossfade audio'));
+    const merged = this.scopedTimeline().clips.map((c) => clipMap.get(c.id) ?? c);
+    this.execute(new ReplaceClipsCommand(merged, 'Auto-crossfade audio', this.getActiveTimelineId()));
     return changedCount;
   }
 
   getMarkers(): TimelineMarker[] {
-    return (this.project.timeline.markers ?? []).map((marker) => ({
+    return (this.scopedTimeline().markers ?? []).map((marker) => ({
       ...marker,
       status: marker.status ?? MARKER_DEFAULT_STATUS,
     }));
@@ -2315,7 +3144,7 @@ export class EditorController {  private project: Project;
       return null;
     }
 
-    this.execute(new ReplaceMarkersCommand(next, actionName));
+    this.execute(new ReplaceMarkersCommand(next, actionName, this.getActiveTimelineId()));
     return { created, updated, deletedIds: [...deleteIds] };
   }
 
@@ -2375,10 +3204,10 @@ export class EditorController {  private project: Project;
 
     const groupId = nanoid();
     const targetIds = new Set(targets.map((clip) => clip.id));
-    const clips = this.project.timeline.clips.map((clip) =>
+    const clips = this.scopedTimeline().clips.map((clip) =>
       targetIds.has(clip.id) ? { ...clip, linkGroupId: groupId } : clip,
     );
-    this.execute(new ReplaceClipsCommand(clips, 'Link clips'));
+    this.execute(new ReplaceClipsCommand(clips, 'Link clips', this.getActiveTimelineId()));
     return { linkedClipIds: [...targetIds] };
   }
 
@@ -2397,14 +3226,52 @@ export class EditorController {  private project: Project;
     }
 
     const targetIds = new Set(targets.map((clip) => clip.id));
-    const clips = this.project.timeline.clips.map((clip) => {
+    const clips = this.scopedTimeline().clips.map((clip) => {
       if (!targetIds.has(clip.id)) return clip;
       const next = { ...clip };
       delete next.linkGroupId;
       return next;
     });
-    this.execute(new ReplaceClipsCommand(clips, 'Unlink clips'));
+    this.execute(new ReplaceClipsCommand(clips, 'Unlink clips', this.getActiveTimelineId()));
     return { unlinkedClipIds: [...targetIds] };
+  }
+
+  // ─── Compound clips / nested sequences (upstream issue #155, slice 1) ─────
+
+  /**
+   * Group clips into a nested sequence (upstream issue #155).
+   *
+   * The selection (plus auto-included linked partners, like every other
+   * multi-clip op) moves verbatim into a new sub-timeline, replaced in the
+   * holding scope by one compound clip — as a single undoable step. Throws a
+   * precise error before mutating anything when the selection is empty,
+   * unknown, on a locked track, or would nest past the depth cap.
+   * `options.scopeTimelineId` overrides the ambient open scope (agent/MCP
+   * path); omitted means the ambient scope (root unless a nest is open).
+   */
+  nestClips(
+    clipIds: Iterable<string>,
+    options: { name?: string; scopeTimelineId?: string | null } = {},
+  ): NestReceipt {
+    const scope = options.scopeTimelineId ?? this.getActiveTimelineId();
+    const { project, receipt } = planNest(this.project, clipIds, { ...options, scopeTimelineId: scope });
+    this.execute(
+      new ReplaceProjectCommand(project, `Nest ${receipt.nestedClipIds.length} clips`),
+    );
+    return receipt;
+  }
+
+  /**
+   * Restore one compound clip's nested content to its holding scope timeline
+   * (one level, one undoable step). Throws a precise error before mutating
+   * when the id is unknown, is not a compound clip, lost its timeline, or
+   * sits on a locked track. Same scope-override contract as nestClips.
+   */
+  flattenCompound(compoundClipId: string, options: { scopeTimelineId?: string | null } = {}): FlattenReceipt {
+    const scope = options.scopeTimelineId ?? this.getActiveTimelineId();
+    const { project, receipt } = planFlatten(this.project, compoundClipId, { scopeTimelineId: scope });
+    this.execute(new ReplaceProjectCommand(project, 'Flatten compound clip'));
+    return receipt;
   }
 
   //  Clip media source swapping (upstream PR #500) 
@@ -2451,7 +3318,7 @@ export class EditorController {  private project: Project;
       this.project.media.find((asset) => asset.id === clip.assetId)?.type ?? clip.type;
 
     for (const target of targets) {
-      if (target.type === 'title' || target.type === 'generated') {
+      if (target.type === 'title' || target.type === 'generated' || target.type === 'shape') {
         return { ok: false, reason: 'This clip\'s source cannot be swapped.' };
       }
       // Checked before the generic kind mismatch so the common real case
@@ -2498,10 +3365,10 @@ export class EditorController {  private project: Project;
       .filter((clip) => clip.assetId === anchor.assetId);
 
     const targetIds = new Set(targets.map((clip) => clip.id));
-    const clips = this.project.timeline.clips.map((clip) =>
+    const clips = this.scopedTimeline().clips.map((clip) =>
       targetIds.has(clip.id) ? { ...clip, assetId: replacementAssetId } : clip,
     );
-    this.execute(new ReplaceClipsCommand(clips, 'Replace clip source'));
+    this.execute(new ReplaceClipsCommand(clips, 'Replace clip source', this.getActiveTimelineId()));
     return {
       changedClipIds: [...targetIds],
       oldAssetId: anchor.assetId,
@@ -2523,54 +3390,49 @@ export class EditorController {  private project: Project;
   private executeRipple(clips: Clip[], markers: TimelineMarker[] | null, label: string): MarkerRippleDelta {
     const delta = diffMarkers(this.getMarkers(), markers);
     if (markers === null) {
-      this.execute(new ReplaceClipsCommand(clips, label));
+      this.execute(new ReplaceClipsCommand(clips, label, this.getActiveTimelineId()));
       return delta;
     }
-    this.execute(new ReplaceProjectCommand({
-      ...this.project,
-      timeline: { ...this.project.timeline, clips, markers },
-    }, label));
+    this.execute(new ReplaceProjectCommand(this.withScopedTimeline(
+      { ...this.scopedTimeline(), clips, markers },
+    ), label));
     return delta;
   }
 
   private updateTrack(trackId: string, patch: Partial<Track>, label: string): boolean {
-    const track = this.project.timeline.tracks.find((candidate) => candidate.id === trackId);
+    const track = this.scopedTimeline().tracks.find((candidate) => candidate.id === trackId);
     if (!track) return false;
     this.execute(
       new ReplaceTracksCommand(
-        this.project.timeline.tracks.map((candidate) =>
+        this.scopedTimeline().tracks.map((candidate) =>
           candidate.id === trackId ? { ...candidate, ...patch } : candidate,
         ),
         label,
+        this.getActiveTimelineId(),
       ),
     );
     return true;
   }
 
   setPlayhead(frame: Frame): void {
-    this.project = {
-      ...this.project,
-      timeline: {
-        ...this.project.timeline,
-        playheadFrame: clampFrame(frame),
-      },
-    };
+    this.project = this.withScopedTimeline({
+      ...this.scopedTimeline(),
+      playheadFrame: clampFrame(frame),
+    });
     this.notify();
   }
 
-  setInFrame(frame: Frame = this.project.timeline.playheadFrame): void {
-    this.project = {
-      ...this.project,
-      timeline: { ...this.project.timeline, inFrame: clampFrame(frame) },
-    };
+  setInFrame(frame: Frame = this.scopedTimeline().playheadFrame): void {
+    this.project = this.withScopedTimeline(
+      { ...this.scopedTimeline(), inFrame: clampFrame(frame) },
+    );
     this.notify();
   }
 
-  setOutFrame(frame: Frame = this.project.timeline.playheadFrame): void {
-    this.project = {
-      ...this.project,
-      timeline: { ...this.project.timeline, outFrame: clampFrame(frame) },
-    };
+  setOutFrame(frame: Frame = this.scopedTimeline().playheadFrame): void {
+    this.project = this.withScopedTimeline(
+      { ...this.scopedTimeline(), outFrame: clampFrame(frame) },
+    );
     this.notify();
   }
 
@@ -2585,22 +3447,18 @@ export class EditorController {  private project: Project;
   setMarkedRange(inFrame: Frame, outFrame: Frame): void {
     const start = clampFrame(Math.min(inFrame, outFrame));
     const end = clampFrame(Math.max(inFrame, outFrame));
-    this.project = {
-      ...this.project,
-      timeline: { ...this.project.timeline, inFrame: start, outFrame: end },
-    };
+    this.project = this.withScopedTimeline(
+      { ...this.scopedTimeline(), inFrame: start, outFrame: end },
+    );
     this.notify();
   }
 
   clearMarkedRange(): void {
-    this.project = {
-      ...this.project,
-      timeline: {
-        ...this.project.timeline,
-        inFrame: undefined,
-        outFrame: undefined,
-      },
-    };
+    this.project = this.withScopedTimeline({
+      ...this.scopedTimeline(),
+      inFrame: undefined,
+      outFrame: undefined,
+    });
     this.notify();
   }
 
@@ -2612,10 +3470,10 @@ export class EditorController {  private project: Project;
    * @returns true on success, false when the range or selection is invalid.
    */
   compactTake(sourceClipId: string): boolean {
-    const { inFrame, outFrame } = this.project.timeline;
+    const { inFrame, outFrame } = this.scopedTimeline();
     if (inFrame === undefined || outFrame === undefined || outFrame <= inFrame) return false;
 
-    const sourceClip = this.project.timeline.clips.find((c) => c.id === sourceClipId);
+    const sourceClip = this.scopedTimeline().clips.find((c) => c.id === sourceClipId);
     if (!sourceClip) return false;
 
     // The source must overlap the marked range.
@@ -2625,8 +3483,8 @@ export class EditorController {  private project: Project;
     if (overlapEnd <= overlapStart) return false;
 
     // Find or create the comp track (top video track).
-    let compTrackId = this.project.timeline.compTrackId;
-    let tracks = [...this.project.timeline.tracks];
+    let compTrackId = this.scopedTimeline().compTrackId;
+    let tracks = [...this.scopedTimeline().tracks];
     if (!compTrackId || !tracks.some((t) => t.id === compTrackId)) {
       const compTrack: Track = {
         id: nanoid(),
@@ -2640,12 +3498,17 @@ export class EditorController {  private project: Project;
       compTrackId = compTrack.id;
     }
 
-    // Compute the source offset: how far into the source clip the overlap starts.
-    const sourceOffset = overlapStart - sourceClip.startFrame;
+    // The comp clip reuses the source's window, so the marked range maps
+    // through the same source-time boundary as a fragment.
+    const { inPoint, outPoint } = sourceWindowForSlice(
+      sourceClip,
+      overlapStart,
+      overlapEnd,
+    );
     const segmentDuration = overlapEnd - overlapStart;
 
     // Remove existing comp clips that overlap the range.
-    let clips = this.project.timeline.clips.filter((c) => {
+    let clips = this.scopedTimeline().clips.filter((c) => {
       if (c.trackId !== compTrackId) return true;
       const cEnd = c.startFrame + c.durationFrames;
       return cEnd <= overlapStart || c.startFrame >= overlapEnd;
@@ -2658,21 +3521,18 @@ export class EditorController {  private project: Project;
       trackId: compTrackId!,
       startFrame: overlapStart,
       durationFrames: segmentDuration,
-      inPoint: sourceClip.inPoint + sourceOffset,
-      outPoint: sourceClip.inPoint + sourceOffset + segmentDuration,
+      inPoint,
+      outPoint,
       label: sourceClip.label ? 'Comp: ' + sourceClip.label : undefined,
     };
     clips = [...clips, compClip];
 
-    this.execute(new ReplaceProjectCommand({
-      ...this.project,
-      timeline: {
-        ...this.project.timeline,
-        tracks,
-        clips,
-        compTrackId,
-      },
-    }, 'Compact take'));
+    this.execute(new ReplaceProjectCommand(this.withScopedTimeline({
+      ...this.scopedTimeline(),
+      tracks,
+      clips,
+      compTrackId,
+    }), 'Compact take'));
     return true;
   }
   /**
@@ -2695,7 +3555,7 @@ export class EditorController {  private project: Project;
 
     for (let i = 0; i < clipIds.length; i++) {
       if (i >= cells.length) break;
-      const clip = this.project.timeline.clips.find((c) => c.id === clipIds[i]);
+      const clip = this.scopedTimeline().clips.find((c) => c.id === clipIds[i]);
       if (!clip) continue;
       if (clip.type === 'audio') continue;
       targetClipIds.push(clipIds[i]);
@@ -2734,7 +3594,7 @@ export class EditorController {  private project: Project;
 
   importMediaAssets(assets: MediaAsset[]): string[] {
     if (assets.length === 0) return [];
-    this.execute(new AddMediaAndClipsCommand(assets, [], 'Import media'));
+    this.execute(new AddMediaAndClipsCommand(assets, [], 'Import media', [], this.getActiveTimelineId()));
     return assets.map((asset) => asset.id);
   }
 
@@ -2767,7 +3627,7 @@ export class EditorController {  private project: Project;
     startFrame: Frame,
     label: string,
   ): MediaPlacementResult {
-    const track = this.project.timeline.tracks.find((candidate) => candidate.id === trackId);
+    const track = this.scopedTimeline().tracks.find((candidate) => candidate.id === trackId);
     const importedById = new Map(importedAssets.map((asset) => [asset.id, asset]));
     const allAssets = new Map(this.project.media.map((asset) => [asset.id, asset]));
     for (const asset of importedAssets) allAssets.set(asset.id, asset);
@@ -2802,7 +3662,7 @@ export class EditorController {  private project: Project;
       return { assetIds: [], clipIds: [] };
     }
 
-    this.execute(new AddMediaAndClipsCommand(media, clips, label, tracks));
+    this.execute(new AddMediaAndClipsCommand(media, clips, label, tracks, this.getActiveTimelineId()));
     return {
       assetIds: media.map((asset) => asset.id),
       clipIds: clips.map((clip) => clip.id),
@@ -2851,10 +3711,10 @@ export class EditorController {  private project: Project;
     plannedTracks: Track[],
   ): Track {
     const endFrame = startFrame + durationFrames;
-    const candidates = [...this.project.timeline.tracks, ...plannedTracks]
+    const candidates = [...this.scopedTimeline().tracks, ...plannedTracks]
       .filter((track) => track.type === 'audio' && !track.locked)
       .sort((left, right) => left.order - right.order);
-    const allClips = [...this.project.timeline.clips, ...plannedClips];
+    const allClips = [...this.scopedTimeline().clips, ...plannedClips];
 
     const available = candidates.find((track) =>
       allClips
@@ -2869,7 +3729,7 @@ export class EditorController {  private project: Project;
     const track: Track = {
       id: nanoid(),
       name: `Audio ${
-        this.project.timeline.tracks.filter((candidate) => candidate.type === 'audio').length
+        this.scopedTimeline().tracks.filter((candidate) => candidate.type === 'audio').length
         + plannedTracks.filter((candidate) => candidate.type === 'audio').length
         + 1
       }`,
@@ -2877,7 +3737,7 @@ export class EditorController {  private project: Project;
       locked: false,
       visible: true,
       syncLocked: true,
-      order: this.project.timeline.tracks.length + plannedTracks.length,
+      order: this.scopedTimeline().tracks.length + plannedTracks.length,
     };
     plannedTracks.push(track);
     return track;
@@ -2978,7 +3838,7 @@ export class EditorController {  private project: Project;
   ): BulkClipPropertyReport {
     const requestedIds = [...new Set(clipIds)];
     const indices = this.clipIndices(requestedIds);
-    const clips = this.project.timeline.clips;
+    const clips = this.scopedTimeline().clips;
     const nextClips = new Map<string, Clip>();
     const changedClipIds: string[] = [];
     const skippedClipIds: string[] = [];
@@ -3002,7 +3862,7 @@ export class EditorController {  private project: Project;
 
     if (nextClips.size > 0) {
       const suffix = nextClips.size > 1 ? ` (${nextClips.size} clips)` : '';
-      this.execute(new SetClipPropertiesCommand(nextClips, `${label}${suffix}`));
+      this.execute(new SetClipPropertiesCommand(nextClips, `${label}${suffix}`, this.getActiveTimelineId()));
     }
     return { changedClipIds, skippedClipIds };
   }
@@ -3019,7 +3879,7 @@ export class EditorController {  private project: Project;
     const indices = new Map<string, number>();
     if (requested.size === 0) return indices;
 
-    const clips = this.project.timeline.clips;
+    const clips = this.scopedTimeline().clips;
     for (let index = 0; index < clips.length; index += 1) {
       const clipId = clips[index].id;
       if (!requested.has(clipId) || indices.has(clipId)) continue;
@@ -3035,7 +3895,7 @@ export class EditorController {  private project: Project;
    * uses a project replace so it's a single undo step.
    */
   setClipTransition(clipId: string, transition: ClipTransition | null): boolean {
-    const clips = this.project.timeline.clips;
+    const clips = this.scopedTimeline().clips;
     const idx = clips.findIndex((c) => c.id === clipId);
     if (idx < 0) return false;
     const next = clips.map((c) => {
@@ -3051,7 +3911,7 @@ export class EditorController {  private project: Project;
       }
       return copy;
     });
-    this.execute(new ReplaceClipsCommand(next, 'Set transition'));
+    this.execute(new ReplaceClipsCommand(next, 'Set transition', this.getActiveTimelineId()));
     return true;
   }
 
@@ -3064,7 +3924,7 @@ export class EditorController {  private project: Project;
    * Returns false if the clips aren't adjacent or the overlap won't fit.
    */
   createCrossDissolve(firstClipId: string, secondClipId: string, durationFrames: Frame): boolean {
-    const clips = this.project.timeline.clips;
+    const clips = this.scopedTimeline().clips;
     const first = clips.find((c) => c.id === firstClipId);
     const second = clips.find((c) => c.id === secondClipId);
     if (!first || !second) return false;
@@ -3090,7 +3950,7 @@ export class EditorController {  private project: Project;
       return c;
     });
 
-    this.execute(new ReplaceClipsCommand(next, 'Cross dissolve'));
+    this.execute(new ReplaceClipsCommand(next, 'Cross dissolve', this.getActiveTimelineId()));
     return true;
   }
 
@@ -3098,61 +3958,26 @@ export class EditorController {  private project: Project;
    * Remove silent ranges from a clip and ripple-close the gaps (#175).
    *
    * `silentRangesSec` are silent spans in SOURCE seconds (from the detector).
-   * They are converted to source frames at the project frame rate, intersected
-   * with the clip, and the kept segments are placed contiguously; clips after
-   * the original on the same track shift left by the removed amount.
+   * They are mapped to the clip's timeline window and sent through the shared
+   * range-ripple transaction, so linked partners, sync-locked tracks, and
+   * markers follow the same path as scoped Agent removal.
    *
-   * Returns the number of segments removed (0 = nothing changed).
+   * Returns the number of source ranges requested (0 = nothing changed).
    */
   removeSilence(clipId: string, silentRangesSec: SilentRange[]): number {
     const clip = this.findClipById(clipId);
     if (!clip) return 0;
 
-    const fps = this.project.settings.fps;
-    const silentFrameRanges: FrameRange[] = silentRangesSec.map((r) => ({
-      start: Math.round(r.startSec * fps),
-      end: Math.round(r.endSec * fps),
-    }));
-
-    const plan = planSilenceRemoval(clip.inPoint, clip.outPoint, silentFrameRanges);
-    if (plan.removedFrames <= 0 || plan.kept.length === 0) return 0;
-
-    // Build replacement clips for the kept segments, placed contiguously
-    // starting at the original clip's timeline position.
-    const newClips: Clip[] = [];
-    let cursorTimeline = clip.startFrame;
-    for (const seg of plan.kept) {
-      const segDuration = seg.outPoint - seg.inPoint;
-      newClips.push({
-        ...clip,
-        id: nanoid(),
-        startFrame: cursorTimeline,
-        durationFrames: segDuration,
-        inPoint: seg.inPoint,
-        outPoint: seg.outPoint,
-      });
-      cursorTimeline += segDuration;
-    }
-
-    const originalEnd = clip.startFrame + clip.durationFrames;
-    const totalKept = cursorTimeline - clip.startFrame;
-    const rippleShift = clip.durationFrames - totalKept; // frames freed up
-
-    // Assemble the new full clips array: drop the original, add segments,
-    // and ripple clips that started at/after the original's end on this track.
-    const nextClips: Clip[] = [];
-    for (const c of this.project.timeline.clips) {
-      if (c.id === clipId) continue;
-      if (c.trackId === clip.trackId && c.startFrame >= originalEnd && rippleShift > 0) {
-        nextClips.push({ ...c, startFrame: Math.max(0, c.startFrame - rippleShift) });
-      } else {
-        nextClips.push(c);
-      }
-    }
-    nextClips.push(...newClips);
-
-    this.execute(new ReplaceClipsCommand(nextClips, 'Remove silence'));
-    return silentRangesSec.length;
+    // The legacy path receives source-second ranges, but the domain's safe
+    // transaction is the same timeline-range ripple used by scoped removal.
+    // Mapping first preserves the clip's trim window; rippleDeleteRanges then
+    // expands linked partners, honours sync lock, remaps markers, and commits
+    // clips + markers in one command.
+    const report = this.rippleDeleteRanges(
+      clip.trackId,
+      timelineSilenceRanges(clip, this.project.settings.fps, silentRangesSec),
+    );
+    return report ? silentRangesSec.length : 0;
   }
 
   //  Project settings 
@@ -3204,9 +4029,10 @@ export class EditorController {  private project: Project;
       return { fps, width, height, changed };
     }
 
+    const scale = fps / previous.fps;
     let timeline = this.project.timeline;
     if (fpsChanged) {
-      timeline = rescaleTimelineFrames(timeline, fps / previous.fps);
+      timeline = rescaleTimelineFrames(timeline, scale);
     }
     if (resolutionChanged) {
       timeline = {
@@ -3216,13 +4042,47 @@ export class EditorController {  private project: Project;
         ),
       };
     }
+    // Nested timelines share the project timebase and canvas, so they ride
+    // the same rescale/re-fit (compound in/out windows stay valid because
+    // both sides scale by the same factor).
+    let timelines = this.project.timelines;
+    if (timelines && (fpsChanged || resolutionChanged)) {
+      const next: typeof timelines = {};
+      for (const [id, nested] of Object.entries(timelines)) {
+        let reshaped = nested;
+        if (fpsChanged) reshaped = rescaleTimelineFrames(reshaped, scale);
+        if (resolutionChanged) {
+          reshaped = {
+            ...reshaped,
+            clips: reshaped.clips.map((clip) =>
+              refitClipToCanvas(clip, previous.width, previous.height, width, height),
+            ),
+          };
+        }
+        next[id] = reshaped;
+      }
+      timelines = next;
+    }
+
+    // Media durations are project-frame values too. Keep their wall-clock
+    // length intact when the project timebase changes, just like clip source
+    // windows; otherwise source guards interpret the old frame count at the
+    // new rate and truncate the tail of every asset.
+    const media = fpsChanged
+      ? this.project.media.map((asset) => ({
+          ...asset,
+          duration: rescaleFrame(asset.duration, scale),
+        }))
+      : this.project.media;
 
     this.execute(
       new ReplaceProjectCommand(
         {
           ...this.project,
           settings: { ...previous, fps, width, height },
+          media,
           timeline,
+          ...(timelines === this.project.timelines ? {} : { timelines }),
           updatedAt: new Date().toISOString(),
         },
         'Change project settings',
@@ -3273,10 +4133,12 @@ export class EditorController {  private project: Project;
     if (removedAssetIds.length === 0) return null;
 
     const removedSet = new Set(removedAssetIds);
+    // Media-library scope is always the main timeline (dependents above are
+    // main-timeline clips), even when a nest is open for editing.
     const dependents = this.project.timeline.clips.filter((clip) => removedSet.has(clip.assetId));
     // Linked partners share a placement, so removing one member must remove the
     // whole group rather than orphan half of it.
-    const removedClipIds = this.expandLinkedClipIds(dependents.map((clip) => clip.id));
+    const removedClipIds = this.expandLinkedClipIds(dependents.map((clip) => clip.id), this.project.timeline.clips);
     if (removedClipIds.length > 0 && !this.canEditClipIds(removedClipIds)) return null;
 
     const removedClipSet = new Set(removedClipIds);
@@ -3297,12 +4159,131 @@ export class EditorController {  private project: Project;
     return { removedAssetIds, removedClipIds };
   }
 
-  //  Project lifecycle 
+  //  Media-library folders (upstream issue #156 slice)  
+
+  /** Create a folder as one undoable step. Throws on an invalid or duplicate name. */
+  createMediaFolder(name: string): MediaFolder {
+    const cleaned = sanitizeFolderName(name);
+    if (cleaned === null) throw new Error('Folder name is required');
+    const existing = this.getMediaFolders();
+    if (existing.some((folder) => folderNamesMatch(folder.name, cleaned))) {
+      throw new Error(`Folder "${cleaned}" already exists`);
+    }
+    const folder: MediaFolder = { id: nanoid(), name: cleaned };
+    this.execute(
+      new ReplaceProjectCommand(
+        {
+          ...this.project,
+          mediaFolders: [...existing, folder],
+          updatedAt: new Date().toISOString(),
+        },
+        'Create folder',
+      ),
+    );
+    return folder;
+  }
+
+  /** Rename a folder as one undoable step. Identical name is a no-op. */
+  renameMediaFolder(folderId: string, name: string): MediaFolder {
+    const folders = this.getMediaFolders();
+    const target = folders.find((folder) => folder.id === folderId);
+    if (!target) throw new Error('Folder not found');
+    const cleaned = sanitizeFolderName(name);
+    if (cleaned === null) throw new Error('Folder name is required');
+    if (folders.some((folder) => folder.id !== folderId && folderNamesMatch(folder.name, cleaned))) {
+      throw new Error(`Folder "${cleaned}" already exists`);
+    }
+    if (folderNamesMatch(target.name, cleaned)) return target;
+
+    const next = folders.map((folder) => (folder.id === folderId ? { ...folder, name: cleaned } : folder));
+    this.execute(
+      new ReplaceProjectCommand(
+        { ...this.project, mediaFolders: next, updatedAt: new Date().toISOString() },
+        'Rename folder',
+      ),
+    );
+    return { id: folderId, name: cleaned };
+  }
+
+  /**
+   * Delete a folder as one undoable step. Member assets move to the library
+   * root (their folderId is cleared) — they are never deleted, diverging from
+   * upstream's cascade so removing organization cannot destroy media.
+   */
+  deleteMediaFolder(folderId: string): { deletedFolderId: string; movedAssetIds: string[] } {
+    const folders = this.getMediaFolders();
+    if (!folders.some((folder) => folder.id === folderId)) throw new Error('Folder not found');
+
+    const media = this.project.media.map((asset) => {
+      if (asset.folderId !== folderId) return asset;
+      const copy = { ...asset };
+      delete copy.folderId;
+      return copy;
+    });
+    const movedAssetIds = media
+      .filter((asset, index) => asset !== this.project.media[index])
+      .map((asset) => asset.id);
+
+    this.execute(
+      new ReplaceProjectCommand(
+        {
+          ...this.project,
+          mediaFolders: folders.filter((folder) => folder.id !== folderId),
+          media,
+          updatedAt: new Date().toISOString(),
+        },
+        'Delete folder',
+      ),
+    );
+    return { deletedFolderId: folderId, movedAssetIds };
+  }
+
+  /**
+   * Move assets into a folder (or to the root when folderId is null) as one
+   * undoable step. Validates every asset id first; a no-op returns without
+   * pushing history.
+   */
+  moveAssetsToFolder(assetIds: Iterable<string>, folderId: string | null): { movedAssetIds: string[]; folderId: string | null } {
+    if (folderId !== null && !this.getMediaFolders().some((folder) => folder.id === folderId)) {
+      throw new Error('Folder not found');
+    }
+    const requested = new Set(assetIds);
+    const targets = this.project.media.filter((asset) => requested.has(asset.id));
+    if (targets.length !== requested.size) throw new Error('Media not found');
+    const media = this.project.media.map((asset) => {
+      if (!requested.has(asset.id)) return asset;
+      const current = asset.folderId ?? null;
+      if (current === folderId) return asset;
+      const copy = { ...asset };
+      if (folderId === null) delete copy.folderId;
+      else copy.folderId = folderId;
+      return copy;
+    });
+    const movedAssetIds = media
+      .filter((asset, index) => asset !== this.project.media[index])
+      .map((asset) => asset.id);
+    if (movedAssetIds.length === 0) return { movedAssetIds, folderId };
+
+    this.execute(
+      new ReplaceProjectCommand(
+        { ...this.project, media, updatedAt: new Date().toISOString() },
+        movedAssetIds.length === 1 ? 'Move media' : `Move ${movedAssetIds.length} media items`,
+      ),
+    );
+    return { movedAssetIds, folderId };
+  }
+
+  //  Project lifecycle
 
   loadProject(project: Project): void {
-    this.project = project;
+    this.project = clearSoloState(withNarrowedCompounds(
+      withNarrowedTitleVariations(withNarrowedShapes(
+        withNarrowedOpacityTracks(narrowProjectGradePresetLinks(narrowMediaFolders(withNarrowedDescriptions(project)))),
+      )),
+    ));
     this.history.clear();
     this.settingsSnapshot = null;
+    this.activeTimelinePath = [];
     this.notify();
   }
 
@@ -3313,7 +4294,8 @@ export class EditorController {  private project: Project;
    * triggering a sync echo back to the renderer.
    */
   setProjectSilent(project: Project): void {
-    this.project = project;
+    this.project = withNarrowedOpacityTracks(narrowProjectGradePresetLinks(project));
+    this.coerceScope();
   }
 
   /**
@@ -3329,6 +4311,7 @@ export class EditorController {  private project: Project;
     this.project = createEmptyProject();
     this.history.clear();
     this.settingsSnapshot = null;
+    this.activeTimelinePath = [];
     this.notify();
   }
 
@@ -3348,9 +4331,10 @@ export class EditorController {  private project: Project;
   //  Serialization 
 
   serialize(): string {
-    // Strip UI-only soloed flag — it must not persist.
-    return JSON.stringify(this.project, (_key, value) =>
-      _key === 'soloed' ? undefined : value, 2);
+    // Solo is a live audition/render state. Keep it in the snapshot sent to
+    // the main process; durable project loads clear it through the controller
+    // constructor/load boundary.
+    return JSON.stringify(this.project, null, 2);
   }
 
   static deserialize(json: string): EditorController {

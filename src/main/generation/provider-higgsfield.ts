@@ -6,13 +6,15 @@
  */
 
 import type {
+  GenerationExecutionContext,
   GenerationProvider,
   GenerationRequest,
   GenerationResult,
   GenerationProgress,
   GenerationType,
 } from './types';
-import { downloadFile } from './util';
+import { downloadFile, sleep } from './util';
+import { encodeReferenceImage } from './reference-image';
 
 const HIGGSFIELD_API = 'https://api.higgsfield.ai/v1';
 
@@ -20,6 +22,7 @@ export class HiggsFieldProvider implements GenerationProvider {
   readonly id = 'higgsfield';
   readonly name = 'Higgs Field';
   readonly supportedTypes: GenerationType[] = ['video'];
+  readonly cancellationSupport = 'local-only' as const;
 
   private apiKey: string = '';
 
@@ -38,6 +41,7 @@ export class HiggsFieldProvider implements GenerationProvider {
   async generate(
     request: GenerationRequest,
     onProgress?: (progress: GenerationProgress) => void,
+    execution?: GenerationExecutionContext,
   ): Promise<GenerationResult> {
     const startTime = Date.now();
     const model = (request.extra?.model as string) || 'diffuse-v1';
@@ -45,6 +49,10 @@ export class HiggsFieldProvider implements GenerationProvider {
     onProgress?.({ id: request.id, status: 'pending', percent: 0, message: 'Submitting...' });
 
     try {
+      // Built before submitting: a reference that cannot be sent must cost no
+      // provider call.
+      const body = await this.buildBody(request, model);
+
       // Submit generation
       const submitResponse = await fetch(`${HIGGSFIELD_API}/generations`, {
         method: 'POST',
@@ -52,14 +60,8 @@ export class HiggsFieldProvider implements GenerationProvider {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model,
-          prompt: request.prompt,
-          duration: request.durationSeconds || 5,
-          width: request.width || 1280,
-          height: request.height || 720,
-          first_frame_image: request.referenceImagePath || undefined,
-        }),
+        body: JSON.stringify(body),
+        signal: execution?.signal,
       });
 
       if (!submitResponse.ok) {
@@ -68,6 +70,10 @@ export class HiggsFieldProvider implements GenerationProvider {
       }
 
       const { id: generationId } = await submitResponse.json();
+      if (typeof generationId !== 'string' || generationId.length === 0) {
+        throw new Error('Higgs Field submit response did not include a generation id');
+      }
+      execution?.onProviderRequest(generationId);
 
       // Poll for completion
       let attempts = 0;
@@ -75,16 +81,18 @@ export class HiggsFieldProvider implements GenerationProvider {
 
       while (attempts < maxAttempts) {
         attempts++;
-        await new Promise((r) => setTimeout(r, 2000));
+        await sleep(2000, execution?.signal);
 
         const statusResponse = await fetch(`${HIGGSFIELD_API}/generations/${generationId}`, {
           headers: { 'Authorization': `Bearer ${this.apiKey}` },
+          signal: execution?.signal,
         });
 
         if (!statusResponse.ok) continue;
         const data = await statusResponse.json();
 
         if (data.status === 'completed' && data.video_url) {
+          if (execution?.signal.aborted) throw new Error('Generation stopped');
           onProgress?.({ id: request.id, status: 'processing', percent: 95, message: 'Downloading...' });
           const outputPath = await downloadFile(data.video_url, request.id, 'mp4');
 
@@ -115,7 +123,40 @@ export class HiggsFieldProvider implements GenerationProvider {
     }
   }
 
-  async cancel(_requestId: string): Promise<void> {
-    // Higgs Field cancel not yet supported
+  async cancel(_providerRequestId: string): Promise<void> {
+    // The REST contract used here exposes create/status but no cancel
+    // operation. Cancellation is therefore local-only and reported honestly.
+  }
+
+  private async buildBody(
+    request: GenerationRequest,
+    model: string,
+  ): Promise<Record<string, unknown>> {
+    const body: Record<string, unknown> = {
+      model,
+      prompt: request.prompt,
+      duration: request.durationSeconds || 5,
+      width: request.width || 1280,
+      height: request.height || 720,
+    };
+
+    if (request.referenceImagePath) {
+      // Higgs Field's first frame is fetched from a URL by the service, and
+      // this adapter's endpoint has no upload step to give it one. Refusing is
+      // the honest answer: sending a local path, or a data URI the service may
+      // not accept, would leave a control that does nothing.
+      body.first_frame_image = await encodeReferenceImage(request.referenceImagePath, {
+        provider: this.name,
+        model,
+        type: request.type,
+        field: 'first_frame_image',
+        unsupported:
+          `Higgs Field ${model} conditions on a first frame the service fetches from a public URL, and this `
+          + `adapter's generations call uploads nothing, so ${request.referenceImagePath} cannot be sent as `
+          + 'first_frame_image. Drop referenceImagePath, or generate the still with fal.ai or Replicate and cut it in.',
+      });
+    }
+
+    return body;
   }
 }

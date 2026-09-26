@@ -22,7 +22,7 @@
  * the decode timeout and looked like a hang.
  */
 
-import type { Clip, Frame, MediaAsset } from '../types/project';
+import type { Frame, MediaAsset } from '../types/project';
 
 /** The subset of a clip needed to map timeline time onto its source. */
 export interface ClipSourceWindow {
@@ -44,13 +44,6 @@ export interface ClipSourceWindow {
 /** Defensive speed resolution: undefined/garbage falls back to normal. */
 export function effectiveSpeed(speed: number | undefined): number {
   return typeof speed === 'number' && Number.isFinite(speed) && speed > 0 ? speed : 1;
-}export function clipSourceWindow(clip: Clip): ClipSourceWindow {
-  return {
-    startFrame: clip.startFrame,
-    inPoint: clip.inPoint,
-    outPoint: clip.outPoint,
-    durationFrames: clip.durationFrames,
-  };
 }
 
 function usableRate(fps: number | undefined): number {
@@ -76,6 +69,9 @@ export function secondsToProjectFrames(seconds: number, projectFps: number): Fra
  *
  * The result is not clamped to the clip: callers that composite only visible
  * clips already know the frame is inside, and export needs the raw mapping.
+ *
+ * `timelineFrameForSourceSeconds` is the inverse direction; both live here so
+ * the `speed` term cannot be present in one and missing from the other.
  */
 export function sourceSecondsForTimelineFrame(
   clip: ClipSourceWindow,
@@ -86,6 +82,29 @@ export function sourceSecondsForTimelineFrame(
   const speed = effectiveSpeed(clip.speed);
   const sourceOffset = clip.inPoint + (timelineFrame - clip.startFrame) * speed;
   return Math.max(0, projectFramesToSeconds(sourceOffset, projectFps));
+}
+
+/**
+ * Timeline frame for an offset into the source file, in seconds.
+ *
+ * The exact inverse of `sourceSecondsForTimelineFrame`, rounded to the nearest
+ * frame. Detection reports source seconds, so anything that turns a detected
+ * span into a cut needs this direction — and needs it here, where the `speed`
+ * term already is. Solving for the timeline frame of a 2x clip reached at
+ * source 2.0s gives 30, not 60: a mapper that drops the term cuts real speech
+ * half a clip away from the silence it was asked to remove.
+ *
+ * Not clamped to the clip: a source offset before the in point legitimately
+ * maps before the clip start, and the caller decides what that means.
+ */
+export function timelineFrameForSourceSeconds(
+  clip: ClipSourceWindow,
+  sourceSeconds: number,
+  projectFps: number,
+): number {
+  const speed = effectiveSpeed(clip.speed);
+  const sourceFrames = secondsToProjectFrames(sourceSeconds, projectFps);
+  return clip.startFrame + Math.round((sourceFrames - clip.inPoint) / speed);
 }
 
 /**

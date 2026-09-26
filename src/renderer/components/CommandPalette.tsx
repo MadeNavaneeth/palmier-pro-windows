@@ -2,38 +2,47 @@
  * CommandPalette — searchable inventory of every manual editing command.
  *
  * Upstream issue #516 asked for a clearer way to find the manual tools than
- * hunting the toolbar. The palette lists the same `SHORTCUTS` catalogue the
- * keyboard layer uses (so it cannot drift), filters by label/category/chord,
- * and invokes the shared `dispatchShortcut` so a palette row does exactly what
- * its chord does. Free, local, and zero-cost — the value is discoverability
- * without a new backend or paid service.
+ * hunting the toolbar. The palette lists the same shortcut catalogue the
+ * keyboard layer dispatches on, resolved through the active preset (#579) so a
+ * row cannot show a chord the handler would not fire. It filters by
+ * label/category/chord and invokes the shared `dispatchShortcut` so a palette
+ * row does exactly what its chord does. Free, local, and zero-cost — the value
+ * is discoverability without a new backend or paid service.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
-import { SHORTCUTS, formatShortcut } from '../../shared/editor/shortcuts';
+import { formatShortcut, primaryShortcutLabel, shortcutsForPreset } from '../../shared/editor/shortcuts';
 import { dispatchShortcut } from '../lib/shortcut-dispatcher';
 import { useUiStore } from '../store/ui';
 
 export function CommandPalette() {
   const open = useUiStore((s) => s.commandPaletteOpen);
   const close = useUiStore((s) => s.closeCommandPalette);
+  const preset = useUiStore((s) => s.shortcutPreset);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Resolved once per preset, so the chords printed here are the ones the
+  // handler matches (#579).
+  const definitions = useMemo(() => shortcutsForPreset(preset), [preset]);
+  // A preset may deliberately unbind the palette (FCP does), so the footer hint
+  // is dropped rather than advertising a chord that no longer fires.
+  const toggleChord = primaryShortcutLabel('showCommandPalette', definitions);
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (needle.length === 0) return SHORTCUTS;
-    return SHORTCUTS.filter((def: (typeof SHORTCUTS)[number]) => {
+    if (needle.length === 0) return definitions;
+    return definitions.filter((def) => {
       const chord = def.bindings.map(formatShortcut).join(' ').toLowerCase();
       return def.label.toLowerCase().includes(needle)
         || def.category.toLowerCase().includes(needle)
         || chord.toLowerCase().includes(needle)
         || def.id.toLowerCase().includes(needle);
     });
-  }, [query]);
+  }, [definitions, query]);
 
   useEffect(() => {
     if (!open) return;
@@ -105,7 +114,7 @@ export function CommandPalette() {
           {filtered.length === 0 ? (
             <p className="px-3 py-6 text-center text-xs text-text-muted">No commands match “{query}”.</p>
           ) : (
-            filtered.map((def: (typeof SHORTCUTS)[number], index: number) => {
+            filtered.map((def, index) => {
               const chord = def.bindings.map(formatShortcut).join('  ·  ');
               const active = index === selected;
               return (
@@ -129,7 +138,7 @@ export function CommandPalette() {
         </div>
 
         <div className="border-t border-white/10 px-3 py-1.5 text-[10px] text-text-muted">
-          ↑↓ to navigate · Enter to run · Esc to close · Ctrl+K to toggle
+          ↑↓ to navigate · Enter to run · Esc to close{toggleChord ? ` · ${toggleChord} to toggle` : ''}
         </div>
       </div>
     </div>

@@ -6,7 +6,12 @@
 import { describe, it, expect } from 'vitest';
 import type { Project } from '../types/project';
 import { exportFcpxml } from './exporter';
-import { parseFcpxml, parseFcpxmlTime } from './importer';
+import {
+  isImportedCompoundClip,
+  parseFcpxml,
+  parseFcpxmlTime,
+} from './importer';
+import { MAX_COMPOUND_DEPTH } from '../editor/compound';
 
 function baseProject(): Project {
   return {
@@ -120,6 +125,120 @@ describe('#154 round trip', () => {
     const parsedGap = parseFcpxml(withGap);
     expect(parsedGap.unsupported).toHaveLength(0);
     expect(parsedGap.clips.every((c) => c.startFrame >= 0)).toBe(true);
+  });
+});
+
+describe('compound FCPXML import safety', () => {
+  function document(resources: string, rootRef: string): string {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      resources,
+      '</resources><library><event name="Compound"><project name="Compound"><spine>',
+      `<ref-clip ref="${rootRef}" name="Carrier" lane="1" offset="1s" start="0s" duration="1s"/>`,
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+  }
+
+  function sequence(ref: string, body: string, duration = '1s'): string {
+    return `<media id="${ref}" name="${ref}"><sequence format="r1" duration="${duration}" tcStart="0s">`
+      + `<spine><gap name="Timeline" offset="0s" start="0s" duration="${duration}">${body}</gap></spine>`
+      + '</sequence></media>';
+  }
+
+  it('pins the flat plan shape when no compound structure is present', () => {
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      '<asset id="2" name="clip.mp4" src="file:///X:/clip.mp4" start="0s" duration="10s" hasVideo="1" format="r1"/>',
+      '</resources><library><event name="Flat"><project name="Flat"><spine>',
+      '<asset-clip ref="2" name="Clip" lane="0" offset="0.5s" start="1s" duration="2s"/>',
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+
+    expect(parseFcpxml(xml)).toEqual({
+      name: 'Flat',
+      fps: 30,
+      width: 1920,
+      height: 1080,
+      assets: [{
+        ref: '2',
+        path: 'X:/clip.mp4',
+        hasVideo: true,
+        hasAudio: false,
+        durationSec: 10,
+      }],
+      clips: [{
+        kind: 'video',
+        lane: 0,
+        startFrame: 15,
+        durationFrames: 60,
+        sourceInFrame: 30,
+        assetPath: 'X:/clip.mp4',
+        label: 'Clip',
+      }],
+      unsupported: [],
+    });
+  });
+
+  it('reports an unresolvable ref and creates no sequence or carrier', () => {
+    const plan = parseFcpxml(document('', 'missing'));
+
+    expect(plan.clips).toEqual([]);
+    expect(plan.sequences).toBeUndefined();
+    expect(plan.unsupported.some((note) => /unknown sequence resource "missing"/.test(note))).toBe(true);
+  });
+
+  it('reports a resource cycle without recursing forever or emitting a partial graph', () => {
+    const resources = sequence(
+      'a',
+      '<ref-clip ref="b" name="A to B" lane="1" offset="0s" start="0s" duration="1s"/>',
+    ) + sequence(
+      'b',
+      '<ref-clip ref="a" name="B to A" lane="1" offset="0s" start="0s" duration="1s"/>',
+    );
+
+    const plan = parseFcpxml(document(resources, 'a'));
+
+    expect(plan.clips).toEqual([]);
+    expect(plan.sequences).toBeUndefined();
+    expect(plan.unsupported.some((note) => /cycle/i.test(note))).toBe(true);
+  });
+
+  it('reports depth overflow without walking beyond the domain cap', () => {
+    const resources = Array.from({ length: MAX_COMPOUND_DEPTH + 1 }, (_, index) => {
+      const child = index < MAX_COMPOUND_DEPTH
+        ? `<ref-clip ref="level-${index + 1}" name="Level ${index + 1}" lane="1" offset="0s" start="0s" duration="1s"/>`
+        : '';
+      return sequence(`level-${index}`, child);
+    }).join('');
+
+    const plan = parseFcpxml(document(resources, 'level-0'));
+
+    expect(plan.clips).toEqual([]);
+    expect(plan.sequences).toBeUndefined();
+    expect(plan.unsupported.some((note) => /maximum nested depth/i.test(note))).toBe(true);
+  });
+
+  it('marks a parsed ref-clip as a compound carrier without changing flat video typing', () => {
+    const resources = '<asset id="2" name="clip.mp4" src="file:///X:/clip.mp4" duration="10s" hasVideo="1"/>'
+      + sequence(
+        'nest1',
+        '<asset-clip ref="2" name="Inner" lane="1" offset="0s" start="0s" duration="1s"/>',
+      );
+    const plan = parseFcpxml(document(resources, 'nest1'));
+    const carrier = plan.clips[0];
+
+    expect(isImportedCompoundClip(carrier!)).toBe(true);
+    expect(plan.sequences).toHaveLength(1);
+    expect(plan.sequences?.[0]?.clips[0]).toMatchObject({
+      kind: 'video',
+      startFrame: 0,
+      durationFrames: 30,
+      sourceInFrame: 0,
+    });
   });
 });
 

@@ -6,6 +6,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+    // Leave CPU headroom for the coordinator and real media subprocesses.
+    maxWorkers: '60%',
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

@@ -13,6 +13,7 @@ import {
   secondsToProjectFrames,
   sourceFrameForSeconds,
   sourceSecondsForTimelineFrame,
+  timelineFrameForSourceSeconds,
 } from './source-time';
 
 const clip = { startFrame: 300, inPoint: 60, outPoint: 960, durationFrames: 900 };
@@ -63,6 +64,44 @@ describe('source seconds for a timeline frame', () => {
 
   it('guards a non-finite frame', () => {
     expect(sourceSecondsForTimelineFrame(clip, Number.NaN, 30)).toBe(0);
+  });
+});
+
+describe('timeline frame for a source offset', () => {
+  it('is the inverse of sourceSecondsForTimelineFrame, speed included', () => {
+    // A clip 10s long on the timeline consumes 10x speed source seconds and
+    // opens its source window at the in point. Every speed must round-trip
+    // back to the source second it came from within half a timeline frame:
+    // silence detection reports source seconds, so this is the direction that
+    // decides which audio gets cut.
+    for (const speed of [0.5, 1, 1.5, 2, 4]) {
+      const sped = { ...clip, speed };
+      const tolerance = (0.5 * speed) / 30 + 1e-9; // half a timeline frame, in source seconds
+      for (let sourceSec = 2; sourceSec <= 2 + 30 * speed; sourceSec += 0.5) {
+        const frame = timelineFrameForSourceSeconds(sped, sourceSec, 30);
+        expect(Math.abs(sourceSecondsForTimelineFrame(sped, frame, 30) - sourceSec))
+          .toBeLessThanOrEqual(tolerance);
+      }
+    }
+  });
+
+  it('maps a 2x clip at half the frames a 1x clip needs', () => {
+    // Source 2.0s is timeline frame 30 at 2x and 60 at normal speed. The 1x
+    // value is the wrong answer for the sped-up clip, not a rounding.
+    const at2x = { startFrame: 0, inPoint: 0, outPoint: 600, durationFrames: 300, speed: 2 };
+    const at1x = { startFrame: 0, inPoint: 0, outPoint: 300, durationFrames: 300 };
+    expect(timelineFrameForSourceSeconds(at2x, 2, 30)).toBe(30);
+    expect(timelineFrameForSourceSeconds(at1x, 2, 30)).toBe(60);
+  });
+
+  it('is the same arithmetic as the forward mapping at speed 1', () => {
+    // The forward test above reads frame 600 as source second 12.
+    expect(timelineFrameForSourceSeconds(clip, 12, 30)).toBe(600);
+  });
+
+  it('lets a source offset before the in point land before the clip', () => {
+    // Not clamped: the caller decides whether an out-of-window span overlaps.
+    expect(timelineFrameForSourceSeconds(clip, 1, 30)).toBe(270);
   });
 });
 

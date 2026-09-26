@@ -14,6 +14,7 @@ import path from 'path';
 import fsSync from 'fs';
 import crypto from 'crypto';
 import type { EditorController } from '../../shared/editor/controller';
+import { NO_SESSION_ERROR, type SessionSender } from '../sessions';
 import { proxyArgs, PROXY_CRF, PROXY_WIDTH_CAP } from '../../shared/media/proxy';
 
 /**
@@ -40,9 +41,19 @@ function proxyOutputPath(sourcePath: string, userDataDir: string): string {
   return path.join(userDataDir, 'proxies', `${key}.mp4`);
 }
 
-export function registerProxyHandlers(editorController: EditorController): void {
-  ipcMain.handle('media:generate-proxy', async (_event, assetId: unknown) => {
+/**
+ * Proxy IPC. `getController` resolves the requesting session's controller
+ * (#137): reads (project lookup) and the finishing `setProxyState` edit both
+ * belong to the window that started the job. The content-keyed output files
+ * and the shared proxy-mode preference stay process-wide by design.
+ */
+export function registerProxyHandlers(
+  getController: (sender: SessionSender) => EditorController | null,
+): void {
+  ipcMain.handle('media:generate-proxy', async (event, assetId: unknown) => {
     if (typeof assetId !== 'string') return { success: false, error: 'Invalid asset id' };
+    const editorController = getController(event.sender);
+    if (!editorController) return { success: false, error: NO_SESSION_ERROR };
     const project = editorController.getProject();
     const asset = project.media.find((a) => a.id === assetId);
     if (!asset) return { success: false, error: `No media asset "${assetId}".` };
@@ -92,8 +103,10 @@ export function registerProxyHandlers(editorController: EditorController): void 
 
   ipcMain.handle(
     'media:remove-proxy',
-    async (_event, assetId: unknown) => {
+    async (event, assetId: unknown) => {
       if (typeof assetId !== 'string') return { success: false };
+      const editorController = getController(event.sender);
+      if (!editorController) return { success: false, error: NO_SESSION_ERROR };
       const project = editorController.getProject();
       const asset = project.media.find((a) => a.id === assetId);
       if (!asset?.proxyPath) return { success: true };

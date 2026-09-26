@@ -19,6 +19,7 @@
     "build:main": "vite build",
     "build:preload": "vite build",
     "build:rust": "cd native && npm run build",
+    "native:check": "node scripts/native-addon.mjs --check",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -31,11 +32,13 @@
     "clean": "rimraf dist out",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "dist:linux": "npm run build:rust && tsc && vite build && electron-builder --linux"
+    "dist:linux": "npm run build:rust && tsc && vite build && electron-builder --linux",
+    "dist:win": "npm run build:rust && tsc && vite build && electron-builder --win"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "electron-log": "^5.4.4",
     "electron-store": "^10.0.0",
     "electron-updater": "^6.8.9",
@@ -71,9 +74,6 @@
     "vitest": "^3.2.3",
     "wait-on": "^8.0.3"
   },
-  "overrides": {
-    "@hono/node-server": "^2.0.11"
-  },
   "build": {
     "appId": "io.palmier.pro.windows",
     "productName": "Palmier Pro",
@@ -85,8 +85,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
         },
         {
@@ -99,14 +98,14 @@
     },
     "files": [
       "dist/**/*",
-      "native/*.node"
+      "native/palmier-compositor.node"
     ],
     "extraResources": [
       {
         "from": "native/",
         "to": "native/",
         "filter": [
-          "*.node"
+          "palmier-compositor.node"
         ]
       }
     ],

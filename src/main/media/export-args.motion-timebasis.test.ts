@@ -22,10 +22,21 @@
  * frames to match, so the position track would land range.start frames
  * early.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { promises as fs } from 'fs';
+import path from 'path';
+import os from 'os';
 import { createEmptyProject } from '../../shared/types/project';
 import type { Clip, Project } from '../../shared/types/project';
 import { buildFfmpegArgs } from './export-args';
+
+const execFileAsync = promisify(execFile);
+
+// Real encodes are subprocess-bound; keep their timeout explicit so a loaded
+// parallel run does not inherit the 5 s default used by fast unit tests.
+const REAL_PROCESS_TIMEOUT_MS = 30_000;
 
 function projectWithClip(clip: Partial<Clip>): Project {
   const project = createEmptyProject();
@@ -47,7 +58,7 @@ function build(project: Project, range?: { start: number; end: number }): string
   return buildFfmpegArgs(
     project,
     { outputPath: 'out.mp4', format: 'mp4', quality: 'normal', ...(range ? { range } : {}) },
-    1920, 1080, 30, range ? range.end - range.start : 300, null,
+    1920, 1080, 30, range ? range.end - range.start : 300,
   );
 }
 
@@ -118,5 +129,68 @@ describe('position motion keyframe export time basis (ranged export)', () => {
 
     const graph = build(project).find((arg) => arg.includes('overlay='))!;
     expect(graph).not.toMatch(/\(t\)\+\(0\.000000\)/);
+  });
+
+  it('quotes a motion overlay position so commas parse as expression syntax', () => {
+    const project = projectWithClip({
+      startFrame: 0,
+      durationFrames: 60,
+      motionX: [{ frame: 0, value: 100 }, { frame: 30, value: 400 }],
+    });
+
+    const graph = build(project).find((arg) => arg.includes('overlay='))!;
+    // Unquoted, the if/lte commas read as filter-option separators and the
+    // graph fails to parse; quoted, they stay expression syntax.
+    expect(graph).toContain("overlay=x='if(lte(t,1.000000)");
+  });
+});
+
+describe('motion overlay end to end (real ffmpeg)', { timeout: REAL_PROCESS_TIMEOUT_MS }, () => {
+  let tmpDir = '';
+  let srcPath = '';
+
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'palmier-motion-export-'));
+    srcPath = path.join(tmpDir, 'src.mp4');
+    await execFileAsync('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', 'testsrc=duration=3:size=320x240:rate=30',
+      '-pix_fmt', 'yuv420p', srcPath,
+    ]);
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function motionProject(): Project {
+    const project = createEmptyProject();
+    project.settings.width = 320;
+    project.settings.height = 240;
+    project.media = [{
+      id: 'v', path: srcPath, filename: 'src.mp4', type: 'video',
+      duration: 90, width: 320, height: 240, fileSize: 1,
+      addedAt: new Date().toISOString(),
+    }];
+    const clip: Clip = {
+      id: 'clip-0', assetId: 'v', type: 'video', trackId: 'v1',
+      startFrame: 0, durationFrames: 60, inPoint: 0, outPoint: 60,
+      x: 0, y: 0, width: 320, height: 240, rotation: 0, scaleX: 1, scaleY: 1,
+      opacity: 1, anchorX: 0, anchorY: 0, volume: 1, muted: false,
+      motionX: [{ frame: 0, value: 0 }, { frame: 30, value: 80 }],
+    };
+    project.timeline.clips = [clip];
+    return project;
+  }
+
+  it('encodes a video overlay driven by a position keyframe track', async () => {
+    const outputPath = path.join(tmpDir, 'motion.mp4');
+    const args = buildFfmpegArgs(
+      motionProject(),
+      { outputPath, format: 'mp4', quality: 'draft' },
+      320, 240, 30, 60,
+    );
+    await execFileAsync('ffmpeg', args);
+    const stat = await fs.stat(outputPath);
+    expect(stat.size).toBeGreaterThan(0);
   });
 });

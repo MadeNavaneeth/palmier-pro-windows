@@ -13,6 +13,7 @@ import { clampPan } from './pan';
 import { resolveClipVolumeLinear } from './volume-keyframes';
 import { eqOf, type ClipEq } from './eq';
 import { compressorOf, type CompressorConfig } from './compressor';
+import { noiseReductionOf } from './denoise';
 
 export interface AudioPlanInput {
   clips: readonly Clip[];
@@ -43,6 +44,8 @@ export interface AudioPlaybackEntry {
   eq: ClipEq | null;
   /** Compressor/limiter (upstream #158); null when ratio 1 (off). */
   compressor: CompressorConfig | null;
+  /** Noise reduction percent (upstream #165); null when off. */
+  noiseReduction: number | null;
 }
 
 /**
@@ -87,6 +90,7 @@ export function computeAudioPlan(input: AudioPlanInput): AudioPlaybackEntry[] {
       pan: clampPan(clip.pan ?? 0),
       eq: eqOf(clip),
       compressor: compressorOf(clip),
+      noiseReduction: noiseReductionOf(clip),
     });
   }
   return entries;

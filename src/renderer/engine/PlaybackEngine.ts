@@ -4,7 +4,7 @@
  * Responsibilities:
  * - Advances the playhead at the project's frame rate
  * - Requests frame composition from the main process for each frame
- * - Handles J/K/L playback rates (reverse, pause, forward, 2x, 4x)
+ * - Handles J/K/L playback rates (reverse, pause, forward, 2x, 4x, 8x)
  * - Prefetches frames ahead of the playhead
  * - Syncs audio playback position (Phase 3.5)
  *
@@ -15,6 +15,7 @@
 import { useTimelineStore } from '../store/timeline';
 import { normalizePlaybackRate } from '../../shared/editor/playback-rate';
 import { visibleTitleRasters } from './title-raster-cache';
+import { visibleShapeRasters } from './shape-raster-cache';
 
 export type PlaybackState = 'stopped' | 'playing' | 'seeking';
 
@@ -144,28 +145,51 @@ export class PlaybackEngine {
     // Advance by whole frames
     let advanced = false;
     let advancedCount = 0;
+    let stopAfterTick = false;
     while (this.frameAccumulator >= frameDuration) {
       this.frameAccumulator -= frameDuration;
       const current = store.getPlayhead();
       const direction = rate >= 0 ? 1 : -1;
       const next = current + direction;
+      const hasActiveLoop = this.loopEnabled && this.loopEnd > this.loopStart;
 
-      // Bounds check
+      // Check the marked range before the project bounds.  A reverse loop with
+      // an in point at zero must wrap here, rather than being mistaken for
+      // playback that has reached the start of the project.
+      if (hasActiveLoop) {
+        if (direction > 0 && next >= this.loopEnd) {
+          store.setPlayhead(this.loopStart);
+          advanced = true;
+          advancedCount += 1;
+          continue;
+        }
+        if (direction < 0 && next <= this.loopStart) {
+          // The out point is exclusive in forward playback, so the last frame
+          // in the reverse direction is one before it.
+          store.setPlayhead(this.loopEnd - 1);
+          advanced = true;
+          advancedCount += 1;
+          continue;
+        }
+      }
+
+      // Bounds check. With loop mode off, a marked range is ignored and normal
+      // project playback stops at its end (legacy preview semantics).
       if (next < 0) {
         store.setPlayhead(0);
-        this.stop();
-        useTimelineStore.setState({ isPlaying: false });
-        return;
+        advanced = true;
+        advancedCount += 1;
+        stopAfterTick = true;
+        break;
       }
 
       const duration = store.getProjectDuration();
       if (next >= duration) {
-        // Loop (upstream #428): wrap to loop start if active, else loop to 0
-        const loopTarget = this.loopEnabled && this.loopEnd > this.loopStart ? this.loopStart : 0;
-        store.setPlayhead(loopTarget);
+        store.setPlayhead(duration);
         advanced = true;
         advancedCount += 1;
-        continue;
+        stopAfterTick = true;
+        break;
       }
 
       store.setPlayhead(next);
@@ -186,6 +210,14 @@ export class PlaybackEngine {
       for (const listener of this.tickListeners) listener(store.getPlayhead());
     }
 
+    if (stopAfterTick) {
+      // Notify the final boundary frame before stopping so the preview does
+      // not retain a stale composite.
+      this.stop();
+      useTimelineStore.setState({ isPlaying: false });
+      return;
+    }
+
     this.rafId = requestAnimationFrame(this.tick);
   };
 
@@ -200,11 +232,15 @@ export class PlaybackEngine {
     const store = useTimelineStore.getState();
     const startedAt = this.state === 'playing' ? performance.now() : null;
     try {
-      // Title clips have no decodable media asset, so only the renderer's
-      // canvas/font engine can produce their pixels; rasterize whichever
-      // are visible at this frame and hand the buffers to the main-process
-      // compositor alongside the frame index (#title-preview parity).
-      const titles = visibleTitleRasters(store.project, frame);
+      // Title and shape clips have no decodable media asset, so only the
+      // renderer's canvas engine can produce their pixels; rasterize
+      // whichever are visible at this frame and hand the buffers to the
+      // main-process compositor alongside the frame index (#title-preview
+      // parity; shapes ride the same payload keyed by clip id).
+      const titles = [
+        ...visibleTitleRasters(store.project, frame),
+        ...visibleShapeRasters(store.project, frame),
+      ];
       // IPC call to main process which runs frame decode + Rust compositor
       await window.palmier.preview.compositeFrame(frame, titles);
       this.consecutiveCompositeFailures = 0;

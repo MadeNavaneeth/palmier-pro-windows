@@ -50,7 +50,8 @@ See `package.json` and `native/Cargo.toml` for the full dependency list. Key thi
 | wgpu | MIT/Apache-2.0 | GPU abstraction (Rust) |
 | napi-rs | MIT | Node native addon bridge |
 | FFmpeg | LGPL-2.1+ / GPL-2.0+ | Media decode/encode (external binary) |
-| @modelcontextprotocol/sdk | MIT | MCP server |
+| @modelcontextprotocol/server | MIT | MCP server (2026-07-28 protocol) |
+| @modelcontextprotocol/node | MIT | MCP HTTP transport |
 | @anthropic-ai/sdk | MIT | AI agent (BYOK) |
 | Zustand | MIT | State management |
 | Tailwind CSS | MIT | Styling |

@@ -496,6 +496,7 @@ describe('cancelling a turn (#58)', () => {
 
     expect(log.cancelled).toBe('');
     expect(agent.isBusy()).toBe(false);
+    expect(agent.getSessionSnapshot()).toEqual({ history: [], plan: null });
   });
 });
 

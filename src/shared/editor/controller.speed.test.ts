@@ -61,6 +61,19 @@ describe('EditorController.setClipSpeed', () => {
     return ctrl;
   }
 
+  function controllerWithLinkedVideo() {
+    const ctrl = new EditorController();
+    ctrl.addMedia({
+      id: 'asset-av', path: '/test/av.mp4', filename: 'av.mp4', type: 'video',
+      duration: 900, audioCodec: 'aac', fileSize: 1, addedAt: new Date().toISOString(),
+    });
+    const videoId = ctrl.addClip({
+      assetId: 'asset-av', trackId: 'v1', startFrame: 100, durationFrames: 100,
+    });
+    const audioId = ctrl.getClips().find((clip) => clip.type === 'audio')!.id;
+    return { ctrl, videoId, audioId };
+  }
+
   it('scales outPoint while keeping timeline duration and position', () => {
     const ctrl = controllerWithVideo();
     const id = ctrl.addClip({
@@ -105,5 +118,66 @@ describe('EditorController.setClipSpeed', () => {
     const restored = ctrl.getClips()[0];
     expect(restored.outPoint).toBe(before.outPoint);
     expect(restored.speed ?? 1).toBe(1);
+  });
+
+  it('propagates a linked video speed change to embedded audio as one undo step', () => {
+    const { ctrl, videoId, audioId } = controllerWithLinkedVideo();
+    const beforeVideo = ctrl.getClips().find((clip) => clip.id === videoId)!;
+    const beforeAudio = ctrl.getClips().find((clip) => clip.id === audioId)!;
+    expect(beforeVideo.linkGroupId).toBe(beforeAudio.linkGroupId);
+    expect(ctrl.canUndo()).toBe(true); // the placement itself
+
+    expect(ctrl.setClipSpeed(videoId, 2)).toBe(true);
+    const video = ctrl.getClips().find((clip) => clip.id === videoId)!;
+    const audio = ctrl.getClips().find((clip) => clip.id === audioId)!;
+    expect(video.speed).toBe(2);
+    expect(audio.speed).toBe(2);
+    expect(video.outPoint - video.inPoint).toBe(video.durationFrames * 2);
+    expect(audio.outPoint - audio.inPoint).toBe(audio.durationFrames * 2);
+
+    expect(ctrl.undo()).toBe(true);
+    expect(ctrl.getClips().find((clip) => clip.id === videoId)!.outPoint).toBe(beforeVideo.outPoint);
+    expect(ctrl.getClips().find((clip) => clip.id === audioId)!.outPoint).toBe(beforeAudio.outPoint);
+    expect(ctrl.getClips().find((clip) => clip.id === videoId)!.speed).toBeUndefined();
+    expect(ctrl.getClips().find((clip) => clip.id === audioId)!.speed).toBeUndefined();
+    expect(ctrl.canUndo()).toBe(true); // only the original placement remains
+    expect(ctrl.undo()).toBe(true);
+    expect(ctrl.canUndo()).toBe(false); // one speed command, not one per partner
+  });
+
+  it('leaves an unlinked clip as the only speed target', () => {
+    const ctrl = new EditorController();
+    ctrl.addMedia({
+      id: 'asset-silent', path: '/test/silent.mp4', filename: 'silent.mp4', type: 'video',
+      duration: 5000, fileSize: 1, addedAt: new Date().toISOString(),
+    });
+    const videoId = ctrl.addClip({ assetId: 'asset-silent', trackId: 'v1', startFrame: 0, durationFrames: 100 });
+
+    expect(ctrl.setClipSpeed(videoId, 2)).toBe(true);
+    expect(ctrl.getClips()).toHaveLength(1);
+    expect(ctrl.getClips()[0]!.speed).toBe(2);
+  });
+
+  it('refuses an audio-only target without touching its linked group', () => {
+    const { ctrl, videoId, audioId } = controllerWithLinkedVideo();
+    const before = structuredClone(ctrl.getProject());
+    const historyBefore = ctrl.getLastCommandDescription();
+
+    expect(ctrl.setClipSpeed(audioId, 2)).toBe(false);
+    expect(ctrl.getProject()).toEqual(before);
+    expect(ctrl.getLastCommandDescription()).toBe(historyBefore);
+    expect(ctrl.getClips().find((clip) => clip.id === videoId)!.speed).toBeUndefined();
+  });
+
+  it('refuses the whole linked speed edit when a partner is locked', () => {
+    const { ctrl, videoId, audioId } = controllerWithLinkedVideo();
+    const audioTrackId = ctrl.getClips().find((clip) => clip.id === audioId)!.trackId;
+    expect(ctrl.setTrackLocked(audioTrackId, true)).toBe(true);
+    const before = structuredClone(ctrl.getProject());
+    const historyBefore = ctrl.getLastCommandDescription();
+
+    expect(ctrl.setClipSpeed(videoId, 2)).toBe(false);
+    expect(ctrl.getProject()).toEqual(before);
+    expect(ctrl.getLastCommandDescription()).toBe(historyBefore);
   });
 });

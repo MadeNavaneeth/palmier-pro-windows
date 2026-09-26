@@ -1,10 +1,13 @@
 /**
- * LLM provider configuration (upstream issues #17 and #140).
+ * LLM provider configuration (upstream issues #17 and #140, plus #142).
  *
  * Two requests, one shape: #17 asked for a configurable API base URL, #140 for
  * OpenAI-compatible providers. Both are satisfied by an `openai-compatible`
  * provider kind whose base URL the user supplies, which also covers local
  * runtimes such as Ollama and LM Studio without a per-vendor code path.
+ * Issue #142 adds a `codex-cli` kind: a CLI-subprocess transport that runs the
+ * user's own Codex login instead of an HTTP endpoint, so it carries a binary
+ * path rather than a base URL.
  *
  * Validation lives here rather than in the settings form because the base URL
  * arrives from three directions — the form, the persisted config store, and the
@@ -12,7 +15,7 @@
  * that quietly sends timeline content somewhere unintended.
  */
 
-export type ProviderKind = 'anthropic' | 'openai-compatible';
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'codex-cli';
 
 export interface ProviderConfig {
   kind: ProviderKind;
@@ -21,10 +24,15 @@ export interface ProviderConfig {
    *
    * Optional for Anthropic, where the SDK's default is used unless the user
    * points at a gateway. Required for `openai-compatible`, which has no
-   * meaningful default.
+   * meaningful default. Unused by `codex-cli`, which shells out to the CLI.
    */
   baseUrl?: string;
   model: string;
+  /**
+   * Explicit `codex` binary override (#142). Only meaningful for `codex-cli`;
+   * validated as an absolute file path here, checked for existence in main.
+   */
+  binaryPath?: string;
 }
 
 /** A ready-made endpoint, so the common cases need no URL typing. */
@@ -144,6 +152,14 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     requiresApiKey: true,
     hint: 'Any OpenAI-compatible /chat/completions endpoint.',
   },
+  {
+    id: 'codex-cli',
+    label: 'Codex CLI',
+    kind: 'codex-cli',
+    defaultModel: '',
+    requiresApiKey: false,
+    hint: 'Runs the Codex CLI installed on this machine under your own Codex sign-in — no API key is stored here. Needs the binary on PATH or an explicit path below.',
+  },
 ] as const;
 
 export function presetById(id: string): ProviderPreset | undefined {
@@ -241,19 +257,60 @@ export type ConfigValidation =
   | { ok: false; reason: string };
 
 /**
+ * Shape check for a Codex binary override (#142).
+ *
+ * Pure and platform-aware without node imports (this module also runs in the
+ * renderer): an absolute Windows (drive or UNC) or POSIX path with no NUL
+ * byte. Existence is checked in the main process, where fs is available.
+ */
+export type BinaryPathShapeValidation =
+  | { ok: true; path: string }
+  | { ok: false; reason: string };
+
+export function validateBinaryPathShape(raw: unknown): BinaryPathShapeValidation {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return { ok: false, reason: 'Enter the full path to the codex binary.' };
+  }
+  const trimmed = raw.trim();
+  if (trimmed.includes('\0')) {
+    return { ok: false, reason: 'The binary path contains an invalid character.' };
+  }
+  const absolute = /^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\') || trimmed.startsWith('/');
+  if (!absolute) {
+    return { ok: false, reason: 'The binary path must be absolute, e.g. C:\\Tools\\codex.exe.' };
+  }
+  return { ok: true, path: trimmed };
+}
+
+/**
  * Validate a whole provider configuration.
  *
  * `openai-compatible` requires a base URL because there is no sensible default;
- * Anthropic treats it as an optional override for a gateway.
+ * Anthropic treats it as an optional override for a gateway. `codex-cli`
+ * takes neither: its model is optional (the CLI default applies when blank)
+ * and its only setting is the binary override.
  */
 export function validateProviderConfig(input: {
   kind?: unknown;
   baseUrl?: unknown;
   model?: unknown;
+  binaryPath?: unknown;
 }): ConfigValidation {
   const kind = input.kind;
-  if (kind !== 'anthropic' && kind !== 'openai-compatible') {
+  if (kind !== 'anthropic' && kind !== 'openai-compatible' && kind !== 'codex-cli') {
     return { ok: false, reason: 'Unknown provider type.' };
+  }
+
+  if (kind === 'codex-cli') {
+    const model = typeof input.model === 'string' ? input.model.trim() : '';
+    if (model.length > 200) {
+      return { ok: false, reason: 'Model name is too long.' };
+    }
+    const hasBinaryPath = typeof input.binaryPath === 'string' && input.binaryPath.trim().length > 0;
+    if (!hasBinaryPath) return { ok: true, config: { kind, model } };
+    const binary = validateBinaryPathShape(input.binaryPath);
+    if (!binary.ok) return { ok: false, reason: binary.reason };
+    return { ok: true, config: { kind, model, binaryPath: binary.path } };
   }
 
   const model = typeof input.model === 'string' ? input.model.trim() : '';
@@ -283,9 +340,11 @@ export function validateProviderConfig(input: {
  *
  * Drives the settings warning: a custom endpoint receives the project's timeline
  * structure along with the prompt, and the user should be told which category
- * their endpoint falls into before they use it.
+ * their endpoint falls into before they use it. The Codex CLI always answers
+ * through the user's own Codex account, so its prompts leave the machine.
  */
 export function endpointLeavesMachine(config: ProviderConfig): boolean {
+  if (config.kind === 'codex-cli') return true;
   if (!config.baseUrl) return true; // SDK default is a hosted API.
   const url = validateBaseUrl(config.baseUrl);
   return url.ok ? !url.isLoopback : true;

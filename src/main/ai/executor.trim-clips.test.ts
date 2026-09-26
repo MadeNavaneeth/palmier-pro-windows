@@ -107,6 +107,66 @@ describe('trim_clips tool', () => {
     expect(bAfter.startFrame).toBe(30);
   });
 
+  it('keeps the multi-edit receipt shape unchanged while grouping into one step', async () => {
+    const { ctrl, executor, a, b } = await executorOnTwoClips();
+
+    const result = await executor.execute('trim_clips', {
+      edits: [
+        { clipId: a, endFrame: 20 },
+        { clipId: b, startFrame: 40 },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+    expect(Object.keys(result.data as object).sort()).toEqual([
+      'notes',
+      'removedMarkerIds',
+      'shiftedMarkers',
+      'touched',
+    ]);
+    const data = result.data as {
+      touched: string[];
+      notes: string[];
+      shiftedMarkers: unknown[];
+      removedMarkerIds: unknown[];
+    };
+    expect(data.touched).toEqual([a, b]);
+    expect(data.notes).toEqual([]);
+    expect(data.shiftedMarkers).toEqual([]);
+    expect(data.removedMarkerIds).toEqual([]);
+
+    // Two commands, one transaction label — the composite the batch squash
+    // used to build.
+    expect(ctrl.getLastCommandDescription()).toBe('composite');
+  });
+
+  it('keeps a single-edit trim on its own undo entry and label', async () => {
+    const { ctrl, executor, a } = await executorOnTwoClips();
+
+    await executor.execute('trim_clips', { edits: [{ clipId: a, endFrame: 20 }] });
+
+    // A transaction must not relabel a single domain operation.
+    expect(ctrl.getLastCommandDescription()).toBe('replaceClips');
+    expect(ctrl.getClips().find((c) => c.id === a)!.durationFrames).toBe(20);
+  });
+
+  it('reports a multi-edit that only lands one command as that command alone', async () => {
+    const { ctrl, executor, a, b } = await executorOnTwoClips(35);
+    // The asset has only 5 frames of headroom past b's out-point, so a's
+    // extend to 45 is a real edit while b's already-satisfied edge is not.
+    const result = await executor.execute('trim_clips', {
+      edits: [
+        { clipId: a, endFrame: 20 },
+        { clipId: b, startFrame: 30 },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+    expect(ctrl.getLastCommandDescription()).toBe('replaceClips');
+    await executor.execute('undo', {});
+    expect(ctrl.getClips().find((c) => c.id === a)!.durationFrames).toBe(30);
+  });
+
   it('refuses the whole call when one edit targets an unknown clip', async () => {
     const { ctrl, executor, a } = await executorOnTwoClips();
     const before = ctrl.getClips();

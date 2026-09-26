@@ -9,10 +9,8 @@
  * Pipeline:
  *   1. detectSilentRanges(envelope) -> silent spans in source SECONDS
  *   2. (caller converts seconds -> source frames using project fps)
- *   3. planSilenceRemoval(clip, silentFrameRanges) -> kept segments + ripple delta
+ *   3. (caller cuts the spans through the editor's ripple engine)
  */
-
-import type { Frame } from '../types/project';
 
 export interface SilentRange {
   /** Start of the silent span, in source seconds. */
@@ -156,78 +154,4 @@ export function detectSilentRanges(
     }
   }
   return result;
-}
-
-// ─── Removal planning (frame domain) ─────────────────────────────────────────
-
-export interface FrameRange {
-  start: Frame; // inclusive, source frame
-  end: Frame; // exclusive, source frame
-}
-
-export interface KeptSegment {
-  /** Source in-point (frame) of a segment to keep. */
-  inPoint: Frame;
-  /** Source out-point (frame, exclusive) of a segment to keep. */
-  outPoint: Frame;
-}
-
-export interface SilenceRemovalPlan {
-  /** Non-silent source segments, in order. */
-  kept: KeptSegment[];
-  /** Total source frames removed (the ripple-close amount). */
-  removedFrames: Frame;
-}
-
-/**
- * Compute the kept (non-silent) segments of a clip's source range after
- * removing the given silent frame ranges, plus the total removed length.
- *
- * @param clipInPoint   The clip's source in-point (frame).
- * @param clipOutPoint  The clip's source out-point (frame, exclusive).
- * @param silentRanges  Silent spans in SOURCE frames (any order, may overlap
- *                      or exceed the clip bounds — they are clamped/merged).
- */
-export function planSilenceRemoval(
-  clipInPoint: Frame,
-  clipOutPoint: Frame,
-  silentRanges: FrameRange[],
-): SilenceRemovalPlan {
-  if (clipOutPoint <= clipInPoint) {
-    return { kept: [], removedFrames: 0 };
-  }
-
-  // Clamp ranges to the clip and drop empties.
-  const clamped = silentRanges
-    .map((r) => ({ start: Math.max(clipInPoint, Math.min(r.start, r.end)), end: Math.min(clipOutPoint, Math.max(r.start, r.end)) }))
-    .filter((r) => r.end > r.start)
-    .sort((a, b) => a.start - b.start);
-
-  // Merge overlapping/adjacent silent ranges.
-  const merged: FrameRange[] = [];
-  for (const r of clamped) {
-    const last = merged[merged.length - 1];
-    if (last && r.start <= last.end) {
-      last.end = Math.max(last.end, r.end);
-    } else {
-      merged.push({ ...r });
-    }
-  }
-
-  // Kept segments = complement of merged silent ranges within the clip.
-  const kept: KeptSegment[] = [];
-  let cursor = clipInPoint;
-  let removed = 0;
-  for (const r of merged) {
-    if (r.start > cursor) {
-      kept.push({ inPoint: cursor, outPoint: r.start });
-    }
-    removed += r.end - r.start;
-    cursor = r.end;
-  }
-  if (cursor < clipOutPoint) {
-    kept.push({ inPoint: cursor, outPoint: clipOutPoint });
-  }
-
-  return { kept, removedFrames: removed };
 }

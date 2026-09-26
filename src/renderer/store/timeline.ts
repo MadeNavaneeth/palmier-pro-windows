@@ -7,7 +7,8 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
 import { EditorController } from '../../shared/editor/controller';
-import type { Clip, Track, Frame, Project, MediaAsset } from '../../shared/types/project';
+import type { Clip, Track, Frame, Project, MediaAsset, Timeline } from '../../shared/types/project';
+import type { TimelineBreadcrumb } from '../../shared/editor/compound';
 import type { BlendMode } from '../../shared/types/blend-mode';
 import type { ClipTransition } from '../../shared/editor/transition';
 import type { MediaProbeResult } from '../../main/ipc/media';
@@ -15,7 +16,9 @@ import { normalizePlaybackRate } from '../../shared/editor/playback-rate';
 import { normalizeMarkerSettings } from '../../shared/editor/marker-settings';
 import type { MarkerStatus } from '../../shared/editor/markers';
 import type { GridLayoutPreset } from '../../shared/editor/grid-layout';
+import type { ShapeKind } from '../../shared/editor/shape';
 import type { SilenceConfig } from '../../shared/audio/silence-detector';
+import { mapSilenceRangesToTimeline, type OmittedSilenceRange } from '../../shared/editor/silence-scoping';
 import { nextEditPoint, previousEditPoint, timelineContentEnd } from '../../shared/editor/edit-points';
 import { createEmptyProject } from '../../shared/types/project';
 
@@ -96,10 +99,32 @@ function mediaAssetsFromProbeResults(
 function navigationTrackIds(state: TimelineState): Set<string> | undefined {
   if (state.selectedClipIds.size === 0) return undefined;
   const trackIds = new Set<string>();
-  for (const clip of state.project.timeline.clips) {
+  for (const clip of scopeTimelineOf(state.project, state.activeTimelineId).clips) {
     if (state.selectedClipIds.has(clip.id)) trackIds.add(clip.trackId);
   }
   return trackIds.size > 0 ? trackIds : undefined;
+}
+
+/** Snapshot view of the open scope (main timeline at the root). */
+export function scopeTimelineOf(project: Project, activeTimelineId: string | null): Timeline {
+  if (activeTimelineId === null) return project.timeline;
+  return project.timelines?.[activeTimelineId] ?? project.timeline;
+}
+
+/**
+ * What one silence removal actually did, in numbers the Inspector can state.
+ *
+ * `removed` counts detected spans that became a cut, not spans the detector
+ * asked for: the detector reads the whole asset while a clip shows a trimmed
+ * part of it, so a span with no overlap in the clip is omitted rather than
+ * clamped (see `mapSilenceRangesToTimeline`). `omitted` reports those spans by
+ * reason so "no silence found" is never claimed over silence that was found.
+ */
+export interface SilenceRemovalOutcome {
+  removed: number;
+  error?: string;
+  /** Detected spans that produced no cut, keyed by the mapper's reason. */
+  omitted?: Record<OmittedSilenceRange['reason'], number>;
 }
 
 export interface TimelineState {
@@ -188,6 +213,8 @@ export interface TimelineState {
 
   /** Add a 3s title clip at the playhead on the first video track (R3). */
   addTitleAtPlayhead: (text?: string) => string | '';
+  /** Add a 3s shape clip at the playhead on the first video track; '' when refused. */
+  addShapeAtPlayhead: (shapeKind: ShapeKind) => string | '';
   /** Update a title clip's text; false when refused (invalid/unknown). */
   setTitleText: (clipId: string, text: string) => boolean;
   /** Constant playback speed on a visual clip (R4 groundwork). */
@@ -205,6 +232,27 @@ export interface TimelineState {
 
   /** Duplicate the selected clips immediately after themselves (R1). */
   duplicateSelected: () => string[];
+
+  /** Group the selected clips into a nested sequence; null when refused. */
+  nestSelected: () => string | null;
+  /** Restore one compound clip's nested content; empty when refused. */
+  flattenCompound: (clipId: string) => string[];
+
+  // Editing scope (#155 slice 2: in-place nested editing)
+  /** Open-scope leaf id, or null on the main timeline (mirrored from the controller). */
+  activeTimelineId: string | null;
+  /** Breadcrumb chain from the root to the open scope (mirrored from the controller). */
+  timelinePath: TimelineBreadcrumb[];
+  /** Timeline the lanes show: the open scope, or the main timeline at root. */
+  getScopeTimeline: () => Timeline;
+  /** Open a compound clip's nested timeline; false when refused. Clears selection. */
+  openCompoundClip: (clipId: string) => boolean;
+  /** Open a nested timeline by id; false when refused. Clears selection. */
+  openScope: (timelineId: string) => boolean;
+  /** Navigate one level up; false at the root. Clears selection. */
+  navigateScopeUp: () => boolean;
+  /** Jump to a breadcrumb scope (ancestor or root); false when refused. Clears selection. */
+  navigateScopeTo: (scopeId: string | null) => boolean;
 
   // Marquee (R1 selection model)
   /** Additive base captured when a rubber band starts; null when idle. */
@@ -284,18 +332,23 @@ export interface TimelineState {
   removeSilenceForClip: (
     clipId: string,
     overrides?: Partial<SilenceConfig>,
-  ) => Promise<{ removed: number; error?: string }>;
+  ) => Promise<SilenceRemovalOutcome>;
   getSelectedClip: () => Clip | null;
 
   // Playback
-  setPlayhead: (frame: Frame) => void;
+  /**
+   * Move the playhead. `scopeId` selects the timeline explicitly — the
+   * preview transport passes root (`null`) because delivery lives in root
+   * frame space; omitted means the ambient open scope (lane interactions).
+   */
+  setPlayhead: (frame: Frame, scopeId?: string | null) => void;
   togglePlayback: () => void;
   setPlaybackRate: (rate: number) => void;
   toggleLoop: () => void;
   compactTake: (sourceClipId: string) => boolean;
   /** Apply a grid layout to the given visual clips (upstream PR #410). */
   applyLayout: (clipIds: string[], preset: GridLayoutPreset) => number;
-  stepFrame: (delta: number) => void;
+  stepFrame: (delta: number, scopeId?: string | null) => void;
   /** Jump the playhead to the start of the timeline. */
   goToStart: () => void;
   /** Jump the playhead to the end of the last clip, not into trailing padding. */
@@ -351,6 +404,15 @@ export interface TimelineState {
   syncFromController: () => void;
 }
 
+/** Omitted spans grouped by reason, so the notice can name the reason. */
+function countOmissions(
+  omitted: readonly OmittedSilenceRange[],
+): Record<OmittedSilenceRange['reason'], number> {
+  const counts = { 'outside-clip': 0, 'invalid-range': 0 } as Record<OmittedSilenceRange['reason'], number>;
+  for (const span of omitted) counts[span.reason] += 1;
+  return counts;
+}
+
 // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Store Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 export const useTimelineStore = create<TimelineState>((set, get) => {
@@ -358,12 +420,18 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
   // Subscribe to controller changes
   controller.subscribe((project) => {
-    set({ project });
+    set({
+      project,
+      activeTimelineId: controller.getActiveTimelineId(),
+      timelinePath: controller.getTimelineBreadcrumbs(),
+    });
   });
 
   return {
     controller,
     project: controller.getProject(),
+    activeTimelineId: controller.getActiveTimelineId(),
+    timelinePath: controller.getTimelineBreadcrumbs(),
 
     selectedClipIds: new Set(),
     hoveredClipId: null,
@@ -396,9 +464,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     snapThresholdFrames: 5,
 
     // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Computed Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-    getClips: () => get().project.timeline.clips,
-    getTracks: () => get().project.timeline.tracks,
-    getPlayhead: () => get().project.timeline.playheadFrame,
+    getClips: () => get().controller.getClips(),
+    getTracks: () => get().controller.getTracks(),
+    getPlayhead: () => get().controller.getPlayhead(),
+    getScopeTimeline: () => scopeTimelineOf(get().project, get().activeTimelineId),
     getProjectFps: () => get().project.settings.fps,
     getProjectHeight: () => get().project.settings.height,
     getProjectDuration: () => {
@@ -625,6 +694,20 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     return clipId;
   },
 
+  addShapeAtPlayhead: (shapeKind) => {
+    const { controller } = get();
+    const videoTrack = controller.getTracks().find((t) => t.type === 'video');
+    if (!videoTrack) return '';
+    const clipId = controller.addShapeClip({
+      trackId: videoTrack.id,
+      startFrame: controller.getPlayhead(),
+      durationFrames: Math.round(controller.getProject().settings.fps * 3),
+      shapeKind,
+    });
+    if (clipId) set({ selectedClipIds: new Set([clipId]), selectedGap: null });
+    return clipId;
+  },
+
   setTitleText: (clipId, text) => {
     try {
       return get().controller.setTitleText(clipId, text);
@@ -701,6 +784,82 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         });
       }
       return pasted;
+    },
+
+    // ─── Compound clips / nested sequences (#155 slice 1) ───────────────────
+    // Thin selection wrappers over the controller's undoable nest/flatten:
+    // refusals (empty selection, locked track, unknown id) select nothing
+    // rather than surfacing a toast on right-click.
+    nestSelected: () => {
+      const ids = [...get().selectedClipIds];
+      if (ids.length === 0) return null;
+      try {
+        const receipt = get().controller.nestClips(ids);
+        set({
+          selectedClipIds: new Set([receipt.compoundClipId]),
+          selectedGap: null,
+          selectedMarkerIds: new Set(),
+        });
+        return receipt.compoundClipId;
+      } catch {
+        return null;
+      }
+    },
+
+    flattenCompound: (clipId) => {
+      try {
+        const receipt = get().controller.flattenCompound(clipId);
+        set({
+          selectedClipIds: new Set(receipt.restoredClipIds),
+          selectedGap: null,
+          selectedMarkerIds: new Set(),
+        });
+        return receipt.restoredClipIds;
+      } catch {
+        return [];
+      }
+    },
+
+    // ─── Editing scope (#155 slice 2) ───────────────────────────────────────
+    // Thin navigation wrappers: the controller owns the breadcrumb path (and
+    // notifies, so project + scope re-sync); the store clears selection
+    // because a selection names clips in exactly one scope. Refusals
+    // (dangling, unreachable, off-path) return false instead of toasting.
+    openCompoundClip: (clipId) => {
+      try {
+        get().controller.openCompoundClip(clipId);
+      } catch {
+        return false;
+      }
+      set({ selectedClipIds: new Set(), selectedGap: null, selectedMarkerIds: new Set() });
+      return true;
+    },
+
+    openScope: (timelineId) => {
+      try {
+        get().controller.openNestedTimeline(timelineId);
+      } catch {
+        return false;
+      }
+      set({ selectedClipIds: new Set(), selectedGap: null, selectedMarkerIds: new Set() });
+      return true;
+    },
+
+    navigateScopeUp: () => {
+      if (get().activeTimelineId === null) return false;
+      get().controller.navigateTimelineUp();
+      set({ selectedClipIds: new Set(), selectedGap: null, selectedMarkerIds: new Set() });
+      return true;
+    },
+
+    navigateScopeTo: (scopeId) => {
+      try {
+        get().controller.navigateToScope(scopeId);
+      } catch {
+        return false;
+      }
+      set({ selectedClipIds: new Set(), selectedGap: null, selectedMarkerIds: new Set() });
+      return true;
     },
 
   // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Marquee (R1) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
@@ -792,7 +951,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     splitAtPlayhead: () => {
       const { selectedClipIds, controller } = get();
-      const playhead = controller.getProject().timeline.playheadFrame;
+      const playhead = controller.getPlayhead();
       const clips = controller.getClips();
 
       // Split selected clips, or all clips under playhead
@@ -800,16 +959,13 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         ? clips.filter((c) => selectedClipIds.has(c.id))
         : clips;
 
-      for (const clip of targets) {
-        const clipEnd = clip.startFrame + clip.durationFrames;
-        if (playhead > clip.startFrame && playhead < clipEnd) {
-          controller.splitClip(clip.id, playhead);
-        }
-      }
+      // One domain operation, so the whole split undoes in one step however
+      // many clips the playhead crossed.
+      controller.splitClips(targets.map((clip) => clip.id), playhead);
     },
 
     rippleDelete: () => {
-      const { selectedClipIds, selectedGap, controller, project } = get();
+      const { selectedClipIds, selectedGap, controller } = get();
       if (selectedGap) {
         if (controller.rippleDeleteGap(selectedGap.trackId, {
           start: selectedGap.startFrame,
@@ -819,7 +975,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         }
         return;
       }
-      const { inFrame, outFrame } = project.timeline;
+      const { inFrame, outFrame } = get().getScopeTimeline();
       if (inFrame !== undefined && outFrame !== undefined && outFrame > inFrame) {
         get().extractMarkedRange();
         return;
@@ -846,24 +1002,25 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     extractMarkedRange: () => {
-      const { controller, project, selectedClipIds } = get();
-      const { inFrame, outFrame } = project.timeline;
+      const { controller, selectedClipIds } = get();
+      const scope = get().getScopeTimeline();
+      const { inFrame, outFrame } = scope;
       if (inFrame === undefined || outFrame === undefined || outFrame <= inFrame) return;
 
-      const selected = project.timeline.clips.find((clip) => selectedClipIds.has(clip.id));
+      const selected = scope.clips.find((clip) => selectedClipIds.has(clip.id));
       const overlappingTrackIds = new Set(
-        project.timeline.clips
+        scope.clips
           .filter((clip) =>
             clip.startFrame < outFrame && clip.startFrame + clip.durationFrames > inFrame
           )
           .map((clip) => clip.trackId),
       );
       const anchorTrack = selected
-        ? project.timeline.tracks.find((track) => track.id === selected.trackId)
-        : project.timeline.tracks.find((track) =>
+        ? scope.tracks.find((track) => track.id === selected.trackId)
+        : scope.tracks.find((track) =>
             track.type === 'video' && !track.locked && overlappingTrackIds.has(track.id)
           )
-          || project.timeline.tracks.find((track) =>
+          || scope.tracks.find((track) =>
             !track.locked && overlappingTrackIds.has(track.id)
           );
       if (!anchorTrack) return;
@@ -962,8 +1119,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     getSelectedClips: () => {
-      const { selectedClipIds, project } = get();
-      return project.timeline.clips.filter((clip) => selectedClipIds.has(clip.id));
+      const { selectedClipIds } = get();
+      return get().getScopeTimeline().clips.filter((clip) => selectedClipIds.has(clip.id));
     },
 
     removeSilenceForClip: async (clipId, overrides) => {
@@ -978,16 +1135,30 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
         if (!result.ranges || result.ranges.length === 0) {
           return { removed: 0, error: 'No silence detected' };
         }
-        const removed = get().controller.removeSilence(clipId, result.ranges);
-        return { removed };
+        // The controller maps these same spans for the cut; mapping here too is
+        // what makes the omissions reportable, and the mapped count is what
+        // became a cut. A 0 return means the ripple refused (locked anchor), so
+        // nothing was cut even when spans mapped.
+        const mapping = mapSilenceRangesToTimeline(
+          clip,
+          get().project.settings.fps,
+          result.ranges,
+        );
+        const committed = get().controller.removeSilence(clipId, result.ranges);
+        return {
+          removed: committed > 0 ? mapping.ranges.length : 0,
+          ...(mapping.omitted.length > 0
+            ? { omitted: countOmissions(mapping.omitted) }
+            : {}),
+        };
       } catch (err: any) {
         return { removed: 0, error: err.message };
       }
     },
 
     getSelectedClip: () => {
-      const { selectedClipIds, project } = get();
-      const selected = project.timeline.clips.filter((clip) => selectedClipIds.has(clip.id));
+      const { selectedClipIds } = get();
+      const selected = get().getScopeTimeline().clips.filter((clip) => selectedClipIds.has(clip.id));
       if (selected.length === 1) return selected[0];
       if (selected.length === 0) return null;
 
@@ -997,8 +1168,11 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Playback Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-    setPlayhead: (frame) => {
-      get().controller.setPlayhead(Math.max(0, frame));
+    setPlayhead: (frame, scopeId?: string | null) => {
+      const { controller } = get();
+      const target = Math.max(0, frame);
+      if (scopeId === undefined) controller.setPlayhead(target);
+      else controller.setPlayheadInScope(target, scopeId);
     },
 
     togglePlayback: () => set((s) => ({ isPlaying: !s.isPlaying })),
@@ -1010,15 +1184,18 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     compactTake: (sourceClipId) => get().controller.compactTake(sourceClipId),
     applyLayout: (clipIds, preset) => get().controller.applyLayout(clipIds, preset),
 
-    stepFrame: (delta) => {
-      const current = get().getPlayhead();
-      get().controller.setPlayhead(Math.max(0, current + delta));
+    stepFrame: (delta, scopeId?: string | null) => {
+      const current = scopeId === undefined
+        ? get().getPlayhead()
+        : get().controller.getTimelineInScope(scopeId).playheadFrame;
+      get().setPlayhead(Math.max(0, current + delta), scopeId);
     },
 
     goToStart: () => get().controller.setPlayhead(0),
 
     // getProjectDuration() carries trailing padding so there is room to drop
     // clips past the end; landing the playhead in that padding is not "the end".
+    // Scoped like the lanes: inside a nest, the end is the nest's content end.
     goToEnd: () => get().controller.setPlayhead(timelineContentEnd(get().getClips())),
 
     goToPreviousEdit: () => {
@@ -1032,12 +1209,12 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     },
 
     goToInPoint: () => {
-      const { inFrame } = get().project.timeline;
+      const { inFrame } = get().getScopeTimeline();
       if (inFrame !== undefined) get().controller.setPlayhead(inFrame);
     },
 
     goToOutPoint: () => {
-      const { outFrame } = get().project.timeline;
+      const { outFrame } = get().getScopeTimeline();
       if (outFrame !== undefined) get().controller.setPlayhead(outFrame);
     },
 

@@ -7,6 +7,7 @@ import {
   MAX_PLAYBACK_RATE,
   MIN_PLAYBACK_RATE,
   PLAYBACK_RATE_PRESETS,
+  SHUTTLE_RATES,
   normalizePlaybackRate,
   playbackRateLabel,
   shuttleForward,
@@ -29,6 +30,12 @@ describe('playback rate presets', () => {
   it('normalizes every preset to itself', () => {
     for (const rate of PLAYBACK_RATE_PRESETS) {
       expect(normalizePlaybackRate(rate)).toBe(rate);
+    }
+  });
+
+  it('has a toolbar option for every rate reachable by J/L', () => {
+    for (const rate of SHUTTLE_RATES) {
+      expect(PLAYBACK_RATE_PRESETS).toContain(rate);
     }
   });
 });

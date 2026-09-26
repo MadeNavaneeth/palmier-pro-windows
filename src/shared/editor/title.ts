@@ -12,7 +12,7 @@
  *   expansion sequences, and '\\' starts escapes.
  */
 
-import type { Frame } from '../types/project';
+import type { Clip, Frame } from '../types/project';
 
 export const TITLE_TEXT_MAX_LENGTH = 300;
 
@@ -207,4 +207,168 @@ export function titleTiltCorners(
     bottomRight: project(rect.maxX, rect.maxY),
     bottomLeft: project(rect.minX, rect.maxY),
   };
+}
+
+// ─── Variable-font axes (upstream issue #50) ─────────────────────────────
+// Original design: upstream has no variable-font implementation at b4b1333,
+// so the axis set follows CSS `font-variation-settings` reality — the four
+// registered axes every variable font may interpolate (wght/wdth/slnt/ital).
+//
+// The axes ride `fontVariationSettings` in the shared canvas title renderer
+// (renderer/engine/title-render.ts), so preview and the export bake see
+// identical pixels for free; a non-variable font ignores unknown axes
+// harmlessly. FFmpeg drawtext cannot express axes, so a title with
+// non-default axes takes the bake pipeline (see isAdvancedTitle); when its
+// bake is missing, export degrades to solid drawtext with the axes dropped
+// rather than failing.
+//
+// Like every other title field: sanitize on write, narrow on read, absent =
+// default. Defaults are never stored — a default value sanitizes to
+// undefined — so field presence alone means "non-default, bake me".
+
+/** Weight axis, OpenType wght 1–1000. Default 400 (regular). */
+export const TITLE_VARIATION_WGHT_MIN = 1;
+export const TITLE_VARIATION_WGHT_MAX = 1000;
+export const TITLE_VARIATION_WGHT_DEFAULT = 400;
+/** Width axis, CSS font-stretch 50–200%. Default 100 (normal). */
+export const TITLE_VARIATION_WDTH_MIN = 50;
+export const TITLE_VARIATION_WDTH_MAX = 200;
+export const TITLE_VARIATION_WDTH_DEFAULT = 100;
+/** Slant axis, CSS oblique −90–90°. Default 0 (upright). */
+export const TITLE_VARIATION_SLNT_MIN = -90;
+export const TITLE_VARIATION_SLNT_MAX = 90;
+export const TITLE_VARIATION_SLNT_DEFAULT = 0;
+/** Italic axis, 0 (roman) to 1 (italic). Default 0. */
+export const TITLE_VARIATION_ITAL_MIN = 0;
+export const TITLE_VARIATION_ITAL_MAX = 1;
+export const TITLE_VARIATION_ITAL_DEFAULT = 0;
+
+/** Weight axis: finite, rounded to an int, in range; default/absent → undefined. */
+export function sanitizeTitleVariationWght(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  const value = Math.round(raw);
+  if (value < TITLE_VARIATION_WGHT_MIN || value > TITLE_VARIATION_WGHT_MAX) return undefined;
+  return value === TITLE_VARIATION_WGHT_DEFAULT ? undefined : value;
+}
+
+/** Width axis: finite, rounded to an int, in range; default/absent → undefined. */
+export function sanitizeTitleVariationWdth(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  const value = Math.round(raw);
+  if (value < TITLE_VARIATION_WDTH_MIN || value > TITLE_VARIATION_WDTH_MAX) return undefined;
+  return value === TITLE_VARIATION_WDTH_DEFAULT ? undefined : value;
+}
+
+/** Slant axis: finite, in range; default/absent → undefined. */
+export function sanitizeTitleVariationSlnt(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  if (raw < TITLE_VARIATION_SLNT_MIN || raw > TITLE_VARIATION_SLNT_MAX) return undefined;
+  return raw === TITLE_VARIATION_SLNT_DEFAULT ? undefined : raw;
+}
+
+/** Italic axis: finite, in range; default/absent → undefined. */
+export function sanitizeTitleVariationItal(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  if (raw < TITLE_VARIATION_ITAL_MIN || raw > TITLE_VARIATION_ITAL_MAX) return undefined;
+  return raw === TITLE_VARIATION_ITAL_DEFAULT ? undefined : raw;
+}
+
+interface TitleVariationLike {
+  type?: unknown;
+  titleVariationWght?: unknown;
+  titleVariationWdth?: unknown;
+  titleVariationSlnt?: unknown;
+  titleVariationItal?: unknown;
+}
+
+/** True when any axis is present and non-default — the bake-routing condition. */
+export function hasTitleVariations(clip: TitleVariationLike): boolean {
+  return sanitizeTitleVariationWght(clip.titleVariationWght) !== undefined
+    || sanitizeTitleVariationWdth(clip.titleVariationWdth) !== undefined
+    || sanitizeTitleVariationSlnt(clip.titleVariationSlnt) !== undefined
+    || sanitizeTitleVariationItal(clip.titleVariationItal) !== undefined;
+}
+
+/**
+ * Build the CSS `font-variation-settings` value for a clip (`'"wght" 700,
+ * "wdth" 75'`), or '' when no axis is non-default. Only sanitized values
+ * are emitted, so preview and bake agree by construction.
+ */
+export function titleVariationSettings(clip: TitleVariationLike): string {
+  const parts: string[] = [];
+  const wght = sanitizeTitleVariationWght(clip.titleVariationWght);
+  if (wght !== undefined) parts.push(`"wght" ${wght}`);
+  const wdth = sanitizeTitleVariationWdth(clip.titleVariationWdth);
+  if (wdth !== undefined) parts.push(`"wdth" ${wdth}`);
+  const slnt = sanitizeTitleVariationSlnt(clip.titleVariationSlnt);
+  if (slnt !== undefined) parts.push(`"slnt" ${slnt}`);
+  const ital = sanitizeTitleVariationItal(clip.titleVariationItal);
+  if (ital !== undefined) parts.push(`"ital" ${ital}`);
+  return parts.join(', ');
+}
+
+/**
+ * Narrow a stored clip's variation axes on read: hostile, hand-edited, or
+ * default-valued entries degrade to absent (the renderers fall back to the
+ * font's default axis), and a non-title clip passes through untouched.
+ * Returns the input when clean.
+ */
+export function narrowTitleVariationClip<T extends TitleVariationLike>(clip: T): T {
+  if (clip.type !== 'title') return clip;
+  let next: TitleVariationLike | null = null;
+  const drop = (
+    key: 'titleVariationWght' | 'titleVariationWdth' | 'titleVariationSlnt' | 'titleVariationItal',
+  ): void => {
+    if (!next) next = { ...clip };
+    delete next[key];
+  };
+  if (
+    clip.titleVariationWght !== undefined
+    && sanitizeTitleVariationWght(clip.titleVariationWght) === undefined
+  ) {
+    drop('titleVariationWght');
+  }
+  if (
+    clip.titleVariationWdth !== undefined
+    && sanitizeTitleVariationWdth(clip.titleVariationWdth) === undefined
+  ) {
+    drop('titleVariationWdth');
+  }
+  if (
+    clip.titleVariationSlnt !== undefined
+    && sanitizeTitleVariationSlnt(clip.titleVariationSlnt) === undefined
+  ) {
+    drop('titleVariationSlnt');
+  }
+  if (
+    clip.titleVariationItal !== undefined
+    && sanitizeTitleVariationItal(clip.titleVariationItal) === undefined
+  ) {
+    drop('titleVariationItal');
+  }
+  return (next ?? clip) as T;
+}
+
+/**
+ * True when the clip needs the bake pipeline instead of drawtext — the single
+ * bake gate. It lives here, beside the fields it reads, because the renderer
+ * (preview and delivery panel) and the main process (FFmpeg graph) must agree:
+ * a title that one side bakes and the other renders as drawtext silently
+ * loses its styling, so the two used to hold separate copies of this
+ * predicate and drift.
+ */
+export function isAdvancedTitle(clip: Clip): boolean {
+  return clip.type === 'title'
+    && Boolean(clip.text)
+    && (
+      clip.titleFillMode !== undefined
+      || (clip.titleBlurRadius ?? 0) > 0
+      || (clip.titleTiltXDeg ?? 0) !== 0
+      || (clip.titleTiltYDeg ?? 0) !== 0
+      // Variable-font axes (#50): drawtext has no variation parameter, so a
+      // non-default axis always bakes — the shared drawTitle in
+      // renderer/engine/title-render.ts carries the axes into the baked PNG
+      // for free.
+      || hasTitleVariations(clip)
+    );
 }

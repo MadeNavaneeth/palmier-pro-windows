@@ -85,6 +85,13 @@ export interface AiState {
 
 // ─── Store ───────────────────────────────────────────────────────────────────
 
+// Main events do not carry a turn id. After Clear, keep a small fence so the
+// cancelled turn's late events cannot be mistaken for the next conversation.
+let discardStreamEvents = false;
+let turnSequence = 0;
+let clearedThroughTurn = 0;
+let historyGeneration = 0;
+
 export const useAiStore = create<AiState>((set, get) => ({
   isConfigured: false,
   providerId: 'anthropic',
@@ -101,6 +108,8 @@ export const useAiStore = create<AiState>((set, get) => ({
   // async function to a void-returning slot, where a rejection would escape into
   // nothing (upstream #89).
   sendMessage: (content: string) => {
+    const turnId = ++turnSequence;
+    discardStreamEvents = false;
     const userMsg: ChatMessage = { role: 'user', content, timestamp: Date.now() };
     set((s) => ({
       messages: [...s.messages, userMsg],
@@ -119,6 +128,10 @@ export const useAiStore = create<AiState>((set, get) => ({
           get().providerId,
         );
       } catch (err: unknown) {
+        // A clear can cancel the pending chat and make this rejection arrive
+        // after the transcript is already empty. Do not resurrect that turn's
+        // error in the fresh conversation.
+        if (turnId <= clearedThroughTurn) return;
         // The failure has to land in the transcript: the streaming indicator is
         // on, and without this the panel would spin forever.
         const errorMsg: ChatMessage = {
@@ -146,11 +159,18 @@ export const useAiStore = create<AiState>((set, get) => ({
   },
 
   clearHistory: () => {
-    // Stop first: a turn still running would stream its answer into a transcript
-    // the user just emptied.
-    get().cancelStream();
-    // The plan belongs to the request that is being cleared with it.
-    set({ messages: [], streamingContent: '', plan: [] });
+    // The main handler cancels a busy turn before wiping the authoritative
+    // history. Keep this local update in the same user action so a late stream
+    // event cannot put the old transcript back on screen.
+    discardStreamEvents = true;
+    clearedThroughTurn = turnSequence;
+    historyGeneration += 1;
+    void window.palmier.ai.clearHistory().catch(() => {
+      // A failed request is surfaced by the main-process transport; the
+      // renderer must still not leave the user staring at a cleared-looking
+      // conversation that the UI says is gone.
+    });
+    set({ messages: [], streamingContent: '', plan: [], isStreaming: false });
   },
 
   setConfigured: (configured: boolean) => {
@@ -158,10 +178,18 @@ export const useAiStore = create<AiState>((set, get) => ({
   },
 
   appendStreamToken: (token: string) => {
+    // Events from a turn cancelled by Clear can arrive after the local reset.
+    if (discardStreamEvents) return;
     set((s) => ({ streamingContent: s.streamingContent + token }));
   },
 
   finishStream: (reason) => {
+    // The cancellation event for a cleared turn is not a transcript entry.
+    if (discardStreamEvents) {
+      discardStreamEvents = false;
+      set({ isStreaming: false, streamingContent: '' });
+      return;
+    }
     const { streamingContent } = get();
     const cancelled = reason === 'cancelled';
 
@@ -185,6 +213,7 @@ export const useAiStore = create<AiState>((set, get) => ({
   },
 
   addToolCall: (name: string, args: Record<string, unknown>) => {
+    if (discardStreamEvents) return;
     const toolMsg: ToolCallMessage = {
       role: 'tool',
       content: JSON.stringify(args, null, 2),
@@ -196,6 +225,7 @@ export const useAiStore = create<AiState>((set, get) => ({
   },
 
   addToolResult: (name: string, result: unknown, success: boolean) => {
+    if (discardStreamEvents) return;
     const toolMsg: ToolCallMessage = {
       role: 'tool',
       content: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
@@ -206,7 +236,10 @@ export const useAiStore = create<AiState>((set, get) => ({
     set((s) => ({ messages: [...s.messages, toolMsg] }));
   },
 
-  setPlan: (plan) => set({ plan }),
+  setPlan: (plan) => {
+    if (discardStreamEvents) return;
+    set({ plan });
+  },
 
   adoptSession: (history, plan) => {
     const adopted = adoptChatSession(history, plan);
@@ -223,9 +256,13 @@ export const useAiStore = create<AiState>((set, get) => ({
   },
 
   refreshSession: () => {
+    const generation = historyGeneration;
     return window.palmier.ai
       .getSession()
       .then((response: unknown) => {
+        // A snapshot request started before Clear must not repopulate the
+        // transcript when its old response arrives after the user emptied it.
+        if (generation !== historyGeneration) return true;
         if (typeof response !== 'object' || response === null) return false;
         const { history, plan } = response as { history?: unknown; plan?: unknown };
         get().adoptSession(history, plan);

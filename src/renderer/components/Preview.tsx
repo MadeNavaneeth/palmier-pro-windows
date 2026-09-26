@@ -70,6 +70,13 @@ export function Preview() {
 
   const engine = useRef(getPlaybackEngine());
 
+  // Preview always renders the whole project from the root (delivery is
+  // deterministic regardless of which nest is open for editing), so the
+  // transport drives the ROOT playhead explicitly — lane clicks use the
+  // ambient scope, these never do.
+  const setRootPlayhead = useCallback((frame: number) => setPlayhead(frame, null), [setPlayhead]);
+  const stepRootFrame = useCallback((delta: number) => stepFrame(delta, null), [stepFrame]);
+
   // Preview audio: reconcile the HTML audio pool from every engine tick and
   // on seeks; pause everything whenever playback stops.
   useEffect(() => {
@@ -157,7 +164,7 @@ export function Preview() {
           min={0}
           max={durationFrames}
           value={Math.min(playhead, durationFrames)}
-          onChange={(event) => setPlayhead(Number(event.target.value))}
+          onChange={(event) => setRootPlayhead(Number(event.target.value))}
           aria-label="Preview playhead"
           className="h-1 w-full accent-accent"
         />
@@ -184,10 +191,10 @@ export function Preview() {
         </div>
 
         <div className="flex items-center gap-1.5">
-          <TransportButton label="Go to beginning" onClick={() => setPlayhead(0)}>
+          <TransportButton label="Go to beginning" onClick={() => setRootPlayhead(0)}>
             <SkipBack size={13} fill="currentColor" />
           </TransportButton>
-          <TransportButton label="Previous frame" onClick={() => stepFrame(-1)}>
+          <TransportButton label="Previous frame" onClick={() => stepRootFrame(-1)}>
             <ChevronLeft size={15} strokeWidth={2} />
           </TransportButton>
           <button
@@ -200,10 +207,10 @@ export function Preview() {
               ? <Pause size={13} fill="currentColor" />
               : <Play size={13} fill="currentColor" />}
           </button>
-          <TransportButton label="Next frame" onClick={() => stepFrame(1)}>
+          <TransportButton label="Next frame" onClick={() => stepRootFrame(1)}>
             <ChevronRight size={15} strokeWidth={2} />
           </TransportButton>
-          <TransportButton label="Go to end" onClick={() => setPlayhead(durationFrames)}>
+          <TransportButton label="Go to end" onClick={() => setRootPlayhead(durationFrames)}>
             <SkipForward size={13} fill="currentColor" />
           </TransportButton>
 

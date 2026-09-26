@@ -102,12 +102,19 @@ export function deriveTags(asset: MediaAsset): string[] {
 }
 
 /**
- * True when a lower-cased query matches any tag or the filename. Used by the
- * media grid filter so the search box benefits from tags without a separate
- * filter UI.
+ * True when a lower-cased query matches any tag, the filename, or the AI
+ * description. Used by the media grid filter so the search box benefits from
+ * tags without a separate filter UI; descriptions match as plain substrings
+ * the same way tags do.
  */
 export function assetMatchesQuery(asset: MediaAsset, normalizedQuery: string): boolean {
   if (!normalizedQuery) return true;
   if (asset.filename.toLowerCase().includes(normalizedQuery)) return true;
+  if (
+    typeof asset.aiDescription === 'string'
+    && asset.aiDescription.toLowerCase().includes(normalizedQuery)
+  ) {
+    return true;
+  }
   return deriveTags(asset).some((tag) => tag.includes(normalizedQuery));
 }

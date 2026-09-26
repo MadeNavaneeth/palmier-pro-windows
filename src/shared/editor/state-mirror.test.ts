@@ -76,6 +76,21 @@ describe('failed push', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  it('treats a resolved success:false reply as a failed delivery', async () => {
+    const mirror = new StateMirror();
+    const refusal = { success: false, error: 'main refused the sync' };
+
+    const result = await mirror.push('a', async () => refusal);
+
+    expect(result).toMatchObject({
+      attempted: true,
+      delivered: false,
+      error: refusal.error,
+    });
+    expect(mirror.lastConfirmed()).toBeNull();
+    expect(mirror.needsPush('a')).toBe(true);
+  });
+
   it('returns the rejection instead of throwing at the caller', async () => {
     const mirror = new StateMirror();
     // The caller is a detached subscriber with nowhere to propagate a throw.

@@ -8,8 +8,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Clip } from '../../shared/types/project';
-import { titleTiltCorners } from '../../shared/editor/title';
-import { isAdvancedTitle } from './title-render';
+import { isAdvancedTitle, titleTiltCorners } from '../../shared/editor/title';
+import { drawTitle } from './title-render';
 
 function clip(overrides: Partial<Clip> = {}): Clip {
   return {
@@ -57,6 +57,25 @@ describe('isAdvancedTitle', () => {
   it('ignores explicit zero tilt', () => {
     expect(isAdvancedTitle(clip({ titleTiltXDeg: 0, titleTiltYDeg: 0 }))).toBe(false);
   });
+
+  it('is true for any non-default variable-font axis (#50)', () => {
+    // Bake whenever variations are non-default: drawtext has no variation
+    // parameter, so only the canvas bake can carry the axes.
+    expect(isAdvancedTitle(clip({ titleVariationWght: 700 }))).toBe(true);
+    expect(isAdvancedTitle(clip({ titleVariationWdth: 75 }))).toBe(true);
+    expect(isAdvancedTitle(clip({ titleVariationSlnt: -12 }))).toBe(true);
+    expect(isAdvancedTitle(clip({ titleVariationItal: 1 }))).toBe(true);
+  });
+
+  it('is false for default-valued or invalid axes', () => {
+    expect(isAdvancedTitle(clip({
+      titleVariationWght: 400,
+      titleVariationWdth: 100,
+      titleVariationSlnt: 0,
+      titleVariationItal: 0,
+    }))).toBe(false);
+    expect(isAdvancedTitle(clip({ titleVariationWght: 9999 }))).toBe(false);
+  });
 });
 
 describe('titleTiltCorners (#519)', () => {
@@ -92,5 +111,60 @@ describe('titleTiltCorners (#519)', () => {
     const bottomRow = c.bottomRight.x - c.bottomLeft.x;
     expect(bottomRow).not.toBeCloseTo(topRow, 3);
     expect(c.topRight.y - c.topLeft.y).toBeCloseTo(0, 6);
+  });
+});
+
+/** Minimal 2D context: records property sets, enough for drawSolid. */
+class RecordingContext {
+  font = '';
+  fontVariationSettings = '';
+  fillStyle = '';
+  textAlign: CanvasTextAlign = 'center';
+  textBaseline: CanvasTextBaseline = 'middle';
+  globalAlpha = 1;
+  filled: string[] = [];
+  save(): void {}
+  restore(): void {}
+  fillRect(): void {}
+  fillText(text: string): void {
+    this.filled.push(text);
+  }
+  strokeText(): void {}
+  measureText() {
+    return { width: 40 };
+  }
+}
+
+describe('drawTitle variable-font axes (#50)', () => {
+  const size = { width: 1920, height: 1080 };
+
+  it('sets fontVariationSettings for a variable-font title', () => {
+    const ctx = new RecordingContext();
+    drawTitle(
+      ctx as unknown as CanvasRenderingContext2D,
+      clip({ titleVariationWght: 700, titleVariationWdth: 75 }),
+      size,
+    );
+    expect(ctx.fontVariationSettings).toBe('"wght" 700, "wdth" 75');
+    expect(ctx.filled).toEqual(['Hello']);
+  });
+
+  it('leaves fontVariationSettings untouched without non-default axes', () => {
+    const ctx = new RecordingContext();
+    drawTitle(ctx as unknown as CanvasRenderingContext2D, clip(), size);
+    expect(ctx.fontVariationSettings).toBe('');
+
+    const defaults = new RecordingContext();
+    drawTitle(
+      defaults as unknown as CanvasRenderingContext2D,
+      clip({
+        titleVariationWght: 400,
+        titleVariationWdth: 100,
+        titleVariationSlnt: 0,
+        titleVariationItal: 0,
+      }),
+      size,
+    );
+    expect(defaults.fontVariationSettings).toBe('');
   });
 });

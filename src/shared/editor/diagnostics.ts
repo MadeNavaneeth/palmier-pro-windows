@@ -13,6 +13,8 @@
 
 import type { Project, Clip } from '../types/project';
 import type { TimelineMarker } from './markers';
+import { hasShapeContent } from './shape';
+import { validateCompoundGraph } from './compound';
 import { MAX_FRAME } from '../utils/safe-number';
 
 export type TimelineDiagnosticCode =
@@ -26,6 +28,8 @@ export type TimelineDiagnosticCode =
   | 'orphaned-link'
   | 'fade-exceeds-clip'
   | 'empty-title'
+  | 'empty-shape'
+  | 'compound-invalid'
   | 'marker-invalid';
 
 export interface TimelineDiagnostic {
@@ -92,6 +96,23 @@ export function diagnoseTimeline(
           clipId: clip.id,
         });
       }
+    } else if (clip.type === 'shape') {
+      // Shapes carry no media asset (synthetic `__shape__` id), so the
+      // media checks below do not apply — like titles, only emptiness is
+      // diagnosed.
+      if (!hasShapeContent(clip)) {
+        issues.push({
+          severity: 'warning',
+          code: 'empty-shape',
+          message: `Shape clip "${label}" has no stroke and no fill and renders nothing.`,
+          clipId: clip.id,
+        });
+      }
+    } else if (clip.type === 'compound') {
+      // Compound clips carry the synthetic `__compound__` asset id, so the
+      // media checks below do not apply — like titles and shapes, only
+      // structure is diagnosed. A missing or dangling nested-timeline
+      // reference is reported by the compound-graph audit below.
     } else {
       const asset = assetById.get(clip.assetId);
       if (!asset) {
@@ -177,6 +198,13 @@ export function diagnoseTimeline(
   }
 
   for (const marker of validateMarkers(project.timeline.markers ?? [])) issues.push(marker);
+
+  // Nested-sequence structure: dangling references, cycles, and over-deep
+  // chains (shared/editor/compound.ts). Render resolves each of these to
+  // nothing, so they surface here as errors rather than failing silently.
+  for (const message of validateCompoundGraph(project)) {
+    issues.push({ severity: 'error', code: 'compound-invalid', message });
+  }
 
   const severityRank = (issue: TimelineDiagnostic) => (issue.severity === 'error' ? 0 : 1);
   const max = Math.max(1, Math.min(200, options.maxIssues ?? 50));

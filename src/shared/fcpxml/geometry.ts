@@ -15,6 +15,8 @@
  *   the canvas, the common case), noted at both call sites.
  */
 
+import { evaluateMotion, type MotionEasing, type MotionPoint, type MotionTrack } from '../media/motion';
+
 export interface FrameSize {
   w: number;
   h: number;
@@ -142,4 +144,96 @@ export interface TrimRectFull {
   right: number;
   top: number;
   bottom: number;
+}
+
+/** One FCPXML keyframe of a value pair (position or scale), absolute timeline frame. */
+export interface FcpxmlKeyframePair {
+  frame: number;
+  /** Position: percent-of-height units. Scale: FCPXML multipliers. */
+  a: number;
+  b: number;
+  easing: MotionEasing;
+}
+
+/** One FCPXML keyframe of a scalar param (rotation), absolute timeline frame. */
+export interface FcpxmlKeyframeScalar {
+  frame: number;
+  /** Counter-clockwise degrees. */
+  value: number;
+  easing: MotionEasing;
+}
+
+/** FCPXML-native transform keyframes as parsed (see exporter.transformElement). */
+export interface FcpxmlTransformKeyframes {
+  position?: FcpxmlKeyframePair[];
+  scale?: FcpxmlKeyframePair[];
+  rotation?: FcpxmlKeyframeScalar[];
+}
+
+/** Our motion-track fields, ready for a clip draft. */
+export interface MotionFields {
+  motionX?: MotionTrack;
+  motionY?: MotionTrack;
+  motionScaleX?: MotionTrack;
+  motionScaleY?: MotionTrack;
+  motionRot?: MotionTrack;
+}
+
+function motionPoint(frame: number, value: number, easing: MotionEasing): MotionPoint {
+  // Normalize -0: negating a zero rotation/keyframe must stay zero.
+  return { frame, value: value === 0 ? 0 : value, ...(easing === 'linear' ? {} : { easing }) };
+}
+
+/**
+ * FCPXML transform keyframes → our motion fields, the inverse of
+ * exporter.transformElement at every keyframe:
+ * - position: center-based FCPXML units back to our top-left box position.
+ *   The rotation used is the imported rotation track evaluated at the
+ *   position keyframe's frame (the exporter does the same), falling back to
+ *   the static base rotation.
+ * - scale: FCPXML multipliers are relative to the aspect-fitted source, while
+ *   motionScaleX/Y replace our static scaleX/Y on the imported fitted box —
+ *   so the value is rescaled by the box width/height placementFromTransform
+ *   chose (drawn width = box × motion scale = FCPXML scale × fitted source).
+ * - rotation: counter-clockwise degrees back to our clockwise convention.
+ * Linear easing is left implicit, matching sanitizeMotion.
+ */
+export function motionFromTransformKeyframes(
+  keyframes: FcpxmlTransformKeyframes,
+  base: FcpxmlTransform,
+  ctx: PlacementContext,
+): MotionFields {
+  const placement = placementFromTransform(base, ctx);
+  const fitted = aspectFit(ctx.sourceWidth ?? 0, ctx.sourceHeight ?? 0, ctx.canvasWidth, ctx.canvasHeight);
+  const motion: MotionFields = {};
+
+  const rotationTrack = keyframes.rotation?.map((k) => motionPoint(k.frame, -k.value, k.easing));
+  if (rotationTrack && rotationTrack.length > 0) motion.motionRot = rotationTrack;
+
+  if (keyframes.position && keyframes.position.length > 0) {
+    const halfW = placement.width / 2;
+    const halfH = placement.height / 2;
+    const unit = ctx.canvasHeight / 100;
+    motion.motionX = [];
+    motion.motionY = [];
+    for (const keyframe of keyframes.position) {
+      const rotation = evaluateMotion(rotationTrack, keyframe.frame) ?? placement.rotation;
+      const rad = (rotation * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const centerX = ctx.canvasWidth / 2 + keyframe.a * unit;
+      const centerY = ctx.canvasHeight / 2 - keyframe.b * unit;
+      motion.motionX.push(motionPoint(keyframe.frame, centerX - (halfW * cos - halfH * sin), keyframe.easing));
+      motion.motionY.push(motionPoint(keyframe.frame, centerY - (halfW * sin + halfH * cos), keyframe.easing));
+    }
+  }
+
+  if (keyframes.scale && keyframes.scale.length > 0 && placement.width > 0 && placement.height > 0) {
+    motion.motionScaleX = keyframes.scale.map((k) =>
+      motionPoint(k.frame, (k.a * fitted.w) / placement.width, k.easing));
+    motion.motionScaleY = keyframes.scale.map((k) =>
+      motionPoint(k.frame, (k.b * fitted.h) / placement.height, k.easing));
+  }
+
+  return motion;
 }

@@ -48,16 +48,26 @@ export class StateMirror {
   /**
    * Push a snapshot, recording it only if the peer accepts it.
    *
-   * Rejections are returned rather than thrown: the caller is a detached
-   * subscriber with nowhere to propagate them, and swallowing them silently is
-   * the failure mode this type exists to prevent.
+   * Rejections and resolved refusal replies are returned rather than thrown:
+   * the caller is a detached subscriber with nowhere to propagate them, and
+   * swallowing them silently is the failure mode this type exists to prevent.
    */
   async push(serialized: string, send: SendSnapshot): Promise<MirrorPushResult> {
     if (!this.needsPush(serialized)) return { attempted: false, delivered: false };
 
     this.inFlight = true;
     try {
-      await send(serialized);
+      const response = await send(serialized);
+      // IPC handlers commonly report a refusal by resolving with this shape
+      // rather than rejecting. It is still an unsuccessful delivery.
+      if (
+        typeof response === 'object'
+        && response !== null
+        && (response as { success?: unknown }).success === false
+      ) {
+        const error = (response as { error?: unknown }).error;
+        return { attempted: true, delivered: false, error: error ?? response };
+      }
       this.confirmed = serialized;
       return { attempted: true, delivered: true };
     } catch (error) {

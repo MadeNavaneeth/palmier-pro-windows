@@ -10,13 +10,15 @@
  */
 
 import type {
+  GenerationExecutionContext,
   GenerationProvider,
   GenerationRequest,
   GenerationResult,
   GenerationProgress,
   GenerationType,
 } from './types';
-import { downloadFile } from './util';
+import { downloadFile, sleep } from './util';
+import { encodeReferenceImage } from './reference-image';
 
 const REPLICATE_API = 'https://api.replicate.com/v1';
 
@@ -24,6 +26,7 @@ export class ReplicateProvider implements GenerationProvider {
   readonly id = 'replicate';
   readonly name = 'Replicate';
   readonly supportedTypes: GenerationType[] = ['image', 'video', 'audio'];
+  readonly cancellationSupport = 'remote' as const;
 
   private apiKey: string = '';
 
@@ -64,6 +67,7 @@ export class ReplicateProvider implements GenerationProvider {
   async generate(
     request: GenerationRequest,
     onProgress?: (progress: GenerationProgress) => void,
+    execution?: GenerationExecutionContext,
   ): Promise<GenerationResult> {
     const startTime = Date.now();
     const model = (request.extra?.model as string) || this.getModels(request.type)[0];
@@ -71,6 +75,11 @@ export class ReplicateProvider implements GenerationProvider {
     onProgress?.({ id: request.id, status: 'pending', percent: 0, message: 'Submitting...' });
 
     try {
+      // Built before submitting: a reference that cannot be encoded must cost
+      // no provider call. Replicate reads image inputs as URLs or data URIs,
+      // never as a local path.
+      const input = await this.buildInput(request, model);
+
       // Create prediction
       const createResponse = await fetch(`${REPLICATE_API}/predictions`, {
         method: 'POST',
@@ -80,8 +89,9 @@ export class ReplicateProvider implements GenerationProvider {
         },
         body: JSON.stringify({
           model,
-          input: this.buildInput(request),
+          input,
         }),
+        signal: execution?.signal,
       });
 
       if (!createResponse.ok) {
@@ -90,7 +100,11 @@ export class ReplicateProvider implements GenerationProvider {
       }
 
       const prediction = await createResponse.json();
-      let predictionId = prediction.id;
+      const predictionId = prediction.id;
+      if (typeof predictionId !== 'string' || predictionId.length === 0) {
+        throw new Error('Replicate create response did not include a prediction id');
+      }
+      execution?.onProviderRequest(predictionId);
 
       // Poll for completion
       let result: any = null;
@@ -99,10 +113,11 @@ export class ReplicateProvider implements GenerationProvider {
 
       while (attempts < maxAttempts) {
         attempts++;
-        await sleep(1000);
+        await sleep(1000, execution?.signal);
 
         const pollResponse = await fetch(`${REPLICATE_API}/predictions/${predictionId}`, {
           headers: { 'Authorization': `Bearer ${this.apiKey}` },
+          signal: execution?.signal,
         });
 
         if (!pollResponse.ok) continue;
@@ -126,6 +141,7 @@ export class ReplicateProvider implements GenerationProvider {
       }
 
       if (!result) throw new Error('Generation timed out');
+      if (execution?.signal.aborted) throw new Error('Generation stopped');
 
       // Extract output URL
       const outputUrl = this.extractOutput(result);
@@ -154,22 +170,39 @@ export class ReplicateProvider implements GenerationProvider {
     }
   }
 
-  async cancel(requestId: string): Promise<void> {
-    try {
-      await fetch(`${REPLICATE_API}/predictions/${requestId}/cancel`, {
+  async cancel(providerRequestId: string): Promise<void> {
+    const response = await fetch(
+      `${REPLICATE_API}/predictions/${encodeURIComponent(providerRequestId)}/cancel`,
+      {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${this.apiKey}` },
-      });
-    } catch { /* best effort */ }
+      },
+    );
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Replicate cancel failed (${response.status}): ${error}`);
+    }
   }
 
-  private buildInput(request: GenerationRequest): Record<string, unknown> {
+  private async buildInput(
+    request: GenerationRequest,
+    model: string,
+  ): Promise<Record<string, unknown>> {
     const input: Record<string, unknown> = { prompt: request.prompt };
     if (request.width) input.width = request.width;
     if (request.height) input.height = request.height;
     if (request.negativePrompt) input.negative_prompt = request.negativePrompt;
     if (request.durationSeconds) input.duration = request.durationSeconds;
-    if (request.referenceImagePath) input.image = request.referenceImagePath;
+    if (request.referenceImagePath) {
+      // Refused for a model that reads no image rather than dropped by the
+      // model, which would quietly return something unrelated.
+      input.image = await encodeReferenceImage(request.referenceImagePath, {
+        provider: this.name,
+        model,
+        type: request.type,
+        field: 'input.image',
+      });
+    }
     return input;
   }
 
@@ -179,8 +212,4 @@ export class ReplicateProvider implements GenerationProvider {
     if (Array.isArray(output) && output.length > 0) return output[0];
     return null;
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
