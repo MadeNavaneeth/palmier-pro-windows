@@ -9,6 +9,7 @@
 import type { Project, Clip, Track, Frame, MediaAsset } from '../types/project';
 import type { TimelineMarker } from './markers';
 import type { Timeline } from '../types/project';
+import { effectiveSpeed } from '../media/source-time';
 
 // ─── Timeline scope lens ─────────────────────────────────────────────────────
 
@@ -358,6 +359,44 @@ export class MoveClipCommand implements Command {
   }
 }
 
+/**
+ * Timeline length, in frames, of a trim window `[inPoint, outPoint)`.
+ *
+ * `inPoint`/`outPoint` are SOURCE frames while `durationFrames` is a TIMELINE
+ * length, and the shared source-time model relates them by the clip's speed:
+ * source time advances `speed` frames per timeline frame
+ * (`sourceOffset = inPoint + (timelineFrame - startFrame) * speed`), which is
+ * why `setClipSpeed` writes the window as
+ * `outPoint = inPoint + round(durationFrames * speed)`. Reading the span
+ * straight off the window is that relation inverted with the `speed` term
+ * missing, so a 2x clip trimmed to a 60-frame source window came out 60
+ * timeline frames long -- twice the material the window names, and twice the
+ * length preview, ripple and export were told to reserve for it. Dividing by
+ * the clip's own speed is the inverse of the write, so a trimmed clip still
+ * satisfies `outPoint - inPoint === round(durationFrames * speed)` whatever
+ * the speed, and at speed 1 it is the span unchanged.
+ *
+ * The window is the input and the length is derived from it: the caller asked
+ * for a source range, so the timeline length is a consequence of that range
+ * and of the clip's speed, never a value read back off the old length or
+ * carried in from outside.
+ *
+ * A COMPOUND is the one exemption, and it is a type contract rather than an
+ * exception: its window is a range of NESTED-timeline frames that maps 1:1
+ * onto its own duration (compound validation requires
+ * `durationFrames === outPoint - inPoint`, and `setClipSpeed` refuses the type
+ * outright), so its window length already is a timeline length.
+ *
+ * The floor of 1 frame is the speed-aware form of the "out point is at least
+ * one frame past the in point" rule callers establish when they clamp
+ * `outPoint`: a span of one source frame on a 4x clip is still one timeline
+ * frame, and a clip may not be trimmed out of existence.
+ */
+export function trimWindowDurationFrames(clip: Clip, inPoint: Frame, outPoint: Frame): Frame {
+  const speed = clip.type === 'compound' ? 1 : effectiveSpeed(clip.speed);
+  return Math.max(1, Math.round((outPoint - inPoint) / speed));
+}
+
 export class TrimClipCommand implements Command {
   readonly name = 'trimClip';
   private prevIn: Frame = 0;
@@ -380,7 +419,11 @@ export class TrimClipCommand implements Command {
         ...c,
         inPoint: this.newInPoint,
         outPoint: this.newOutPoint,
-        durationFrames: this.newOutPoint - this.newInPoint,
+        // Recomputed here, from the live clip's speed, rather than stored in
+        // the constructor: the constructor is handed the window before it has
+        // seen the project, so any length it carried would be a guess at the
+        // speed the clip is edited at. See `trimWindowDurationFrames`.
+        durationFrames: trimWindowDurationFrames(c, this.newInPoint, this.newOutPoint),
       };
     });
     return { ...project, timeline: { ...project.timeline, clips }, updatedAt: new Date().toISOString() };

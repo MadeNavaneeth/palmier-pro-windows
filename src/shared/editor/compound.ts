@@ -349,14 +349,18 @@ type KeyframedClip = Clip & {
 
 function shiftTrackPoints<
   T extends { frame: number },
->(points: readonly T[] | undefined, delta: number): T[] | undefined {
+>(points: readonly T[] | undefined, delta: number, scale = 1): T[] | undefined {
   if (!points) return undefined;
-  return points.map((point) => ({ ...point, frame: point.frame + delta }));
+  // Keyframe frames are absolute in the clip's OWN timeline, so moving them
+  // into render space is the same timeline→render map the placement uses: a
+  // scale plus a delta. `scale` is 1 everywhere except under a nest whose
+  // compound carries `speed !== 1`, where the frames are not just displaced.
+  return points.map((point) => ({ ...point, frame: Math.round(point.frame * scale) + delta }));
 }
 
-/** Rebase every absolute-frame keyframe track on a clip by `delta` frames. */
-function rebaseKeyframeTracks(clip: Clip, delta: number): Clip {
-  if (delta === 0) return clip;
+/** Rebase every absolute-frame keyframe track by `delta` frames and a `scale`. */
+function rebaseKeyframeTracks(clip: Clip, delta: number, scale = 1): Clip {
+  if (delta === 0 && scale === 1) return clip;
   const keyframed = clip as KeyframedClip;
   if (
     !keyframed.motionX && !keyframed.motionY && !keyframed.motionRot
@@ -366,12 +370,12 @@ function rebaseKeyframeTracks(clip: Clip, delta: number): Clip {
   }
   return {
     ...clip,
-    ...(keyframed.motionX ? { motionX: shiftTrackPoints(keyframed.motionX, delta) } : {}),
-    ...(keyframed.motionY ? { motionY: shiftTrackPoints(keyframed.motionY, delta) } : {}),
-    ...(keyframed.motionRot ? { motionRot: shiftTrackPoints(keyframed.motionRot, delta) } : {}),
-    ...(keyframed.motionScaleX ? { motionScaleX: shiftTrackPoints(keyframed.motionScaleX, delta) } : {}),
-    ...(keyframed.motionScaleY ? { motionScaleY: shiftTrackPoints(keyframed.motionScaleY, delta) } : {}),
-    ...(keyframed.volumeDb ? { volumeDb: shiftTrackPoints(keyframed.volumeDb, delta) } : {}),
+    ...(keyframed.motionX ? { motionX: shiftTrackPoints(keyframed.motionX, delta, scale) } : {}),
+    ...(keyframed.motionY ? { motionY: shiftTrackPoints(keyframed.motionY, delta, scale) } : {}),
+    ...(keyframed.motionRot ? { motionRot: shiftTrackPoints(keyframed.motionRot, delta, scale) } : {}),
+    ...(keyframed.motionScaleX ? { motionScaleX: shiftTrackPoints(keyframed.motionScaleX, delta, scale) } : {}),
+    ...(keyframed.motionScaleY ? { motionScaleY: shiftTrackPoints(keyframed.motionScaleY, delta, scale) } : {}),
+    ...(keyframed.volumeDb ? { volumeDb: shiftTrackPoints(keyframed.volumeDb, delta, scale) } : {}),
   };
 }
 
@@ -700,8 +704,19 @@ interface NestContext {
   /** Visible window in the CURRENT timeline's frames. */
   windowStart: number;
   windowEnd: number;
-  /** Additive shift: render frame = timeline frame + frameShift. */
-  frameShift: number;
+  /**
+   * CURRENT-timeline frames → render frames: `render = frameScale * frame +
+   * frameOffset`. Identity (1, 0) at the root.
+   *
+   * A SCALE, not a running sum of shifts. One compound's timeline→nested map
+   * is `n = inPoint + (t - startFrame) * speed`, so the way back is
+   * `t = startFrame + (n - inPoint) / speed`: already a scaled offset, and
+   * composing two of those multiplies the scales where a sum of displacements
+   * cannot express it. For a `speed: 1` nest every scale is 1 and every offset
+   * an integer, which is exactly the additive shift this pair replaces.
+   */
+  frameScale: number;
+  frameOffset: number;
   /** Composed outer transform (identity at the root). */
   x: number;
   y: number;
@@ -724,7 +739,8 @@ function rootContext(): NestContext {
     namespace: '',
     windowStart: Number.NEGATIVE_INFINITY,
     windowEnd: Number.POSITIVE_INFINITY,
-    frameShift: 0,
+    frameScale: 1,
+    frameOffset: 0,
     x: 0,
     y: 0,
     scaleX: 1,
@@ -808,6 +824,23 @@ function nestedGateLength(clip: Clip, length: number): number {
   return Math.round(length * effectiveSpeed(clip.speed));
 }
 
+// ─── The same model, inverted: nested frames → render frames ─────────────────
+
+/**
+ * Render frame for a frame of the CURRENT timeline, through the nest so far.
+ *
+ * The inverse of `sourceFrameAtBoundary` and of the `childWindow` it feeds: a
+ * nested frame is reached at timeline frame `startFrame + (n - inPoint) / speed`,
+ * and that timeline frame still has to be carried to render space by whatever
+ * ancestors are already open. So the composed nest map is affine and is stored
+ * as one (`NestContext.frameScale`/`frameOffset`), never accumulated as a sum of
+ * displacements — a running sum is that affine restricted to slope 1, which is
+ * what a `speed: 1` nest gives and what made the sum look sufficient.
+ */
+function renderFrameOf(ctx: NestContext, frame: number): number {
+  return Math.round(ctx.frameScale * frame + ctx.frameOffset);
+}
+
 /**
  * Expand one timeline into render clips/tracks. Cyclic, over-deep, dangling,
  * or window-invalid compounds expand to nothing — render never throws.
@@ -854,6 +887,20 @@ function expandTimeline(
     const childWindowEnd = childWindow.outPoint;
 
     const namespace = `${ctx.namespace}${clip.id}/`;
+    // Composed nested → render map for this level, the exact inverse of the
+    // timeline → nested map `sourceWindowForSlice` just applied. With the
+    // parent's map `R(x) = A·x + B` and this clip's own `t = startFrame +
+    // (n - inPoint) / speed`:
+    //
+    //   R(t) = (A / speed)·n + (A·(startFrame - inPoint / speed) + B)
+    //
+    // so entering a nest both MULTIPLIES the scale and re-anchors the offset —
+    // which is why an additive `frameShift` was exact only while every compound
+    // on the path ran at `speed: 1`, where A/speed = A = 1 and this collapses
+    // to the old `B + startFrame - inPoint`.
+    const speed = effectiveSpeed(clip.speed);
+    const childFrameScale = ctx.frameScale / speed;
+    const childFrameOffset = ctx.frameScale * (clip.startFrame - clip.inPoint / speed) + ctx.frameOffset;
     const innerTracksById = new Map(nested.tracks.map((track) => [track.id, track] as const));
     for (const inner of nested.tracks) {
       const synthId = `${namespace}#${inner.id}`;
@@ -872,7 +919,8 @@ function expandTimeline(
       namespace,
       windowStart: childWindowStart,
       windowEnd: childWindowEnd,
-      frameShift: ctx.frameShift + clip.startFrame - clip.inPoint,
+      frameScale: childFrameScale,
+      frameOffset: childFrameOffset,
       x: ctx.x + clip.x,
       y: ctx.y + clip.y,
       scaleX: ctx.scaleX * clip.scaleX,
@@ -937,20 +985,36 @@ function emitLeaf(
   const trackId = atRoot ? clip.trackId : `${ctx.namespace}#${clip.trackId}`;
   if (!atRoot && !outTracks.has(trackId)) return;
 
-  // The emitted trim is the shared source-time model's window for the visible
-  // slice, so a sped-up clip keeps the same `speed` the clip was given while
-  // its `inPoint`/`outPoint` describe the source it actually plays. Rebuilt
-  // without the `speed` term, a 2x clip claims half the source material and
-  // mis-trims on preview and export — the same omission the main-timeline
-  // rebuilds had.
-  const emittedDuration = overlapEnd - overlapStart;
-  const emittedWindow = sourceWindowForSlice(clip, overlapStart, overlapEnd);
+  // Placement is in RENDER frames, so a nest whose compound carries a
+  // non-unit speed lands the leaf where it actually renders instead of one
+  // level's worth of displacement away. The source window is then read off the
+  // RENDER-space head cut and span — the same `speed` term, applied to the
+  // frames the emitted clip actually occupies — which keeps the main-timeline
+  // invariant `outPoint - inPoint === round(durationFrames * speed)` at any
+  // nesting scale, and keeps a sped-up clip from claiming the wrong amount of
+  // source: rebuilt without the `speed` term, a 2x clip claims half the source
+  // material and mis-trims on preview and export.
+  //
+  // `speed: 1` is frame-for-frame the nested-frame arithmetic this replaces:
+  // every scale is 1 and every offset an integer, so the mapped boundaries are
+  // the nested ones, the head cut is the nested one, and the window is
+  // `sourceWindowForSlice(clip, overlapStart, overlapEnd)`.
+  const speed = effectiveSpeed(clip.speed);
+  const renderStart = atRoot ? overlapStart : renderFrameOf(ctx, overlapStart);
+  const renderEnd = atRoot ? overlapEnd : renderFrameOf(ctx, overlapEnd);
+  const renderClipStart = atRoot ? clip.startFrame : renderFrameOf(ctx, clip.startFrame);
+  const headCut = renderStart - renderClipStart;
+  const emittedDuration = renderEnd - renderStart;
+  // A nested slice shorter than one render frame (only reachable when an
+  // ancestor's speed makes the scale < 1) occupies no render time at all.
+  if (emittedDuration <= 0) return;
+  const emittedInPoint = clip.inPoint + Math.round(headCut * speed);
   const emitted: Clip = {
-    ...rebaseKeyframeTracks(clip, atRoot ? 0 : ctx.frameShift),
-    startFrame: overlapStart + (atRoot ? 0 : ctx.frameShift),
+    ...rebaseKeyframeTracks(clip, atRoot ? 0 : ctx.frameOffset, atRoot ? 1 : ctx.frameScale),
+    startFrame: renderStart,
     durationFrames: emittedDuration,
-    inPoint: emittedWindow.inPoint,
-    outPoint: emittedWindow.outPoint,
+    inPoint: emittedInPoint,
+    outPoint: emittedInPoint + Math.round(emittedDuration * speed),
     trackId,
   };
 
@@ -990,17 +1054,21 @@ function emitLeaf(
     // Outer fades ride the whole nest: the longest applicable ramp wins at
     // each edge (an approximation — two multiplied ramps are not exactly one
     // ramp — documented in the module header as out of slice scope to model
-    // exactly). Gates arrive in nested-timeline frames here.
+    // exactly). Gates arrive in nested-timeline frames here while the emitted
+    // ramp is a render-frame length, so a surviving remainder crosses the same
+    // map as the placement above (`* frameScale`, exact at 1). Without it a
+    // compound's own ramp changes length as soon as the nest runs at a
+    // non-unit speed, and reads as nested frames against a render-frame cap.
     const nestedStart = overlapStart;
     const nestedEnd = overlapEnd;
     let fadeIn = emitted.fadeInFrames ?? 0;
     for (const gate of ctx.fadeIns) {
-      const remaining = gate.length - (nestedStart - gate.start);
+      const remaining = (gate.length - (nestedStart - gate.start)) * ctx.frameScale;
       if (remaining > 0) fadeIn = Math.max(fadeIn, remaining);
     }
     let fadeOut = emitted.fadeOutFrames ?? 0;
     for (const gate of ctx.fadeOuts) {
-      const remaining = gate.length - (gate.start + gate.length - nestedEnd);
+      const remaining = (gate.length - (gate.start + gate.length - nestedEnd)) * ctx.frameScale;
       if (remaining > 0) fadeOut = Math.max(fadeOut, remaining);
     }
     fadeIn = clampFrame(Math.min(fadeIn, emittedDuration), 0);

@@ -32,6 +32,27 @@
  *   CURRENT CONTRACT, and the speed term is still honored in the state that
  *   passes it.
  *
+ * THE INVERSE DIRECTION, and why it is a different fix (this file's second
+ * half). Everything above maps a frame DOWN a level. Mapping one back UP is
+ * the other half of the same model, and it is where an additive `frameShift`
+ * failed: the timeline→nested map is `n = inPoint + (t - startFrame) * speed`,
+ * so the way back is `t = startFrame + (n - inPoint) / speed` — a SCALED
+ * offset. Composing two levels multiplies the scales and re-anchors the
+ * offsets, and a running sum of displacements can only ever express the affine
+ * with slope 1. So `NestContext` carries the pair (`frameScale`/`frameOffset`),
+ * and the sum it replaced is the exact special case where every compound on the
+ * path runs at `speed: 1`.
+ *
+ * REACHABILITY of the second half was established before the fix, not assumed:
+ * `setClipSpeed` is the only writer of `speed` in the repo and it refuses a
+ * compound (and a linked group holding one), and the FCPXML importer refuses to
+ * import a compound timeMap. So the state is a legacy project file plus one
+ * window rewrite — `trimClip` sets `durationFrames = outPoint - inPoint` for
+ * any clip type, which re-admits a sped-up compound into a window-valid state
+ * with its `speed` intact. Both halves of that are pinned below, and the
+ * resolver then has to place such a clip correctly, because a file the user can
+ * open must not render its nest displaced.
+ *
  * Differential matrix: at `speed: 1` this must be byte-identical to the
  * pre-fix arithmetic, checked against a verbatim transcription of it across
  * compound window shapes, child layouts, nesting depths and frame rates. The
@@ -335,54 +356,99 @@ const CHILD_LAYOUTS: Array<{ name: string; clips: Clip[] }> = [
 const FRAME_RATES = [24, 25, 30, 60];
 
 /**
- * A nest `depth` compounds deep whose innermost timeline holds `children`, with
- * the inner compound on `innerWindow` and the outer on `outerWindow`.
+ * Attach `speed` the way every writer in the repo does: the speed plus an
+ * `outPoint` scaled from the duration, so the fixture stays self-consistent
+ * with the speed command. `undefined` means no `speed` key at all.
+ */
+function withSpeed(clip: Clip, speed: number | undefined): Clip {
+  if (speed === undefined) return { ...clip };
+  return { ...clip, speed, outPoint: clip.inPoint + Math.round(clip.durationFrames * speed) };
+}
+
+/**
+ * A COMPOUND carrying `speed` with its window left self-consistent, which is
+ * the state a project saved while `setClipSpeed` accepted compounds has after
+ * one `trimClip` (`durationFrames = outPoint - inPoint`, speed untouched). NOT
+ * `withSpeed`: scaling a compound's outPoint is what breaks the window guard
+ * and makes the compound resolve to nothing.
+ */
+function withCompoundSpeed(clip: Clip, speed: number | undefined): Clip {
+  return speed === undefined ? { ...clip } : { ...clip, speed };
+}
+
+/** Every combination of `depth` window shapes, outermost first. */
+function* windowCombinations(depth: number): Generator<CompoundWindowShape[]> {
+  const picks = new Array<number>(depth).fill(0);
+  for (;;) {
+    yield picks.map((pick) => WINDOW_SHAPES[pick]!);
+    let slot = depth - 1;
+    while (slot >= 0) {
+      picks[slot] += 1;
+      if (picks[slot] < WINDOW_SHAPES.length) break;
+      picks[slot] = 0;
+      slot -= 1;
+    }
+    if (slot < 0) return;
+  }
+}
+
+/**
+ * A nest `depth` compounds deep whose innermost timeline holds `children`, one
+ * window per level (`windows[0]` is the deepest compound's), and every
+ * compound carrying `compoundSpeed`.
  */
 function matrixProject(
   fps: number,
-  depth: 1 | 2,
+  depth: 1 | 2 | 3,
   children: Clip[],
-  innerWindow: CompoundWindowShape,
-  outerWindow: CompoundWindowShape,
+  windows: CompoundWindowShape[],
+  compoundSpeed: number | undefined = undefined,
 ): Project {
   const leafId = 'leaf';
-  const innerId = 'inner-seq';
   const nested: Record<string, Timeline> = {
     [leafId]: { tracks: tracks(), clips: children, playheadFrame: 0, name: 'Leaf' },
   };
-  if (depth === 2) {
-    nested[innerId] = {
+  // Timeline `level-i` holds the compound that references `level-(i+1)`, and
+  // the last one references the leaf, so `windows[i]` is that compound's.
+  for (let level = 0; level <= depth - 2; level += 1) {
+    const next = level === depth - 2 ? leafId : `level-${level + 1}`;
+    nested[`level-${level}`] = {
       tracks: tracks(),
-      clips: [compoundClip('inner-clip', leafId, innerWindow)],
+      clips: [withSpeed(compoundClip(`inner-clip-${level}`, next, windows[level]), compoundSpeed)],
       playheadFrame: 0,
-      name: 'Inner',
+      name: `Level ${level}`,
     };
   }
   return {
-    ...windowProject(fps, [compoundClip('outer-clip', depth === 2 ? innerId : leafId, outerWindow)]),
+    ...windowProject(fps, [
+      withSpeed(
+        compoundClip('outer-clip', depth === 1 ? leafId : 'level-0', windows[depth - 1]),
+        compoundSpeed,
+      ),
+    ]),
     timelines: nested,
   };
 }
 
-/** Every matrix case at the given child speed. */
-function* matrixCases(childSpeed: number | undefined): Generator<{ label: string; project: Project }> {
+/** Every matrix case at the given child and compound speeds. */
+function* matrixCases(
+  childSpeed: number | undefined,
+  compoundSpeed: number | undefined = undefined,
+): Generator<{ label: string; project: Project }> {
   for (const fps of FRAME_RATES) {
-    for (const depth of [1, 2] as const) {
-      for (const outer of WINDOW_SHAPES) {
-        for (const inner of WINDOW_SHAPES) {
-          for (const layout of CHILD_LAYOUTS) {
-            const children = layout.clips.map((clip) => (
-              childSpeed === undefined
-                ? { ...clip }
-                // `setClipSpeed` writes outPoint from the scaled duration; keep
-                // the fixture self-consistent with the speed command.
-                : { ...clip, speed: childSpeed, outPoint: clip.inPoint + Math.round(clip.durationFrames * childSpeed) }
-            ));
-            yield {
-              label: `fps=${fps} depth=${depth} outer=${outer.name} inner=${inner.name} children=${layout.name}`,
-              project: matrixProject(fps, depth, children, inner, outer),
-            };
-          }
+    for (const depth of [1, 2, 3] as const) {
+      for (const windows of windowCombinations(depth)) {
+        for (const layout of CHILD_LAYOUTS) {
+          yield {
+            label: `fps=${fps} depth=${depth} windows=${windows.map((w) => w.name).join('/')} children=${layout.name}`,
+            project: matrixProject(
+              fps,
+              depth,
+              layout.clips.map((clip) => withSpeed(clip, childSpeed)),
+              windows,
+              compoundSpeed,
+            ),
+          };
         }
       }
     }
@@ -396,8 +462,8 @@ describe('nested window math at speed 1 is byte-identical to the pre-fix arithme
       expect(actualWindows(project), label).toEqual(legacyWindows(project));
       checked += 1;
     }
-    // 4 fps x 2 depths x 5 x 5 window shapes x 4 child layouts.
-    expect(checked).toBe(4 * 2 * 5 * 5 * 4);
+    // 4 fps x (5 + 25 + 125) window combinations x 4 child layouts.
+    expect(checked).toBe(4 * (5 + 25 + 125) * 4);
   });
 
   it('matches it identically for an explicit `speed: 1`', () => {
@@ -406,23 +472,33 @@ describe('nested window math at speed 1 is byte-identical to the pre-fix arithme
       expect(actualWindows(project), label).toEqual(legacyWindows(project));
       checked += 1;
     }
-    expect(checked).toBe(4 * 2 * 5 * 5 * 4);
+    expect(checked).toBe(4 * (5 + 25 + 125) * 4);
+  });
+
+  it('matches it identically with an explicit `speed: 1` on every COMPOUND too', () => {
+    // The scale the composition introduces is `1 / speed` per level, so a
+    // nest whose compounds are all `speed: 1` has scale 1 at every depth and
+    // the pair collapses to the additive shift. The legacy oracle never reads
+    // a compound's `speed`, so this is byte-identity including the `speed` key
+    // landing on the emitted clip unchanged.
+    let checked = 0;
+    for (const { label, project } of matrixCases(1, 1)) {
+      expect(actualWindows(project), label).toEqual(legacyWindows(project));
+      checked += 1;
+    }
+    expect(checked).toBe(4 * (5 + 25 + 125) * 4);
   });
 
   it('is frame-rate invariant: the same case resolves identically at 24/25/30/60', () => {
-    for (const depth of [1, 2] as const) {
-      for (const outer of WINDOW_SHAPES) {
-        for (const inner of WINDOW_SHAPES) {
-          const children = CHILD_LAYOUTS[3].clips;
-          const reference = actualWindows(
-            matrixProject(24, depth, children, inner, outer),
-          );
-          for (const fps of [25, 30, 60]) {
-            expect(
-              actualWindows(matrixProject(fps, depth, children, inner, outer)),
-              `fps=${fps} depth=${depth} outer=${outer.name} inner=${inner.name}`,
-            ).toEqual(reference);
-          }
+    for (const depth of [1, 2, 3] as const) {
+      for (const windows of windowCombinations(depth)) {
+        const children = CHILD_LAYOUTS[3].clips;
+        const reference = actualWindows(matrixProject(24, depth, children, windows));
+        for (const fps of [25, 30, 60]) {
+          expect(
+            actualWindows(matrixProject(fps, depth, children, windows)),
+            `fps=${fps} depth=${depth} windows=${windows.map((w) => w.name).join('/')}`,
+          ).toEqual(reference);
         }
       }
     }
@@ -582,12 +658,28 @@ describe('a sped-up COMPOUND clip: the guard is current contract, the term is ho
     // Outer window [60,200) over an inner compound at nested 0 spanning 400
     // source frames at 2x. Speed-aware: the visible nested window is
     // [0 + 60*2, 0 + 200*2) = [120, 400). Child 'a' occupies nested [0,200),
-    // so the visible part is [120,200) — 80 frames from source frame 120.
+    // so the visible part is [120,200) — 80 nested frames.
     expect(rendered).toHaveLength(1);
-    expect(rendered[0]).toMatchObject({ durationFrames: 80, inPoint: 120, outPoint: 200 });
-    // The pre-fix oracle reads the same project as the full [60,200).
+    // Those 80 nested frames are 80/2 = 40 RENDER frames, because the inner
+    // compound's 2x is what put them there. Composed by hand, level by level
+    // (`t = startFrame + (n - inPoint) / speed`, then out through the parent):
+    //   inner compound  S=0 I=0 k=2 : nested 120 -> inner-nest 60,
+    //                                        nested 200 -> inner-nest 100
+    //   outer compound  S=0 I=60 k=1: inner-nest 60  -> main 0,
+    //                                          inner-nest 100 -> main 40
+    // So the leaf renders main [0,40), and — the leaf being 1x — plays 40 of
+    // its own source frames, from 60: its own start renders at main -60, so the
+    // head cut is 60. The window stays the source-time model's window, now
+    // measured over the render span the emitted clip actually occupies.
+    expect(rendered[0]).toMatchObject({ startFrame: 0, durationFrames: 40, inPoint: 60, outPoint: 100 });
+    // The pre-fix oracle reads the same project as the full [60,200), and it
+    // never scaled: it emitted the leaf 140 frames long — the NESTED span — so
+    // it ran 100 frames past the 40 the compound actually renders there, and
+    // its window is that nested span's rather than the render span's. Its
+    // start happens to agree here only because the sped-up level's inPoint is
+    // 0, which is the one case where `inPoint` and `inPoint / speed` coincide.
     expect(legacyWindows(controller.getProject())[0])
-      .toMatchObject({ durationFrames: 140, inPoint: 60, outPoint: 200 });
+      .toMatchObject({ startFrame: 0, durationFrames: 140, inPoint: 60, outPoint: 200 });
   });
 
   it('converts the compound\'s own fade ramps into nested frames with the same term', () => {
@@ -615,14 +707,17 @@ describe('a sped-up COMPOUND clip: the guard is current contract, the term is ho
 
     const rendered = actualWindows(project);
     // The compound's window is nested [0,100) of its timeline = [0,200) of the
-    // nested one at 2x, so the leaf renders whole and both ramps apply.
-    //   fadeIn  = round(20 * 2)  = 40
-    //   fadeOut = round(30 * 2)  = 60
+    // nested one at 2x, so the leaf is visible whole — but it renders inside
+    // the compound's own 100-frame footprint, so 200 nested frames become 100
+    // render frames (scale 1/2), and the leaf is 1x, so it plays 100 of its own
+    // source frames. The compound's ramps stay the lengths it was given: 40
+    // nested frames of ramp is 20 render frames, 60 is 30.
     expect(rendered).toHaveLength(1);
-    expect(rendered[0]).toMatchObject({ durationFrames: 200, inPoint: 0, outPoint: 200, fadeInFrames: 40, fadeOutFrames: 60 });
-    // Legacy: the ramps stayed 20 and 30 nested frames long — and because the
-    // legacy child window also drops the term, it is [0,100) rather than
-    // [0,200), so the leaf is cut in half as well.
+    expect(rendered[0]).toMatchObject({ startFrame: 0, durationFrames: 100, inPoint: 0, outPoint: 100, fadeInFrames: 20, fadeOutFrames: 30 });
+    // Legacy: the ramps stayed 20 and 30 nested frames long and were compared
+    // against a nested-frame duration, so they read as 40 and 60 here — and
+    // because the legacy child window also drops the term, it is [0,100)
+    // rather than [0,200), so the leaf is cut in half as well.
     expect(legacyWindows(project)[0]).toMatchObject({
       durationFrames: 100,
       fadeInFrames: 20,
@@ -671,5 +766,304 @@ describe('depth and cycle rejection are unchanged', () => {
     const project = windowProject(30, [compoundClip('c', 'gone', window40())]);
     expect(validateCompoundGraph(project).some((error) => error.includes('unknown nested timeline'))).toBe(true);
     expect(resolveRenderTimeline(project).clips).toEqual([]);
+  });
+});
+
+// ─── The inverse direction: nested → render ─────────────────────────────────
+
+/**
+ * A nest `depth` deep whose compounds carry `compoundSpeeds[i]` on the level
+ * whose window is `windows[i]`, with one leaf at the bottom. Windows are
+ * OUTERMOST FIRST: `windows[0]` is the compound one level below main and
+ * `windows[windows.length - 1]` is the one on main.
+ * `depth === 1 + windows.length`.
+ */
+function composedProject(
+  windows: CompoundWindowShape[],
+  compoundSpeeds: Array<number | undefined>,
+  leaf: Clip,
+  leafTimelineId = 'leaf',
+): Project {
+  const nested: Record<string, Timeline> = {
+    [leafTimelineId]: { tracks: tracks(), clips: [leaf], playheadFrame: 0, name: 'Leaf' },
+  };
+  for (let level = 0; level <= windows.length - 2; level += 1) {
+    const next = level === windows.length - 2 ? leafTimelineId : `level-${level + 1}`;
+    nested[`level-${level}`] = {
+      tracks: tracks(),
+      clips: [withCompoundSpeed(compoundClip(`inner-${level}`, next, windows[level]), compoundSpeeds[level])],
+      playheadFrame: 0,
+      name: `Level ${level}`,
+    };
+  }
+  return {
+    ...windowProject(30, [
+      withCompoundSpeed(
+        compoundClip('outer', windows.length === 1 ? leafTimelineId : 'level-0', windows[windows.length - 1]),
+        compoundSpeeds[compoundSpeeds.length - 1],
+      ),
+    ]),
+    timelines: nested,
+  };
+}
+
+describe('a sped-up COMPOUND: the nest map is a scale and an offset, not a running sum', () => {
+  it('depth 1 — a sped-up ancestor places its leaf by the one-level inverse', () => {
+    // One compound, 2x, inPoint 40, startFrame 0: its own timeline frame `t` is
+    // reached at nested frame `n` by `t = startFrame + (n - inPoint) / speed`.
+    //   nested 100 -> t = (100 - 40) / 2 = 30 -> main 30
+    //   nested 200 -> t = (200 - 40) / 2 = 80 -> main 80
+    // The leaf starts at nested 100, so it renders main [30,80): 50 frames,
+    // playing 50 of its own 1x source frames from 0 (its own start is the head
+    // of the window, so the head cut is 0).
+    const project = composedProject(
+      [{ name: '2x from 40', inPoint: 40, outPoint: 240, startFrame: 0 }],
+      [2],
+      mediaClip({ id: 'leaf', startFrame: 100, durationFrames: 100, inPoint: 0, outPoint: 100 }),
+    );
+    expect(actualWindows(project)).toEqual([{
+      id: 'leaf',
+      startFrame: 30,
+      durationFrames: 50,
+      inPoint: 0,
+      outPoint: 50,
+      speed: undefined,
+      fadeInFrames: undefined,
+      fadeOutFrames: undefined,
+    }]);
+    // The additive sum is right at the window's head and nowhere else: the
+    // legacy oracle places the same leaf 30 frames late, 100 frames long.
+    expect(legacyWindows(project)[0])
+      .toMatchObject({ startFrame: 60, durationFrames: 100, inPoint: 0, outPoint: 100 });
+  });
+
+  it('depth 2 — the displaced head of a trimmed window composes through both levels', () => {
+    // main -> outer (1x, inPoint 20) -> inner (2x, inPoint 40) -> leaf.
+    // Stepping back out one level at a time:
+    //   nested 100 -> inner's timeline (100 - 40) / 2      = 30
+    //             -> outer's timeline  30 - 20              = 10   (outer: 1x)
+    //   nested 200 -> inner's timeline (200 - 40) / 2      = 80
+    //             -> outer's timeline  80 - 20              = 60
+    // So the leaf renders main [10,60). The additive sum cannot express this:
+    // it adds `startFrame - inPoint` per level, which is the inverse of the map
+    // only where `inPoint` and `inPoint / speed` coincide.
+    const project = composedProject(
+      [
+        { name: 'inner 2x from 40', inPoint: 40, outPoint: 240, startFrame: 0 },
+        { name: 'outer 1x from 20', inPoint: 20, outPoint: 220, startFrame: 0 },
+      ],
+      [2, 1],
+      mediaClip({ id: 'leaf', startFrame: 100, durationFrames: 100, inPoint: 0, outPoint: 100 }),
+    );
+    expect(actualWindows(project)[0])
+      .toMatchObject({ startFrame: 10, durationFrames: 50, inPoint: 0, outPoint: 50 });
+    // Legacy: 30 frames late, and 100 frames long where 50 render.
+    expect(legacyWindows(project)[0])
+      .toMatchObject({ startFrame: 40, durationFrames: 100, inPoint: 0, outPoint: 100 });
+  });
+
+  it('depth 3 — two sped-up levels multiply their scales', () => {
+    // main (1x from 20) -> 2x from 0 -> 2x from 0 -> leaf. Windows are
+    // outermost first, so the 1x compound is `windows[2]`.
+    // Stepping back out one level at a time, `t = (n - inPoint) / speed` and
+    // then the parent's own map on the frame that lands in its timeline:
+    //   nested 200 -> 100 ->  50 -> 30   ( (200-0)/2, then (100-0)/2, -20 )
+    //   nested 400 -> 200 -> 100 -> 80
+    // Scale 1/2 * 1/2 = 1/4: the leaf's 200 nested frames are 50 render frames.
+    const project = composedProject(
+      [
+        { name: 'outer inner 2x', inPoint: 0, outPoint: 400, startFrame: 0 },
+        { name: 'deepest 2x', inPoint: 0, outPoint: 400, startFrame: 0 },
+        { name: 'outer 1x from 20', inPoint: 20, outPoint: 220, startFrame: 0 },
+      ],
+      [2, 2, 1],
+      mediaClip({ id: 'leaf', startFrame: 200, durationFrames: 200, inPoint: 0, outPoint: 200 }),
+    );
+    expect(actualWindows(project)[0])
+      .toMatchObject({ startFrame: 30, durationFrames: 50, inPoint: 0, outPoint: 50 });
+    // Legacy: the summed shift walks the leaf's nested coordinates out through a
+    // map that was only ever right at speed 1 — 180 instead of 30, and 20
+    // frames long where 50 render.
+    expect(legacyWindows(project)[0])
+      .toMatchObject({ startFrame: 180, durationFrames: 20, inPoint: 0, outPoint: 20 });
+  });
+
+  it('honors a fractional speed through the same composition', () => {
+    // One compound at 1.5x, inPoint 60: scale 1/1.5, offset -60/1.5 = -40.
+    //   nested 200 -> t = (200 - 60) / 1.5 = 93.33 -> main 93  (rounded)
+    //   nested 300 -> t = (300 - 60) / 1.5 = 160    -> main 160
+    const project = composedProject(
+      [{ name: '1.5x from 60', inPoint: 60, outPoint: 260, startFrame: 0 }],
+      [1.5],
+      mediaClip({ id: 'leaf', startFrame: 200, durationFrames: 100, inPoint: 0, outPoint: 100 }),
+    );
+    expect(actualWindows(project)[0])
+      .toMatchObject({ startFrame: 93, durationFrames: 67, inPoint: 0, outPoint: 67 });
+    // Legacy: 140 — the un-divided shift.
+    expect(legacyWindows(project)[0]).toMatchObject({ startFrame: 140 });
+  });
+
+  it('leaves a sped-up CHILD where it is: a leaf\'s speed moves its window, not its placement', () => {
+    // Depth 2, both compounds at 1x so the placement is a plain shift, with the
+    // leaf itself at 2x. A leaf's speed changes how much SOURCE it claims for
+    // the frames it occupies; it never changes how many frames it occupies, so
+    // `startFrame` must be the same as the 1x case and only the window moves.
+    const oneX = composedProject(
+      [
+        { name: 'inner 1x', inPoint: 0, outPoint: 200, startFrame: 0 },
+        { name: 'outer 1x from 30', inPoint: 30, outPoint: 230, startFrame: 0 },
+      ],
+      [1, 1],
+      mediaClip({ id: 'leaf', startFrame: 100, durationFrames: 100, inPoint: 0, outPoint: 100 }),
+    );
+    const twoX = composedProject(
+      [
+        { name: 'inner 1x', inPoint: 0, outPoint: 200, startFrame: 0 },
+        { name: 'outer 1x from 30', inPoint: 30, outPoint: 230, startFrame: 0 },
+      ],
+      [1, 1],
+      withSpeed(mediaClip({ id: 'leaf', startFrame: 100, durationFrames: 100, inPoint: 0, outPoint: 100 }), 2),
+    );
+    const plain = actualWindows(oneX)[0]!;
+    const sped = actualWindows(twoX)[0]!;
+    expect(sped.startFrame).toBe(plain.startFrame);
+    expect(sped.durationFrames).toBe(plain.durationFrames);
+    // Nested 100 is 30 into the inner compound's window and 30 past the outer
+    // one's, so it renders at main 70 either way. The 2x leaf then claims twice
+    // the source for the frames it occupies.
+    expect(plain).toMatchObject({ startFrame: 70, durationFrames: 100, inPoint: 0, outPoint: 100 });
+    expect(sped).toMatchObject({ startFrame: 70, durationFrames: 100, inPoint: 0, outPoint: 200, speed: 2 });
+  });
+});
+
+describe('a compound carrying `speed`: how such a clip can still occur', () => {
+  it('is refused by every path that writes `speed`, and no other edit writes one', () => {
+    const controller = new EditorController(windowProject(30, [
+      mediaClip({ id: 'a', startFrame: 0, durationFrames: 120, inPoint: 0, outPoint: 120 }),
+      mediaClip({ id: 'b', startFrame: 200, durationFrames: 120, inPoint: 0, outPoint: 120 }),
+    ]));
+    const nest = controller.nestClips(['a']);
+    // The one writer of `speed` refuses the type, loudly.
+    expect(() => controller.setClipSpeed(nest.compoundClipId, 2)).toThrow(/cannot be sped up/);
+    // A linked group holding a nest is refused whole, same reason — reached
+    // from the partner, since the compound's own type is checked first.
+    controller.linkClips([nest.compoundClipId, 'b']);
+    expect(() => controller.setClipSpeed('b', 2)).toThrow(/contains compound clip/);
+    controller.unlinkClips([nest.compoundClipId, 'b']);
+    // Every other compound edit leaves `speed` absent, so none of them can
+    // manufacture the state. (The FCPXML importer is the only other writer in
+    // the repo and it refuses a compound timeMap: importer.ts reports
+    // "constant speed is not imported for compound clips".)
+    controller.moveClip(nest.compoundClipId, 10);
+    controller.trimClip(nest.compoundClipId, 0, 100);
+    controller.setClipFade(nest.compoundClipId, 5, 5);
+    controller.setClipOpacity(nest.compoundClipId, 0.5);
+    controller.setClipPan(nest.compoundClipId, 0.25);
+    controller.setClipBlendMode(nest.compoundClipId, 'screen');
+    expect(controller.setClipOpacityTrack(nest.compoundClipId, [])).toBe(false);
+    expect(controller.getClips().find((clip) => clip.id === nest.compoundClipId)?.speed).toBeUndefined();
+  });
+
+  it('is reachable only through a legacy save, and `trimClip` is what re-admits it', () => {
+    // The state as a project saved while `setClipSpeed` still accepted a
+    // compound arrives with `outPoint - inPoint === round(duration * speed)`,
+    // which the window guard rejects, so it renders as nothing. `trimClip`
+    // rewrites `durationFrames = outPoint - inPoint` for ANY clip type, so one
+    // trim puts the clip back inside the guard with its `speed` intact — and
+    // the resolver then has to place it correctly, which is the whole subject
+    // of the describe above.
+    const controller = new EditorController(windowProject(30, [
+      mediaClip({ id: 'a', durationFrames: 200, inPoint: 0, outPoint: 200 }),
+    ]));
+    const nest = controller.nestClips(['a']);
+    controller.openNestedTimeline(nest.timelineId);
+    const inner = controller.nestClips(['a']);
+    controller.applyClipProperties([inner.compoundClipId], 'Legacy speed', (draft) => {
+      draft.speed = 2;
+      draft.outPoint = draft.inPoint + Math.round(draft.durationFrames * 2);
+      return true;
+    });
+    // Guard failing: the compound is dropped, and flatten refuses it.
+    expect(resolveRenderTimeline(controller.getProject()).clips).toEqual([]);
+    expect(() => planFlatten(controller.getProject(), inner.compoundClipId, { scopeTimelineId: nest.timelineId }))
+      .toThrow(/invalid nested window/);
+    // One trim, and the same clip is inside the guard again.
+    controller.trimClip(inner.compoundClipId, 0, 400);
+    const restored = controller.getClips()[0]!;
+    expect(restored.speed).toBe(2);
+    expect(restored.durationFrames).toBe(restored.outPoint - restored.inPoint);
+    expect(validateCompoundGraph(controller.getProject())).toEqual([]);
+    expect(resolveRenderTimeline(controller.getProject()).clips).toHaveLength(1);
+  });
+});
+
+describe('resolve → flatten round-trips the window it came from', () => {
+  /** Flatten every compound in the project, outermost first, until none remain. */
+  function flattenAll(project: Project): Project {
+    let next = project;
+    for (let pass = 0; pass <= MAX_COMPOUND_DEPTH; pass += 1) {
+      const outermost = next.timeline.clips.find((clip) => clip.type === 'compound');
+      if (!outermost) break;
+      next = planFlatten(next, outermost.id).project;
+    }
+    return next;
+  }
+
+  /** Timing only: flatten restores inner track ids, not the resolved namespace. */
+  const timing = (clips: readonly Clip[]) => clips
+    .map((clip) => ({
+      id: clip.id,
+      startFrame: clip.startFrame,
+      durationFrames: clip.durationFrames,
+      inPoint: clip.inPoint,
+      outPoint: clip.outPoint,
+    }))
+    .sort((left, right) => left.startFrame - right.startFrame || (left.id < right.id ? -1 : 1));
+
+  for (const depth of [1, 2, 3] as const) {
+    it(`lands every resolved leaf back where it rendered at depth ${depth}`, () => {
+      // Windows that do NOT crop the leaf: the resolver emits the visible part
+      // of a clip and flatten restores the whole clip, so an exact match is a
+      // statement about an untrimmed nest. Every level sits 100 frames along
+      // its parent, so the round trip is exercised at a non-zero shift and the
+      // expected render position is 100 * depth.
+      const windows: CompoundWindowShape[] = Array.from(
+        { length: depth },
+        (_unused, level) => ({ name: `level-${level}`, inPoint: 0, outPoint: 400, startFrame: 100 }),
+      );
+      const project = matrixProject(30, depth, CHILD_LAYOUTS[0].clips, windows);
+      const resolved = timing(resolveRenderTimeline(project).clips);
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]!.startFrame).toBe(100 * depth);
+      expect(timing(flattenAll(project).timeline.clips)).toEqual(resolved);
+    });
+  }
+
+  it('agrees with flatten on the mapping when the outer window is trimmed', () => {
+    // Flatten restores the FULL nested content by contract, so a trimmed nest
+    // restores the whole leaf at the position of its own start — including the
+    // head the window hides. The two therefore describe different spans of one
+    // clip, and the property that must hold between them is the MAPPING: the
+    // same number of frames into the clip, counted in render space, is the same
+    // number of frames into its source.
+    const project = matrixProject(30, 2, CHILD_LAYOUTS[0].clips, [
+      { name: 'inner full', inPoint: 0, outPoint: 200, startFrame: 0 },
+      { name: 'outer trimmed', inPoint: 20, outPoint: 120, startFrame: 0 },
+    ]);
+    const resolved = timing(resolveRenderTimeline(project).clips);
+    expect(resolved).toHaveLength(1);
+    const flat = timing(flattenAll(project).timeline.clips);
+    expect(flat).toHaveLength(1);
+    const leaf = resolved[0]!;
+    const whole = flat[0]!;
+    expect(whole.id).toBe(leaf.id);
+    // The whole clip is restored at its own start, 20 frames before the visible
+    // slice, and the resolved head cut into the source is exactly that 20.
+    expect(whole.startFrame).toBe(leaf.startFrame - 20);
+    expect(leaf.inPoint - whole.inPoint).toBe(leaf.startFrame - whole.startFrame);
+    // And the visible span is contained in the whole one.
+    expect(leaf.startFrame).toBeGreaterThanOrEqual(whole.startFrame);
+    expect(leaf.startFrame + leaf.durationFrames)
+      .toBeLessThanOrEqual(whole.startFrame + whole.durationFrames);
   });
 });

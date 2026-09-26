@@ -32,6 +32,7 @@ import {
   scopeTimeline,
   scopeTimelineExists,
   replaceScopeTimeline,
+  trimWindowDurationFrames,
 } from './commands';
 import type { Command, TimelineScopeId } from './commands';
 import { resolveLayoutPreset, type GridLayoutPreset } from './grid-layout';
@@ -409,6 +410,32 @@ function sourceWindowForSlice(
     inPoint,
     outPoint: inPoint + Math.round((end - start) * effectiveSpeed(clip.speed)),
   };
+}
+
+/**
+ * Source frames of headroom, expressed as whole TIMELINE frames.
+ *
+ * A user drag on a clip edge is a distance in TIMELINE frames -- the pointer
+ * moves along the timeline -- while the headroom that bounds it is a distance
+ * in the clip's SOURCE window (`inPoint`, or `outPoint` short of the asset's
+ * end). The shared model advances source time `speed` frames per timeline
+ * frame, so on a sped-up clip those are different scales: a 2x clip with 5
+ * source frames before its asset starts has 2 timeline frames of drag left
+ * before it, and a bound left in source frames would let the edge run twice as
+ * far as the media allows and write an `inPoint` below zero or an `outPoint`
+ * past the end of the asset. Flooring is the safe direction -- a bound one
+ * frame too small refuses a legal drag, one too large corrupts the window --
+ * and at speed 1 this is the source number itself.
+ *
+ * A compound's window is a range of NESTED-timeline frames mapped 1:1 onto its
+ * own duration (compound validation requires `durationFrames === outPoint -
+ * inPoint`, and `setClipSpeed` refuses the type), so its headroom is already a
+ * timeline quantity and passes through untouched.
+ */
+function sourceHeadroomAsTimelineFrames(clip: Clip, headroom: Frame): Frame {
+  if (clip.type === 'compound') return headroom;
+  const speed = effectiveSpeed(clip.speed);
+  return speed === 1 ? headroom : Math.floor(headroom / speed);
 }
 
 /**
@@ -1734,17 +1761,28 @@ export class EditorController {  private project: Project;
     const inPoint = clampFrame(newInPoint);
     const outPoint = clampFrame(newOutPoint, inPoint + 1);
     const linkedIds = new Set(this.expandLinkedClipIds([clipId]));
-    if (!linkedIds.has(clipId) || !this.scopedTimeline().clips.some((clip) => clip.id === clipId)) {
+    const lead = this.scopedTimeline().clips.find((clip) => clip.id === clipId);
+    if (!linkedIds.has(clipId) || !lead) {
       return;
     }
     if (!this.canEditClipIds(linkedIds)) return;
+    // The window the caller asked for is the input and is in SOURCE frames;
+    // the clip's length is a TIMELINE one and follows from that window through
+    // the addressed clip's speed (`trimWindowDurationFrames`). Reading the
+    // timeline length off the source span instead made the clip disagree with
+    // its own window by the speed factor -- the same disagreement
+    // `setClipSpeed` writes the other way round. One length for the group, as
+    // the window is one window: a linked pair keeps the shared timing
+    // `trimClipEdge` gives it, rather than each half taking its own speed's
+    // reading of one range.
+    const durationFrames = trimWindowDurationFrames(lead, inPoint, outPoint);
     const clips = this.scopedTimeline().clips.map((clip) =>
       linkedIds.has(clip.id)
         ? {
             ...clip,
             inPoint,
             outPoint,
-            durationFrames: outPoint - inPoint,
+            durationFrames,
           }
         : clip,
     );
@@ -1771,9 +1809,15 @@ export class EditorController {  private project: Project;
     const durationDeltaRequested = edge === 'right' ? requestedDelta : -requestedDelta;
 
     let minDurationDelta = Math.max(...targets.map((clip) => -(clip.durationFrames - 1)));
+    // Every headroom below is a distance in the clip's own SOURCE window, and
+    // the drag it bounds is measured in TIMELINE frames, so each bound is
+    // converted to the drag's scale first (`sourceHeadroomAsTimelineFrames`).
+    // Clamping against the source number instead would leave a sped-up clip
+    // with speed× more room than its media has.
     let maxDurationDelta = Math.min(...targets.map((clip) => {
       if (edge === 'left') {
-        return ripple ? clip.inPoint : Math.min(clip.inPoint, clip.startFrame);
+        const headroom = sourceHeadroomAsTimelineFrames(clip, clip.inPoint);
+        return ripple ? headroom : Math.min(headroom, clip.startFrame);
       }
       if (clip.type === 'compound') {
         // A compound's source length is its nested content: extending past it
@@ -1790,7 +1834,7 @@ export class EditorController {  private project: Project;
       }
       const asset = this.project.media.find((candidate) => candidate.id === clip.assetId);
       return asset && asset.duration > 0
-        ? Math.max(0, asset.duration - clip.outPoint)
+        ? sourceHeadroomAsTimelineFrames(clip, Math.max(0, asset.duration - clip.outPoint))
         : Number.POSITIVE_INFINITY;
     }));
 
@@ -1844,18 +1888,37 @@ export class EditorController {  private project: Project;
 
     const clips = this.scopedTimeline().clips.map((clip) => {
       if (targetIds.has(clip.id)) {
+        // The drag is a TIMELINE distance and the clip's window is a SOURCE
+        // one, so the window is rebuilt through the shared model
+        // (`sourceOffset = inPoint + (timelineFrame - startFrame) * speed`)
+        // instead of being slid by the same raw delta. Moving the window by
+        // the drag distance moved a 2x clip's source by half what the edge
+        // actually travelled. `durationFrames` stays the timeline length, so at
+        // speed 1 the mapped window is the delta arithmetic it replaces.
         if (edge === 'right') {
           return {
             ...clip,
             durationFrames: clip.durationFrames + durationDelta,
-            outPoint: clip.outPoint + durationDelta,
+            outPoint: sourceWindowForSlice(
+              clip,
+              clip.startFrame,
+              clip.startFrame + clip.durationFrames + durationDelta,
+            ).outPoint,
           };
         }
         return {
           ...clip,
           startFrame: ripple ? clip.startFrame : clip.startFrame - durationDelta,
           durationFrames: clip.durationFrames + durationDelta,
-          inPoint: clip.inPoint - durationDelta,
+          // The grabbed material travels with the edge, so the window's leading
+          // source frame is wherever the edge now sits -- the same
+          // grabbed-material window in both ripple modes: a ripple left trim
+          // leaves `startFrame` in place and pulls the timeline in behind the
+          // material, but the edge moved, so the source frame under it moved
+          // with it. `outPoint` is deliberately untouched: the out end is not
+          // the edge being dragged, and the new in point already leaves it
+          // where the model says it belongs.
+          inPoint: sourceFrameAtBoundary(clip, clip.startFrame - durationDelta),
         };
       }
       const startFrame = shifts.get(clip.id);
