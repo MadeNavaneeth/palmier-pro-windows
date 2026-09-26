@@ -12,6 +12,8 @@ import { ToolExecutor } from './executor';
 import { EditorController } from '../../shared/editor/controller';
 import type { Clip } from '../../shared/types/project';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
+import { parseFcpxml } from '../../shared/fcpxml/importer';
+import { applyFcpxmlPlan } from '../../shared/fcpxml/apply';
 
 // Real ffprobe calls are subprocess-bound; keep their timeout explicit so a
 // loaded parallel run does not inherit the 5 s default used by fast unit tests.
@@ -414,5 +416,126 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
       'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
     ]);
     expect(spedArity).toEqual(undoArity(plain.editor));
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  /**
+   * A title, in the same style as `avSourceProject` above: on the track, with
+   * `styled` deciding whether the adjustment pass writes anything at all.
+   */
+  function titleSourceProject(styled: boolean): EditorController {
+    const editor = at(30);
+    const titleId = editor.addTitleClip({
+      trackId: 'v1', text: styled ? 'Styled' : 'Plain', startFrame: 10, durationFrames: 45,
+    });
+    if (styled) {
+      editor.applyClipProperties([titleId], 'Title', (draft) => {
+        draft.titleColor = '#ffcc00';
+        draft.titleSizeRatio = 0.08;
+        draft.titleFontFamily = 'Georgia';
+        draft.titleAlign = 'left';
+        draft.opacity = 0.4;
+        draft.x = 100;
+        draft.y = 50;
+        draft.width = 640;
+        draft.height = 360;
+        draft.rotation = 0.05;
+        return true;
+      });
+    }
+    return editor;
+  }
+
+  const titleOf = (editor: EditorController): Clip =>
+    editor.getClips().find((c) => c.type === 'title')!;
+
+  const titleState = (editor: EditorController): Record<string, unknown> => {
+    const t = titleOf(editor);
+    return {
+      text: t.text, opacity: t.opacity, x: t.x, y: t.y, width: t.width, height: t.height,
+      rotation: t.rotation, scaleX: t.scaleX, scaleY: t.scaleY,
+      titleColor: t.titleColor, titleSizeRatio: t.titleSizeRatio,
+      titleFontFamily: t.titleFontFamily, titleAlign: t.titleAlign,
+      startFrame: t.startFrame, durationFrames: t.durationFrames,
+    };
+  };
+
+  it('keeps a styled title opacity and geometry instead of resetting them', async () => {
+    const source = titleSourceProject(true);
+    expect(titleOf(source)).toMatchObject({ opacity: 0.4, rotation: 0.05 });
+
+    const { result, editor } = await importInto(source, 30);
+    expect(result.success).toBe(true);
+    const data = result.data as { titles: number; placedClips: number; note: string };
+    expect(data).toMatchObject({ titles: 1, placedClips: 0, note: 'Each placement is a separate undo step.' });
+
+    const t = titleOf(editor);
+    // Opacity and the whole transform box survive; before the fix every one of
+    // these was the addTitleClip default (1, 0, 0, 1920, 1080, 0).
+    expect(t.opacity).toBe(0.4);
+    expect(t.rotation).toBeCloseTo(0.05, 6);
+    expect(t.width).not.toBe(1920);
+    expect(t.height).not.toBe(1080);
+    expect(t.x).not.toBe(0);
+    // The title's own style still lands, including the lossy px->ratio step.
+    expect(t).toMatchObject({ text: 'Styled', titleColor: '#FFCC00', titleFontFamily: 'Georgia', titleAlign: 'left' });
+    expect(t.titleSizeRatio).toBeCloseTo(0.08, 2);
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('leaves a plain title byte-identical and adds no undo step', async () => {
+    const { result, editor } = await importInto(titleSourceProject(false), 30);
+
+    expect(result.success).toBe(true);
+    // The pre-fix values for a title carrying no adjustments at all.
+    expect(titleState(editor)).toEqual({
+      text: 'Plain',
+      opacity: 1,
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      titleColor: '#FFFFFF',
+      titleSizeRatio: 0.08981481481481482,
+      titleFontFamily: 'sans-serif',
+      titleAlign: 'center',
+      startFrame: 10,
+      durationFrames: 45,
+    });
+    // Still one style command: the shared patch rides the title's own batch.
+    expect(undoArity(editor)).toEqual(['setClipProperties', 'replaceClips', 'addTrack']);
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('costs a title import the same undo arity as before', async () => {
+    const styled = await importInto(titleSourceProject(true), 30);
+    const plain = await importInto(titleSourceProject(false), 30);
+
+    // A title is one track, one clip, one batch — three steps, whatever it
+    // carries. Folding the patch in must not add a fourth.
+    const styledArity = undoArity(styled.editor);
+    expect(styledArity).toEqual(['setClipProperties', 'replaceClips', 'addTrack']);
+    expect(styledArity).toEqual(undoArity(plain.editor));
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('agrees with the dialog path on a title, field for field', async () => {
+    const source = titleSourceProject(true);
+    const xmlPath = path.join(tmpDir, 'title-agree.fcpxml');
+    await fs.writeFile(xmlPath, exportFcpxml(source.getProject()), 'utf8');
+    const xml = await fs.readFile(xmlPath, 'utf8');
+
+    const agent = at(30);
+    await new ToolExecutor(agent).execute('import_fcpxml', { path: xmlPath });
+    const shared = at(30);
+    applyFcpxmlPlan(shared, parseFcpxml(xml), new Map(), new Map());
+
+    // The two surfaces now share one title entry point, so they cannot disagree
+    // on which value survives a field both write — the composition order lives in
+    // apply.ts once, not in two matching copies.
+    expect(titleState(agent)).toEqual(titleState(shared));
+    // Sanity that the comparison is not vacuous: the styled title really does
+    // differ from a default one, so an all-default match would mean nothing.
+    expect(titleOf(agent).opacity).toBe(0.4);
+    expect(titleOf(agent).width).not.toBe(1920);
   }, REAL_PROCESS_TIMEOUT_MS);
 });

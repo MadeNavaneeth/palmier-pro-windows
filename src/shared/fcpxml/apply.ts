@@ -64,6 +64,19 @@ export interface ImportedClipFields {
 }
 
 /**
+ * What a title element carries: the clip-side adjustments plus the title's own
+ * style, which `importedClipPatch` does not own. `ImportedTitle` is structurally
+ * assignable to this, so a parsed title can be handed straight over.
+ */
+export interface ImportedTitleFields extends ImportedClipFields {
+  colorHex?: string;
+  fontSizePx?: number;
+  fontFamily?: string;
+  /** The same narrowing `ImportedTitle.alignment` and `Clip.titleAlign` use. */
+  alignment?: 'left' | 'center' | 'right';
+}
+
+/**
  * The speed half of an imported adjustment, or null when the plan clip carries
  * none. Split out of `importedClipPatch` because both halves of a linked A/V
  * group hold ONE source window: `setClipSpeed` writes `speed` and the scaled
@@ -209,6 +222,47 @@ export function applyImportedAdjustments(
 }
 
 /**
+ * A title's style and adjustments, as ONE `applyClipProperties` command.
+ *
+ * A title has no media source, so its placement context is the canvas on both
+ * axes — that is what the geometry helpers scale against, and there is nothing
+ * else. Building the context here instead of taking it is deliberate: a caller
+ * cannot hand a title the probed dimensions of a media asset by mistake, which
+ * is the one context difference between the title and media paths.
+ *
+ * Composition order is the reference one: the explicit style fields first, then
+ * the shared patch, so the patch wins wherever the two could collide. They are
+ * disjoint today — `importedClipPatch` writes opacity, geometry, crop, volume,
+ * muted and motion, never the title's own colour/size/font/alignment — so the
+ * order guards a future collision rather than a present one. It is fixed here
+ * anyway, in one place, so the two import surfaces cannot come to disagree.
+ *
+ * Titles are not linked and have no twin, so unlike `applyImportedAdjustments`
+ * this is a single-clip command by nature rather than by batching.
+ */
+export function applyImportedTitleStyle(
+  editor: EditorController,
+  titleId: string,
+  clip: ImportedTitleFields,
+): void {
+  const { width: canvasWidth, height: canvasHeight } = editor.getProject().settings;
+  const patch = importedClipPatch(clip, {
+    canvasWidth,
+    canvasHeight,
+    sourceWidth: canvasWidth,
+    sourceHeight: canvasHeight,
+  });
+  editor.applyClipProperties([titleId], 'Import title style', (draft) => {
+    if (clip.colorHex) draft.titleColor = clip.colorHex;
+    if (clip.fontSizePx) draft.titleSizeRatio = clip.fontSizePx / canvasHeight;
+    if (clip.fontFamily) draft.titleFontFamily = clip.fontFamily;
+    if (clip.alignment) draft.titleAlign = clip.alignment;
+    if (patch) patch(draft);
+    return true;
+  });
+}
+
+/**
  * A document rate below one frame per second is not a frame rate: every
  * `offset`/`duration` the importer read has already been rounded to whole
  * multi-second units by the time the plan reaches the applier, so the plan's
@@ -321,20 +375,7 @@ export function applyFcpxmlPlan(
         startFrame,
         durationFrames,
       });
-      const titlePatch = importedClipPatch(clip, {
-        canvasWidth,
-        canvasHeight,
-        sourceWidth: canvasWidth,
-        sourceHeight: canvasHeight,
-      });
-      editor.applyClipProperties([titleId], 'Import title style', (draft) => {
-        if (clip.colorHex) draft.titleColor = clip.colorHex;
-        if (clip.fontSizePx) draft.titleSizeRatio = clip.fontSizePx / settingsHeight(editor);
-        if (clip.fontFamily) draft.titleFontFamily = clip.fontFamily;
-        if (clip.alignment) draft.titleAlign = clip.alignment;
-        if (titlePatch) titlePatch(draft);
-        return true;
-      });
+      applyImportedTitleStyle(editor, titleId, clip);
       titles += 1;
       continue;
     }

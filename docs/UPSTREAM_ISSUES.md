@@ -232,6 +232,26 @@ misread, and that envelope is what the tool already used for an unusable
 each with the linked twin on the same rescaled window, and a zero or unparseable
 rate still returns the pre-existing `success: false` with no clip touched.
 
+Titles reached the same conclusion from the other direction. The agent's title
+branch set only `titleColor`, `titleSizeRatio`, `titleFontFamily` and
+`titleAlign`, while the dialog's also runs the title through `importedClipPatch`,
+so a title's `opacity`, transform box and crop were written and then dropped on
+agent import: the same file measured `opacity 0.4, x 163.95, width 512.06` through
+the dialog against `opacity 1, x 0, width 1920` through the agent. Both surfaces
+now call one `applyImportedTitleStyle`, which composes the explicit style fields
+first and the shared patch second (the dialog's order, so the patch wins a
+collision) and issues a single `applyClipProperties` — measured undo arity for a
+title unchanged at three steps, `setClipProperties / replaceClips / addTrack`,
+styled or plain. The helper builds the title's placement context from the canvas
+on both axes rather than taking it, because a title has no media source and the
+one way to get this wrong is to hand a title the probed dimensions of an asset.
+A title's `volume`, `muted` and `crop` are transported by neither surface, which
+is a separate shared gap rather than an agent-specific one. The compound
+materializer's nested title still composes in the opposite order (patch first,
+then the explicit fields); that cannot change a value today because the two field
+sets are disjoint, and it was left alone rather than changed under a fix aimed at
+the agent.
+
 ### #164 — keyboard shortcuts
 
 Bindings live in data, not in a switch statement. `shortcutConflicts()` is

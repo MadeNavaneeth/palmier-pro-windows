@@ -132,7 +132,7 @@ import {
 } from '../media/whisper-local';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxmlWithReport } from '../../shared/fcpxml/exporter';
-import { applyImportedAdjustments, degenerateRateRefusal, frameRescaler } from '../../shared/fcpxml/apply';
+import { applyImportedAdjustments, applyImportedTitleStyle, degenerateRateRefusal, frameRescaler } from '../../shared/fcpxml/apply';
 import { createHash } from 'crypto';
 import { validateLutFile } from '../media/lut-loader';
 import { inspectFramePath, rgbaToPng } from '../media/frame-png';
@@ -2087,13 +2087,7 @@ export class ToolExecutor {
               startFrame,
               durationFrames,
             });
-            this.editor.applyClipProperties([titleId], 'Import title style', (draft) => {
-              if (clip.colorHex) draft.titleColor = clip.colorHex;
-              if (clip.fontSizePx) draft.titleSizeRatio = clip.fontSizePx / this.editor.getProject().settings.height;
-              if (clip.fontFamily) draft.titleFontFamily = clip.fontFamily;
-              if (clip.alignment) draft.titleAlign = clip.alignment;
-              return true;
-            });
+            applyImportedTitleStyle(this.editor, titleId, clip);
             titles += 1;
             continue;
           }
