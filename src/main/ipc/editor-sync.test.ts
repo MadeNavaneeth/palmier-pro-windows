@@ -4,8 +4,11 @@
  * `editor:apply-from-main` must reach the main window and detached panels of
  * the session that owns the edit — and nobody else. Renderer-originated edits
  * use a tagged second argument so siblings can replace their controller state
- * without adding a command to their undo history; the ordinary untagged form
- * remains the main-side adoption path.
+ * without adding a command to their undo history; a main-side (agent/MCP) push
+ * carries the kind its controller published, so a window can tell the agent's
+ * `set_playhead` (a view update) from the agent's real edits (one undoable
+ * step) without guessing from the snapshot. An untagged push stays the
+ * conservative undoable default.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -38,7 +41,11 @@ vi.mock('electron', () => ({
       electronMocks.handlers.set(channel, listener);
     },
   },
-  BrowserWindow: { fromWebContents: electronMocks.fromWebContents },
+  dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
+  BrowserWindow: {
+    fromWebContents: electronMocks.fromWebContents,
+    getFocusedWindow: () => null,
+  },
 }));
 
 const PUSH_DEBOUNCE_MS = 30;
@@ -109,9 +116,58 @@ describe('attachSessionEditorPush (#137 Slice 1)', () => {
 
     const [first] = mainA.sent;
     expect(JSON.parse(first.payload as string).name).toBe('From A agent');
-    // The existing path is still one plain project payload, with no renderer
-    // tag that could accidentally select the silent adoption branch.
-    expect(mainA.calls[0].args).toHaveLength(1);
+    // The main-side push is the project plus a tag of its own shape, which
+    // cannot be mistaken for the renderer tag that selects the silent branch.
+    expect(mainA.calls[0].args[1]).toEqual({ source: 'main', kind: 'edit' });
+  });
+
+  it('tags a cursor move as a playhead, not an edit', async () => {
+    const session = createSession();
+    const main = fakeWindow(1);
+    addWindow(session.id, main);
+    attachSessionEditorPush(session);
+
+    // What the agent's set_playhead does to the session's controller: the
+    // cursor moves and no command is published, so no history entry either.
+    session.controller.setPlayhead(120);
+    await settle();
+
+    expect(session.controller.canUndo()).toBe(false);
+    expect(main.calls).toHaveLength(1);
+    expect(main.calls[0].args[1]).toEqual({ source: 'main', kind: 'playhead' });
+    expect(JSON.parse(main.calls[0].args[0] as string).timeline.playheadFrame).toBe(120);
+  });
+
+  it('collapses a cursor move and an edit into one edit-tagged push', async () => {
+    // Both orders matter: the tag describes the collapsed window, not whichever
+    // notification happened to arrive last, or a turn that ends on a cursor
+    // move would be adopted as a view update and lose the edit.
+    for (const order of ['playhead-first', 'edit-first'] as const) {
+      resetSessions();
+      const session = createSession();
+      const main = fakeWindow(1);
+      addWindow(session.id, main);
+      attachSessionEditorPush(session);
+
+      const parkCursor = (): void => session.controller.setPlayhead(90);
+      const edit = (): void => session.controller.adoptProject(
+        { ...session.controller.getProject(), name: 'Agent rename' },
+      );
+      if (order === 'playhead-first') {
+        parkCursor();
+        edit();
+      } else {
+        edit();
+        parkCursor();
+      }
+      await settle();
+
+      expect(main.calls).toHaveLength(1);
+      expect(main.calls[0].args[1]).toEqual({ source: 'main', kind: 'edit' });
+      const pushed = JSON.parse(main.calls[0].args[0] as string);
+      expect(pushed.name).toBe('Agent rename');
+      expect(pushed.timeline.playheadFrame).toBe(90);
+    }
   });
 
   it('collapses a burst of edits into one push', async () => {

@@ -49,11 +49,13 @@ vi.mock('electron', () => ({
     },
   },
   app: { getPath: () => electronState.userData },
-  BrowserWindow: { fromWebContents: () => null },
+  dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
+  BrowserWindow: { fromWebContents: () => null, getFocusedWindow: () => null },
 }));
 
 const { attachSessionEditorPush, registerEditorSyncHandlers } = await import('./editor-sync');
 const { registerAutosaveHandlers, recoveryFileForSession } = await import('./autosave');
+const { registerProjectHandlers } = await import('./project');
 
 /** Same value as useEditorSync. */
 const PUSH_DEBOUNCE_MS = 300;
@@ -127,13 +129,16 @@ function simulateReload(): void {
 function mountRendererMirror(window: FakeWindow) {
   return createEditorSync({
     controller: useTimelineStore.getState().controller,
-    pullSessionProject: async () => {
+    pullSessionState: async () => {
       const response = invoke('editor:get-state', window.id) as {
         success: boolean;
         data?: unknown;
+        filePath?: unknown;
       };
-      if (!response.success || !response.data) return null;
-      return response.data as Project;
+      return {
+        project: response.success ? response.data as Project : null,
+        filePath: typeof response.filePath === 'string' ? response.filePath : null,
+      };
     },
     pushSnapshot: async (payload) => invoke('editor:sync-from-renderer', window.id, payload),
     onApply: (listener) => {
@@ -142,12 +147,14 @@ function mountRendererMirror(window: FakeWindow) {
         window.onSend = null;
       };
     },
+    reportSessionPath: async (filePath) => invoke('project:set-session-path', window.id, filePath),
   });
 }
 
 const scratchDirs: string[] = [];
 
 beforeAll(() => {
+  registerProjectHandlers();
   registerEditorSyncHandlers();
   registerAutosaveHandlers();
 });

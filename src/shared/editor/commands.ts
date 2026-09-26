@@ -432,33 +432,6 @@ export class AddTrackCommand implements Command {
   }
 }
 
-export class SetPlayheadCommand implements Command {
-  readonly name = 'setPlayhead';
-  private previousFrame: Frame = 0;
-
-  constructor(private frame: Frame) {}
-
-  execute(project: Project): Project {
-    this.previousFrame = project.timeline.playheadFrame;
-    return {
-      ...project,
-      timeline: { ...project.timeline, playheadFrame: this.frame },
-    };
-  }
-
-  undo(project: Project): Project {
-    return {
-      ...project,
-      timeline: { ...project.timeline, playheadFrame: this.previousFrame },
-    };
-  }
-
-  describe(): string {
-    return `Move playhead to frame ${this.frame}`;
-  }
-}
-
-
 /**
  * Apply a pre-resolved set of clip replacements in one undoable step.
  *

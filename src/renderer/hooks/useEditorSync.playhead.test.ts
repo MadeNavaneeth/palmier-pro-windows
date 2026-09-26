@@ -46,12 +46,12 @@ interface MountedWindow {
 /** One session's acceptance counter, exactly like main's per-session sequence. */
 let sessionSequence = 0;
 
-function mountWindow(): MountedWindow {
+function mountWindow(session?: { project: Project | null; filePath: string | null }): MountedWindow {
   const pushes: string[] = [];
   const listeners: Array<(payload: unknown, metadata?: unknown) => void> = [];
   const sync = createEditorSync({
     controller: useTimelineStore.getState().controller,
-    pullSessionProject: async () => null,
+    pullSessionState: async () => session ?? { project: null, filePath: null },
     pushSnapshot: async (payload) => {
       pushes.push(payload);
       return { success: true, sequence: ++sessionSequence };
@@ -62,6 +62,7 @@ function mountWindow(): MountedWindow {
         listeners.splice(listeners.indexOf(listener), 1);
       };
     },
+    reportSessionPath: async () => ({ success: true }),
   });
   return {
     sync,
@@ -254,5 +255,47 @@ describe('a playhead still reaches the other window', () => {
     // Adopting never publishes history in this window, as before.
     expect(controller().canUndo()).toBe(false);
     b.sync.dispose();
+  });
+});
+
+describe('a reload seed is not unsaved work', () => {
+  it('adopts the session project without arming the autosave', async () => {
+    // A reloaded window comes back with a fresh, empty controller and pulls
+    // the session's project instead of pushing its own. That pull restores
+    // state the user already had; it is not new editorial work. Marking it
+    // dirty re-armed the autosave, so reloading a saved, unedited project
+    // could write a recovery snapshot and offer to recover work nobody did --
+    // the same false prompt the playhead fix closed, one path over.
+    const sessionProject = buildSavedProject();
+    const reloaded = mountWindow({ project: sessionProject, filePath: 'C:\\projects\\two-windows.vproj' });
+    await reloaded.sync.ready;
+
+    expect(useProjectStore.getState().isLoaded).toBe(true);
+    expect(useProjectStore.getState().name).toBe('Two windows');
+    expect(useProjectStore.getState().filePath).toBe('C:\\projects\\two-windows.vproj');
+    expect(store().getClips()).toHaveLength(sessionProject.timeline.clips.length);
+    // hasUnsavedChanges is the only gate useAutosave has on both of its
+    // writes, so clean here means no recovery snapshot and no prompt.
+    expect(useProjectStore.getState().hasUnsavedChanges).toBe(false);
+    // And the seed must not push the empty project back over the session.
+    expect(reloaded.pushes).toHaveLength(0);
+
+    reloaded.sync.dispose();
+  });
+
+  it('still marks a real edit dirty after a seed, so the exclusion is narrow', async () => {
+    const sessionProject = buildSavedProject();
+    const reloaded = mountWindow({ project: sessionProject, filePath: 'C:\\projects\\two-windows.vproj' });
+    await reloaded.sync.ready;
+    expect(useProjectStore.getState().hasUnsavedChanges).toBe(false);
+
+    // A genuine edit after the seed IS unsaved work and must be marked, or
+    // real work would go unrecorded.
+    const clipId = controller().getClips()[0].id;
+    expect(controller().setClipBlendMode(clipId, 'multiply')).toBe(true);
+
+    expect(useProjectStore.getState().hasUnsavedChanges).toBe(true);
+
+    reloaded.sync.dispose();
   });
 });

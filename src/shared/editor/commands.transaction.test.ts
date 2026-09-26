@@ -10,13 +10,20 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { CommandHistory, AddTrackCommand, SetPlayheadCommand, type Command } from './commands';
+import { CommandHistory, AddTrackCommand, type Command } from './commands';
 import { createEmptyProject, type Project, type Track } from '../types/project';
 
 function videoTrack(id: string): Track {
   return { id, name: id, type: 'video', locked: false, visible: true, syncLocked: true, order: 0 };
 }
 
+/**
+ * The transaction contract is about WHICH entry gets published, not about the
+ * command, so every test drives a real production command. A purpose-built
+ * fixture would also work, but `AddTrackCommand` additionally moves observable
+ * project state, so the grouped undo/redo assertions can check what the group
+ * actually did rather than that nothing happened.
+ */
 function addTrackCommand(id: string): Command {
   return new AddTrackCommand(videoTrack(id));
 }
@@ -73,12 +80,12 @@ describe('CommandHistory transactions', () => {
     const project = fresh();
 
     history.beginTransaction('Batch');
-    history.execute(new SetPlayheadCommand(42), project);
+    history.execute(addTrackCommand('solo'), project);
     history.commitTransaction();
 
     // A transaction labels a GROUPED action; it must not relabel a single
     // domain operation, or wrapping one call would change its undo label.
-    expect(history.lastCommandName()).toBe('setPlayhead');
+    expect(history.lastCommandName()).toBe('addTrack');
   });
 
   it('names a grouped entry after the transaction', () => {
@@ -86,12 +93,15 @@ describe('CommandHistory transactions', () => {
     let project = fresh();
 
     history.beginTransaction('Trim clips (Agent)');
-    project = history.execute(new SetPlayheadCommand(10), project);
-    project = history.execute(new SetPlayheadCommand(20), project);
+    project = history.execute(addTrackCommand('batched-1'), project);
+    project = history.execute(addTrackCommand('batched-2'), project);
     history.commitTransaction();
 
     expect(history.lastCommandName()).toBe('composite');
-    expect(trackIds(history.redo(history.undo(project)!)!)).toEqual([]);
+    // The group is ONE entry that round-trips both commands, in order.
+    const undone = history.undo(project)!;
+    expect(trackIds(undone)).toEqual([]);
+    expect(trackIds(history.redo(undone)!)).toEqual(['batched-1', 'batched-2']);
   });
 
   it('a nested transaction joins its parent and adds no second entry', () => {

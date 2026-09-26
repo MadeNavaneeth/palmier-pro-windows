@@ -20,6 +20,14 @@ const api = {
       ipcRenderer.invoke('project:save', projectJson, filePath),
     open: () => ipcRenderer.invoke('project:open'),
     getRecent: () => ipcRenderer.invoke('project:get-recent'),
+    /**
+     * Report which .vproj this window holds (null for a project with no file).
+     * The store owns the path and most transitions to a new one never reach a
+     * main-owned channel; the session keeps it so a reloaded window can save to
+     * the same file instead of asking for one over a project already on disk.
+     */
+    setSessionPath: (filePath: string | null) =>
+      ipcRenderer.invoke('project:set-session-path', filePath),
     autosave: (name: string, filePath: string | null, data: string) =>
       ipcRenderer.invoke('project:autosave', name, filePath, data),
     recoveryCheck: () => ipcRenderer.invoke('project:recovery-check'),

@@ -24,10 +24,18 @@
  *   - Writes to different destinations stay independent.
  *   - One failure never stalls the queue and never blocks later writes.
  *   - Every write is atomic: a uniquely named temp file is written and flushed,
- *     then renamed over the destination. A crash or failure leaves the previous
- *     file intact and leaves no temp residue behind.
+ *     then renamed over the destination. A failure leaves the previous file
+ *     intact and removes the staging file; a hard kill leaves the previous file
+ *     intact and the staging file behind, which `pruneAbandonedWriteTemps`
+ *     reclaims on the next write into that directory.
  *   - Nothing here touches Electron, so the contract is unit-testable and the
  *     renderer interaction path is never blocked on file I/O.
+ *
+ * Upstream analogue: none for the residue sweep. NSDocument's write-to-temporary-
+ * file-then-replace is one API call inside the framework, so a process cannot be
+ * killed between the two halves and no residue is ever created for it to reap.
+ * Splitting the atomic write into two Node calls — which is what makes this
+ * implementation atomic at all — is what creates the window the sweep closes.
  */
 
 import fs from 'fs/promises';
@@ -94,6 +102,72 @@ const ATOMIC_TEMP_NAME_RE = /^\.(.+)\.\d+\.\d+\.[0-9a-f]{8}\.tmp$/;
 /** Whether `fileName` is a staging name this writer would have produced. */
 export function isAtomicWriteTempName(fileName: string): boolean {
   return ATOMIC_TEMP_NAME_RE.test(fileName);
+}
+
+/**
+ * Remove one atomic-write staging file abandoned by an earlier process.
+ *
+ * Age is the only safe test, and it is a complete one. A staging name is unique
+ * per write and never reused, so a file whose mtime predates this process can
+ * never become an in-flight write again, while a staging file a live write in
+ * this process is using was necessarily created after this process started.
+ * Deleting an abandoned file therefore cannot disturb a write that still needs
+ * it; deleting a *recent* one would, which is why the age test is not a cleanup
+ * heuristic that may be relaxed.
+ *
+ * The reasoning, the gate and the `PROCESS_START_MS` reference are the same ones
+ * `inspectRecoveryDirectory` applies to the recovery directory; the recovery
+ * copy is private to that module, so the two live side by side and both call
+ * the recognizer above rather than restating the shape.
+ */
+async function removeAbandonedWriteTemp(filePath: string): Promise<void> {
+  try {
+    // lstat, as in the recovery sweep: a symlink planted under a staging name
+    // is not writer residue, so it is left alone.
+    const stat = await fs.lstat(filePath);
+    if (!stat.isFile() || stat.mtimeMs >= PROCESS_START_MS) return;
+    await fs.rm(filePath, { force: true });
+  } catch {
+    // Best effort, as in the recovery sweep: a vanished or unreadable entry
+    // must not make a save fail, and the next save can try again.
+  }
+}
+
+/**
+ * Prune the atomic-write staging files abandoned in `dir` by an earlier process.
+ *
+ * Bounded on purpose. `dir` is the one directory a caller passed in — the
+ * folder holding a project the user just saved — so this is a sweep of our own
+ * residue beside a known target, not a general-purpose cleaner: one directory,
+ * one name convention, one age gate, no recursion.
+ *
+ * `atomicWriteFile` only removes its own staging file when it is still running
+ * and can reach its `catch`. A hard kill between `fs.open` and `fs.rename`
+ * leaves a full-size staging file in the user's project folder, and no code of
+ * ours ever runs again to notice, so without a sweep the residue is
+ * permanent. This is the same failure the recovery directory had, and it is
+ * the same fix; the recovery pipeline cannot reach here because it only ever
+ * visits its own directory.
+ *
+ * Best effort throughout: every failure is swallowed so pruning can never turn
+ * a successful save into a failed one.
+ */
+export async function pruneAbandonedWriteTemps(dir: string): Promise<void> {
+  let entries: string[];
+  try {
+    // Nothing here prunes anything that is not a plain file inside `dir` (see
+    // removeAbandonedWriteTemp), so refusing a non-directory target up front
+    // keeps the sweep to the one directory the caller named.
+    const dirStat = await fs.lstat(dir);
+    if (!dirStat.isDirectory()) return;
+    entries = await fs.readdir(dir);
+  } catch {
+    return;
+  }
+
+  for (const name of entries) {
+    if (isAtomicWriteTempName(name)) await removeAbandonedWriteTemp(path.join(dir, name));
+  }
 }
 
 /**

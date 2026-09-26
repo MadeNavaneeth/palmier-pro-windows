@@ -27,6 +27,8 @@ const PUSH_DEBOUNCE_MS = 300;
 interface MountOptions {
   /** What the session in main answers with. Null means "no project". */
   pull?: () => Promise<Project | null>;
+  /** The file main has that session's project in. */
+  filePath?: string;
   /** Main's reply to a renderer push. */
   reply?: (payload: string) => Promise<unknown>;
 }
@@ -35,16 +37,22 @@ interface Mounted {
   sync: EditorSync;
   /** Serialized snapshots this window sent to main, in order. */
   pushes: string[];
+  /** Project paths this window reported to the session, in order. */
+  reports: Array<string | null>;
   /** Deliver a main -> renderer push to this window. */
   apply: (payload: unknown, metadata?: unknown) => void;
 }
 
 function mount(options: MountOptions = {}): Mounted {
   const pushes: string[] = [];
+  const reports: Array<string | null> = [];
   const listeners: Array<(payload: unknown, metadata?: unknown) => void> = [];
   const sync = createEditorSync({
     controller: useTimelineStore.getState().controller,
-    pullSessionProject: options.pull ?? (async () => null),
+    pullSessionState: async () => ({
+      project: options.pull ? await options.pull() : null,
+      filePath: options.filePath ?? null,
+    }),
     pushSnapshot: async (payload) => {
       pushes.push(payload);
       return options.reply ? options.reply(payload) : { success: true, sequence: pushes.length };
@@ -55,10 +63,15 @@ function mount(options: MountOptions = {}): Mounted {
         listeners.splice(listeners.indexOf(listener), 1);
       };
     },
+    reportSessionPath: async (filePath) => {
+      reports.push(filePath);
+      return { success: true };
+    },
   });
   return {
     sync,
     pushes,
+    reports,
     apply: (payload, metadata) => {
       for (const listener of [...listeners]) listener(payload, metadata);
     },
@@ -218,6 +231,30 @@ describe('reload seeds the window from the session', () => {
     window.sync.dispose();
   });
 
+  it('takes the session’s file back with its work', async () => {
+    const window = mount({
+      pull: async () => projectWithWork('Pre-reload work'),
+      filePath: 'C:\\projects\\pre-reload.vproj',
+    });
+
+    await window.sync.ready;
+
+    // The document does not carry its own path, so without this the window is
+    // back in the workspace with the right project and a Save that asks for a
+    // file over a project that is already on disk.
+    expect(useProjectStore.getState().filePath).toBe('C:\\projects\\pre-reload.vproj');
+    window.sync.dispose();
+  });
+
+  it('leaves the file alone when the session holds no path', async () => {
+    const window = mount({ pull: async () => projectWithWork('Unsaved work') });
+
+    await window.sync.ready;
+
+    expect(useProjectStore.getState().filePath).toBeNull();
+    window.sync.dispose();
+  });
+
   it('lets an edit that lands during the pull win instead of racing it', async () => {
     const session = projectWithWork('Pre-reload work');
     const window = mount({
@@ -311,6 +348,66 @@ describe('a main push never replaces the controller under a pending commit', () 
     window.sync.dispose();
   });
 
+  it('still adopts an edit-tagged main push as exactly one undoable step', async () => {
+    const window = mount();
+    await window.sync.ready;
+    window.pushes.length = 0;
+
+    const agentState = createEmptyProject('Agent state');
+    window.apply(JSON.stringify(agentState), { source: 'main', kind: 'edit' });
+
+    expect(controller().getProject().name).toBe('Agent state');
+    expect(controller().canUndo()).toBe(true);
+    // Adopting is not an edit: it is not pushed back.
+    await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS);
+    expect(window.pushes).toEqual([]);
+    // One step, not two: a single undo takes the whole adopted state back and
+    // leaves nothing behind for a second one.
+    expect(controller().undo()).toBe(true);
+    expect(controller().getProject().name).toBe('Local');
+    expect(controller().canUndo()).toBe(false);
+    window.sync.dispose();
+  });
+
+  it('adopts a playhead-tagged main push as a view update, not an edit', async () => {
+    const window = mount();
+    await window.sync.ready;
+    window.pushes.length = 0;
+
+    // The agent's set_playhead: main's controller published no command, and it
+    // says so. The window must not charge the user an undo entry for the agent
+    // moving the cursor, nor arm the autosave over a saved document.
+    const agent = new EditorController(controller().getProject());
+    agent.setPlayhead(120);
+    window.apply(JSON.stringify(agent.getProject()), { source: 'main', kind: 'playhead' });
+
+    expect(controller().getPlayhead()).toBe(120);
+    expect(controller().canUndo()).toBe(false);
+    expect(useProjectStore.getState().hasUnsavedChanges).toBe(false);
+    // Adopting a view update is not an edit either, so it is not pushed back.
+    await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS);
+    expect(window.pushes).toEqual([]);
+    window.sync.dispose();
+  });
+
+  it('keeps a playhead push out of the way of a pending local write', async () => {
+    const window = mount();
+    await window.sync.ready;
+    window.pushes.length = 0;
+
+    controller().addClip({ assetId: 'dragged', trackId: 'v1', startFrame: 42 });
+    const agent = new EditorController(controller().getProject());
+    agent.setPlayhead(120);
+    window.apply(JSON.stringify(agent.getProject()), { source: 'main', kind: 'playhead' });
+
+    // Same rule as any other inbound state: the local commit owns the window.
+    expect(controller().getPlayhead()).toBe(0);
+    await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS);
+    expect(clipCount()).toBe(1);
+    expect(controller().canUndo()).toBe(true);
+    window.sync.dispose();
+  });
+
   it('holds a tagged sibling push behind the local write and drains it after', async () => {
     const window = mount();
     await window.sync.ready;
@@ -359,6 +456,77 @@ describe('a main push never replaces the controller under a pending commit', () 
 
     expect(clipCount()).toBe(1);
     expect(controller().canUndo()).toBe(true);
+    window.sync.dispose();
+  });
+});
+
+/**
+ * The window owns the project path and reports each change, because three of
+ * the four transitions to a new path (New, a recovery restore, and any future
+ * load) never reach a main-owned channel at all. A stale session record is not
+ * a cosmetic problem: the reloaded window would then save the new project over
+ * the old file.
+ */
+describe('the session is told which file this window holds', () => {
+  it('reports nothing until the path actually changes', async () => {
+    const window = mount();
+    await window.sync.ready;
+
+    // Edits, a rename, a markDirty: none of them move the document.
+    controller().addClip({ assetId: 'asset-1', trackId: 'v1', startFrame: 30 });
+    useProjectStore.getState().setName('Renamed');
+    useProjectStore.getState().markDirty();
+    await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS);
+
+    expect(window.reports).toEqual([]);
+    window.sync.dispose();
+  });
+
+  it('reports an open, a Save As, a recovery restore and a New project', async () => {
+    const window = mount();
+    await window.sync.ready;
+
+    // An open, and a Save As over it: both land in the store as the window
+    // learns the path, and both are real projects in hand.
+    useProjectStore.setState({ filePath: 'C:\\projects\\opened.vproj', isLoaded: true });
+    useProjectStore.setState({ filePath: 'C:\\projects\\save-as.vproj' });
+    // What useRecovery does when a snapshot is restored: the restored project
+    // names the file the snapshot belonged to.
+    useProjectStore.setState({ filePath: 'C:\\projects\\recovered.vproj' });
+    // And the store's own New project, which reaches main through nothing else.
+    useProjectStore.getState().createNew();
+
+    expect(window.reports).toEqual([
+      'C:\\projects\\opened.vproj',
+      'C:\\projects\\save-as.vproj',
+      'C:\\projects\\recovered.vproj',
+      null,
+    ]);
+    window.sync.dispose();
+  });
+
+  it('stops reporting once the window is torn down', async () => {
+    const window = mount();
+    await window.sync.ready;
+    window.sync.dispose();
+
+    useProjectStore.setState({ filePath: 'C:\\projects\\after-dispose.vproj' });
+
+    expect(window.reports).toEqual([]);
+  });
+
+  it('does not clear the session’s file from a window with no project of its own', async () => {
+    const window = mount();
+    await window.sync.ready;
+    useProjectStore.setState({ filePath: 'C:\\projects\\opened.vproj', isLoaded: true });
+    expect(window.reports).toEqual(['C:\\projects\\opened.vproj']);
+
+    // What a reloading window's rebuilt store looks like: no project, no file.
+    // The session's record exists to outlive exactly that, so the emptiness is
+    // not a report — otherwise the file is gone by the time the window pulls it.
+    useProjectStore.setState({ filePath: null, isLoaded: false });
+
+    expect(window.reports).toEqual(['C:\\projects\\opened.vproj']);
     window.sync.dispose();
   });
 });

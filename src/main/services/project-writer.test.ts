@@ -9,11 +9,13 @@ import { watch } from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  PROCESS_START_MS,
   atomicWriteFile,
   drainWrites,
   enqueueWrite,
   isAtomicWriteTempName,
   pendingWriteCount,
+  pruneAbandonedWriteTemps,
   writeProjectFile,
 } from './project-writer';
 
@@ -127,6 +129,150 @@ describe('staging name recognizer', () => {
   it('matches a dotted destination basename, as a recovery snapshot stages', () => {
     expect(isAtomicWriteTempName('.0f8fad5b-d9cb-469f-a165-70867728950e.json.4321.7.deadbeef.tmp'))
       .toBe(true);
+  });
+});
+
+describe('pruneAbandonedWriteTemps', () => {
+  /** Exactly what the writer stages beside a project file. */
+  function stagedName(basename = 'project.vproj'): string {
+    return `.${basename}.${process.pid}.3.0badc0de.tmp`;
+  }
+
+  /** Write a staging entry and place its mtime `offsetMs` from this process's start. */
+  async function writeStaged(dir: string, name: string, offsetMs: number): Promise<string> {
+    const filePath = path.join(dir, name);
+    await fs.writeFile(filePath, 'half-written project', 'utf-8');
+    const when = new Date(PROCESS_START_MS + offsetMs);
+    await fs.utimes(filePath, when, when);
+    return filePath;
+  }
+
+  /** Backdate an entry so only the name convention could spare it. */
+  async function age(filePath: string, offsetMs: number): Promise<void> {
+    const when = new Date(PROCESS_START_MS + offsetMs);
+    await fs.utimes(filePath, when, when);
+  }
+
+  it('removes residue a hard kill left beside a project file', async () => {
+    const dir = await scratchDir();
+    const target = path.join(dir, 'project.vproj');
+    await atomicWriteFile(target, '{"name":"cut"}');
+    // A kill between the writer's `fs.open` and `fs.rename` is all it takes to
+    // leave a full-size file here, and the writer's own `catch` never runs.
+    const abandoned = await writeStaged(dir, stagedName(), -60_000);
+
+    await pruneAbandonedWriteTemps(dir);
+
+    await expect(fs.access(abandoned)).rejects.toThrow();
+    expect(await fs.readdir(dir)).toEqual(['project.vproj']);
+    expect(await fs.readFile(target, 'utf-8')).toBe('{"name":"cut"}');
+  });
+
+  it('keeps a staging file this process created', async () => {
+    const dir = await scratchDir();
+    // No `utimes`: this is the mtime a real in-flight write gets, and it is the
+    // whole reason the sweep is age-gated. This is the premise every
+    // in-flight safety claim below rests on.
+    const staged = path.join(dir, stagedName('live.vproj'));
+    await fs.writeFile(staged, 'half-written project', 'utf-8');
+
+    await pruneAbandonedWriteTemps(dir);
+
+    await expect(fs.access(staged)).resolves.toBeUndefined();
+  });
+
+  it('never removes a staging file a live write is still using', async () => {
+    const dir = await scratchDir();
+    const target = path.join(dir, 'project.vproj');
+    // An old residue file in the same directory, so the sweep provably ran
+    // rather than being skipped: if it deleted the in-flight staging file the
+    // rename below would fail and the write would reject.
+    const abandoned = await writeStaged(dir, stagedName(), -60_000);
+    // A payload big enough that the write is still staging while the sweep runs.
+    const payload = 'x'.repeat(8 * 1024 * 1024);
+
+    await Promise.all([atomicWriteFile(target, payload), pruneAbandonedWriteTemps(dir)]);
+
+    await expect(fs.access(abandoned)).rejects.toThrow();
+    expect(await fs.readFile(target, 'utf-8')).toHaveLength(payload.length);
+    expect(await fs.readdir(dir)).toEqual(['project.vproj']);
+  });
+
+  it('never touches the project file or anything else in the directory', async () => {
+    const dir = await scratchDir();
+    const target = path.join(dir, 'project.vproj');
+    await atomicWriteFile(target, '{"name":"cut"}');
+    const userFiles = [
+      path.join(dir, 'notes.txt'),
+      path.join(dir, 'cut.mp4'),
+      path.join(dir, 'project.vproj.bak'),
+      path.join(dir, 'old.vproj'),
+    ];
+    for (const filePath of userFiles) {
+      await fs.writeFile(filePath, 'user data', 'utf-8');
+      // Every user file is backdated, so the NAME convention is the only thing
+      // that can spare it: an age gate alone would not be enough.
+      await age(filePath, -120_000);
+    }
+    await age(target, -120_000);
+    const nested = path.join(dir, 'assets', 'clip.png');
+    await fs.mkdir(path.dirname(nested), { recursive: true });
+    await fs.writeFile(nested, 'pixels', 'utf-8');
+    await age(nested, -120_000);
+    // Residue inside the subdirectory is out of scope: one directory, no walk.
+    const nestedResidue = await writeStaged(path.join(dir, 'assets'), stagedName('clip.png'), -60_000);
+    await writeStaged(dir, stagedName(), -60_000);
+
+    await pruneAbandonedWriteTemps(dir);
+
+    expect(await fs.readFile(target, 'utf-8')).toBe('{"name":"cut"}');
+    for (const filePath of [...userFiles, nested]) {
+      expect(await fs.readFile(filePath, 'utf-8')).toBe(filePath === nested ? 'pixels' : 'user data');
+    }
+    await expect(fs.access(nestedResidue)).resolves.toBeUndefined();
+    expect((await fs.readdir(dir)).sort()).toEqual([
+      'assets', 'cut.mp4', 'notes.txt', 'old.vproj', 'project.vproj', 'project.vproj.bak',
+    ]);
+  });
+
+  it('leaves files that only resemble the staging shape alone', async () => {
+    const dir = await scratchDir();
+    const nearMisses = [
+      'project.vproj.1234.9.0badc0de.tmp',       // no leading dot
+      '.project.vproj.1234.9.0badc0de.tmp.bak',   // trailing suffix
+      '.project.vproj.1234.9.0badc0de',           // no .tmp suffix
+      '.project.vproj.1234.9.0badc0.tmp',         // 6 hex digits, not 8
+      '.project.vproj.1234.9.0badc0de1.tmp',      // 9 hex digits, not 8
+      '.project.vproj.1234.9.0BADC0DE.tmp',       // the writer emits lowercase
+      '.project.vproj.pid.9.0badc0de.tmp',        // the pid is always numeric
+      '.project.vproj.1234.0badc0de.tmp',         // counter segment missing
+      '..1234.9.0badc0de.tmp',                    // nothing was staged against
+      '.project.vproj',                           // an unrelated dotted name
+    ];
+    const paths: string[] = [];
+    for (const name of nearMisses) paths.push(await writeStaged(dir, name, -60_000));
+    // A directory that borrows the shape is not writer residue either.
+    const borrowed = path.join(dir, stagedName('borrowed'));
+    await fs.mkdir(borrowed);
+    const when = new Date(PROCESS_START_MS - 60_000);
+    await fs.utimes(borrowed, when, when);
+
+    await pruneAbandonedWriteTemps(dir);
+
+    for (const filePath of [...paths, borrowed]) {
+      await expect(fs.access(filePath)).resolves.toBeUndefined();
+    }
+  });
+
+  it('is best effort when the directory is missing or is not a directory', async () => {
+    const dir = await scratchDir();
+    const filePath = path.join(dir, 'not-a-directory.vproj');
+    await fs.writeFile(filePath, 'user data', 'utf-8');
+
+    // A save must never fail because pruning could not run.
+    await expect(pruneAbandonedWriteTemps(path.join(dir, 'absent'))).resolves.toBeUndefined();
+    await expect(pruneAbandonedWriteTemps(filePath)).resolves.toBeUndefined();
+    expect(await fs.readFile(filePath, 'utf-8')).toBe('user data');
   });
 });
 
