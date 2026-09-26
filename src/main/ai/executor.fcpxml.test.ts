@@ -10,6 +10,7 @@ import path from 'path';
 import os from 'os';
 import { ToolExecutor } from './executor';
 import { EditorController } from '../../shared/editor/controller';
+import type { Clip } from '../../shared/types/project';
 import { exportFcpxml } from '../../shared/fcpxml/exporter';
 
 // Real ffprobe calls are subprocess-bound; keep their timeout explicit so a
@@ -187,13 +188,15 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
 
 /**
  * The agent's `import_fcpxml` inlines placement rather than delegating to
- * `applyFcpxmlPlan`, so it asks the shared module for the rate rule instead of
- * re-deriving it. These pin that: a rate too slow to map frames is refused and
- * reported instead of placing invented positions, a zero or unparseable rate
- * never reaches a clip as Infinity/NaN, and every usable rate keeps the exact
+ * `applyFcpxmlPlan`, so it asks the shared module for the rate rule and for the
+ * adjustment batch instead of re-deriving them. These pin that: a rate too slow
+ * to map frames is refused and reported instead of placing invented positions, a
+ * zero or unparseable rate never reaches a clip as Infinity/NaN, a linked A/V
+ * group comes back on one source window with the twin carrying the group's speed
+ * without costing an extra undo step, and every usable rate keeps the exact
  * numbers the unshared converter produced.
  */
-describe('import_fcpxml across frame rates (#154)', () => {
+describe('import_fcpxml per-clip reconstruction (#154)', () => {
   let tmpDir: string;
   let avPath: string;
 
@@ -222,8 +225,12 @@ describe('import_fcpxml across frame rates (#154)', () => {
     return editor;
   }
 
-  /** One sped-up 24/30 fps clip with a linked A/V twin, exported at `fps`. */
-  function avSourceProject(fps: number): EditorController {
+  /**
+   * One trimmed clip over the A/V asset, so `addClip` builds its linked twin.
+   * `speed` defaults to 2x, which `setClipSpeed` writes onto BOTH halves;
+   * pass `'none'` for a document that carries no recovered speed.
+   */
+  function avSourceProject(fps: number, speed: number | 'none' = 2): EditorController {
     const editor = at(fps);
     editor.addMedia({
       id: 'av',
@@ -241,7 +248,7 @@ describe('import_fcpxml across frame rates (#154)', () => {
     });
     const clipId = editor.addClip({ assetId: 'av', trackId: 'v1', startFrame: 20, durationFrames: 48 });
     editor.trimClip(clipId, 30, 78);
-    editor.setClipSpeed(clipId, 2);
+    if (speed !== 'none') editor.setClipSpeed(clipId, speed);
     return editor;
   }
 
@@ -262,6 +269,25 @@ describe('import_fcpxml across frame rates (#154)', () => {
 
   const framesOf = (editor: EditorController): number[] =>
     editor.getClips().flatMap((c) => [c.startFrame, c.durationFrames, c.inPoint, c.outPoint]);
+
+  const pairOf = (editor: EditorController): { video: Clip; audio: Clip } => {
+    const video = editor.getClips().find((c) => c.type === 'video')!;
+    const audio = editor.getClips().find((c) => c.type === 'audio')!;
+    return { video, audio };
+  };
+
+  const video = (editor: EditorController): Clip =>
+    editor.getClips().find((c) => c.type === 'video')!;
+
+  /** Command descriptions of every undo step, innermost first. */
+  function undoArity(editor: EditorController): string[] {
+    const descriptions: string[] = [];
+    while (editor.canUndo() && descriptions.length < 20) {
+      descriptions.push(editor.getLastCommandDescription() ?? '?');
+      editor.undo();
+    }
+    return descriptions;
+  }
 
   for (const { frameDuration, fps, label } of [
     { frameDuration: '2s', fps: 0.5, label: '0.5 fps' },
@@ -300,8 +326,7 @@ describe('import_fcpxml across frame rates (#154)', () => {
     const data = result.data as { placedClips: number; assetsAdded: number; tracksCreated: number; unsupported: string[] };
     expect(data).toMatchObject({ placedClips: 1, titles: 0, assetsAdded: 1, tracksCreated: 1, offline: [] });
     expect(data.unsupported).toEqual([]);
-    const video = editor.getClips().find((c) => c.type === 'video')!;
-    expect(video).toMatchObject({ startFrame: 20, durationFrames: 48, inPoint: 30, outPoint: 126, speed: 2 });
+    expect(video(editor)).toMatchObject({ startFrame: 20, durationFrames: 48, inPoint: 30, outPoint: 126, speed: 2 });
   }, REAL_PROCESS_TIMEOUT_MS);
 
   it('keeps a slower document rescaled up, and its linked twin beside it', async () => {
@@ -311,21 +336,83 @@ describe('import_fcpxml across frame rates (#154)', () => {
     const data = result.data as { placedClips: number; unsupported: string[] };
     expect(data.placedClips).toBe(1);
     expect(data.unsupported).toEqual([]);
-    const video = editor.getClips().find((c) => c.type === 'video')!;
-    const twin = editor.getClips().find((c) => c.type === 'audio')!;
-    expect(video).toMatchObject({ startFrame: 25, durationFrames: 60, inPoint: 38, outPoint: 158, speed: 2 });
-    // Same window as its visual sibling: the rescale is applied to both halves.
-    expect(twin).toMatchObject({ startFrame: 25, durationFrames: 60, inPoint: 38, linkGroupId: video.linkGroupId });
+    const { video: v, audio: a } = pairOf(editor);
+    expect(v).toMatchObject({ startFrame: 25, durationFrames: 60, inPoint: 38, outPoint: 158, speed: 2 });
+    expect(a).toMatchObject({ startFrame: 25, durationFrames: 60, inPoint: 38, linkGroupId: v.linkGroupId });
     // 2 s and 30 frames of source, in seconds, survive the 1.25x rescale.
-    expect(video.startFrame / 30).toBeCloseTo(20 / 24, 6);
-    expect(video.durationFrames / 30).toBeCloseTo(48 / 24, 6);
+    expect(v.startFrame / 30).toBeCloseTo(20 / 24, 6);
+    expect(v.durationFrames / 30).toBeCloseTo(48 / 24, 6);
   }, REAL_PROCESS_TIMEOUT_MS);
 
   it('keeps a faster document rescaled down', async () => {
     const { result, editor } = await importInto(avSourceProject(30), 24);
 
     expect(result.success).toBe(true);
-    const video = editor.getClips().find((c) => c.type === 'video')!;
-    expect(video).toMatchObject({ startFrame: 16, durationFrames: 38, inPoint: 24, outPoint: 100, speed: 2 });
+    expect(video(editor)).toMatchObject({ startFrame: 16, durationFrames: 38, inPoint: 24, outPoint: 100, speed: 2 });
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('gives the linked twin the group speed and the same window, as the source had it', async () => {
+    const source = avSourceProject(30, 2);
+    const sourcePair = pairOf(source);
+    // setClipSpeed writes speed and the scaled outPoint onto BOTH halves.
+    expect(sourcePair.video).toMatchObject({ inPoint: 30, outPoint: 126, speed: 2 });
+    expect(sourcePair.audio).toMatchObject({ inPoint: 30, outPoint: 126, speed: 2 });
+
+    const { result, editor } = await importInto(source, 30);
+    expect(result.success).toBe(true);
+    const { video: v, audio: a } = pairOf(editor);
+
+    // The twin must not be left on the unscaled window: that is a state
+    // setClipSpeed never writes, and the exporter never emits.
+    expect(a).toMatchObject({
+      startFrame: 20, durationFrames: 48, inPoint: 30, outPoint: 126, speed: 2,
+      linkGroupId: v.linkGroupId,
+    });
+    // Both halves come back exactly as the source held them. Ids are freshly
+    // minted on import, so compare the edit state, not the identities.
+    const windowOf = (c: Clip) => ({
+      startFrame: c.startFrame, durationFrames: c.durationFrames,
+      inPoint: c.inPoint, outPoint: c.outPoint, speed: c.speed,
+    });
+    expect(windowOf(v)).toEqual(windowOf(sourcePair.video));
+    expect(windowOf(a)).toEqual(windowOf(sourcePair.audio));
+    expect(a.outPoint - a.inPoint).toBe(Math.round(a.durationFrames * 2));
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('leaves an unspeeded linked pair alone and adds no undo step', async () => {
+    const { result, editor } = await importInto(avSourceProject(30, 'none'), 30);
+
+    expect(result.success).toBe(true);
+    const { video: v, audio: a } = pairOf(editor);
+    // No recovered speed in the document, so nothing about the pair moves.
+    expect(v).toMatchObject({ startFrame: 20, durationFrames: 48, inPoint: 30, outPoint: 78 });
+    expect(a).toMatchObject({ startFrame: 20, durationFrames: 48, inPoint: 30, outPoint: 78 });
+    // `speed` must be absent, not merely equal to one: toMatchObject treats an
+    // explicit undefined as "this key is present and undefined".
+    expect(v.speed).toBeUndefined();
+    expect(a.speed).toBeUndefined();
+    expect(a.linkGroupId).toBe(v.linkGroupId);
+    // The adjustment batch still runs once — the visual clip's own speed is
+    // absent too, so this is the pre-existing single step, not an added one.
+    expect(undoArity(editor)).toEqual([
+      'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
+    ]);
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('costs the 2x pair the same undo arity as the unspeeded one', async () => {
+    const sped = await importInto(avSourceProject(30, 2), 30);
+    const plain = await importInto(avSourceProject(30, 'none'), 30);
+
+    const data = sped.result.data as { note: string; placedClips: number };
+    expect(data.note).toBe('Each placement is a separate undo step.');
+    expect(data.placedClips).toBe(1);
+    // The twin's speed rides the visual element's single batch, so it must not
+    // add a step: the two imports push the same arity and the same commands.
+    // Drain each editor once — undoArity consumes the history it walks.
+    const spedArity = undoArity(sped.editor);
+    expect(spedArity).toEqual([
+      'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
+    ]);
+    expect(spedArity).toEqual(undoArity(plain.editor));
   }, REAL_PROCESS_TIMEOUT_MS);
 });

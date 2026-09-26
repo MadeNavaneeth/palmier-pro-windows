@@ -132,7 +132,7 @@ import {
 } from '../media/whisper-local';
 import { parseFcpxml } from '../../shared/fcpxml/importer';
 import { exportFcpxmlWithReport } from '../../shared/fcpxml/exporter';
-import { importedClipPatch, degenerateRateRefusal, frameRescaler } from '../../shared/fcpxml/apply';
+import { applyImportedAdjustments, degenerateRateRefusal, frameRescaler } from '../../shared/fcpxml/apply';
 import { createHash } from 'crypto';
 import { validateLutFile } from '../media/lut-loader';
 import { inspectFramePath, rgbaToPng } from '../media/frame-png';
@@ -2115,16 +2115,16 @@ export class ToolExecutor {
           if (clip.sourceInFrame > 0) {
             this.editor.trimClip(newClipId, sourceIn, sourceIn + durationFrames);
           }
-          // Imported adjustments ride one undoable batch; a clip carrying
-          // none adds no history. Same mapping as the dialog path (apply.ts).
+          // Imported adjustments ride one undoable batch — the linked twin's
+          // share of the speed included, exactly as the dialog path does
+          // (shared/fcpxml/apply.ts). A clip carrying none adds no history.
           const dims = dimsByPath.get(clip.assetPath);
-          const patch = importedClipPatch(clip, {
+          applyImportedAdjustments(this.editor, newClipId, clip, {
             canvasWidth: this.editor.getProject().settings.width,
             canvasHeight: this.editor.getProject().settings.height,
             sourceWidth: dims?.width,
             sourceHeight: dims?.height,
           });
-          if (patch) this.editor.applyClipProperties([newClipId], 'Import clip adjustments', patch);
           placed += 1;
         }
 

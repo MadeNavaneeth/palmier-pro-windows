@@ -69,6 +69,10 @@ export interface ImportedClipFields {
  * group hold ONE source window: `setClipSpeed` writes `speed` and the scaled
  * `outPoint` onto every linked partner, so the audio twin needs this same rule
  * and there must be exactly one definition of it.
+ *
+ * Deliberately module-private: both import surfaces reach the rule through
+ * `applyImportedAdjustments`, so there is one definition of the speed AND one
+ * place that decides a linked twin shares it.
  */
 function importedSpeedPatch(
   clip: ImportedClipFields,
@@ -156,6 +160,52 @@ export function importedClipPatch(
     for (const set of sets) set(draft);
     return true;
   };
+}
+
+/**
+ * Land one imported element's adjustments — the clip's own, plus the speed every
+ * linked partner shares — as a SINGLE `applyClipProperties` command, or as
+ * nothing at all when the element carries neither, so an untouched element adds
+ * no undo history.
+ *
+ * Both halves of a linked A/V group hold one source window, and
+ * `setClipSpeed` writes `speed` and the scaled `outPoint` onto every linked
+ * partner, so the embedded-audio twin `addClip` just created gets the speed too.
+ * Speed ALONE: the twin is an audio clip and must not inherit this element's
+ * transform, opacity or crop. Ridden in the same batch, so a flat import still
+ * costs one undo step per imported element — the agent tool's own receipt
+ * promises exactly that — and an element with no speed adds no twin entry.
+ *
+ * Shared by both import surfaces (this module's flat materializer and the agent
+ * executor's inline variant) so a twin cannot come out on a different window
+ * from one surface than from the other.
+ */
+export function applyImportedAdjustments(
+  editor: EditorController,
+  clipId: string,
+  clip: ImportedClipFields,
+  ctx: PlacementContext,
+): void {
+  const adjustments = new Map<string, (draft: Clip) => boolean>();
+  const patch = importedClipPatch(clip, ctx);
+  if (patch) adjustments.set(clipId, patch);
+  const twinSpeedPatch = importedSpeedPatch(clip);
+  if (twinSpeedPatch) {
+    for (const linkedId of editor.expandLinkedClipIds([clipId])) {
+      if (linkedId === clipId || adjustments.has(linkedId)) continue;
+      adjustments.set(linkedId, (draft) => {
+        twinSpeedPatch(draft);
+        return true;
+      });
+    }
+  }
+  if (adjustments.size > 0) {
+    editor.applyClipProperties(
+      [...adjustments.keys()],
+      'Import clip adjustments',
+      (draft) => adjustments.get(draft.id)?.(draft) ?? false,
+    );
+  }
 }
 
 /**
@@ -321,38 +371,14 @@ export function applyFcpxmlPlan(
     }
     // Imported adjustments (opacity, opacity animation, speed, volume, crop,
     // geometry) ride one undoable batch; a clip carrying none adds no history.
+    // The batch carries the linked twin's share of the speed too.
     const dims = sourceDimsByPath.get(clip.assetPath);
-    const patch = importedClipPatch(clip, {
+    applyImportedAdjustments(editor, clipId, clip, {
       canvasWidth,
       canvasHeight,
       sourceWidth: dims?.width,
       sourceHeight: dims?.height,
     });
-    // The embedded-audio twin addClip created shares this clip's ONE source
-    // window, so a recovered speed scales it on the twin as well — exactly what
-    // setClipSpeed writes through expandLinkedClipIds. Speed alone: the twin is
-    // an audio clip and must not inherit this element's transform, opacity or
-    // crop. It rides the SAME batch, so a flat import still costs one undo step
-    // per imported element, and an element carrying no speed adds no twin entry.
-    const adjustments = new Map<string, (draft: Clip) => boolean>();
-    if (patch) adjustments.set(clipId, patch);
-    const twinSpeedPatch = importedSpeedPatch(clip);
-    if (twinSpeedPatch) {
-      for (const linkedId of editor.expandLinkedClipIds([clipId])) {
-        if (linkedId === clipId || adjustments.has(linkedId)) continue;
-        adjustments.set(linkedId, (draft) => {
-          twinSpeedPatch(draft);
-          return true;
-        });
-      }
-    }
-    if (adjustments.size > 0) {
-      editor.applyClipProperties(
-        [...adjustments.keys()],
-        'Import clip adjustments',
-        (draft) => adjustments.get(draft.id)?.(draft) ?? false,
-      );
-    }
     placedClips += 1;
   }
 
