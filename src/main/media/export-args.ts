@@ -4,7 +4,7 @@
  * Split out of main/media/exporter.ts so the graph construction is unit-testable
  * without Electron. One behavioral change against the pre-consolidation
  * builder: each unique source path becomes exactly ONE `-i` input, shared by
- * every clip referencing it ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â previously N clips from one source spawned N
+ * every clip referencing it — previously N clips from one source spawned N
  * full decodes. FFmpeg fans a single input out to multiple filter chains, so
  * per-clip trim/scale/overlay semantics are unchanged; audio `-map`s likewise
  * address the consolidated index.
@@ -357,7 +357,7 @@ export function buildFfmpegArgs(
   }
 
   if (audioOnly && audioClips.length === 0) {
-    throw new Error('No audio to export ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â every eligible audio clip is missing or muted.');
+    throw new Error('No audio to export — every eligible audio clip is missing or muted.');
   }
 
   // Input 0: blank canvas as base (video exports only).
@@ -384,9 +384,9 @@ export function buildFfmpegArgs(
     args.push('-i', inputPath);
   }
 
-  // Build filter_complex ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â one graph covering video chains and, when audio
+  // Build filter_complex — one graph covering video chains and, when audio
   // clips are eligible, the timed audio mix. Audio previously mapped raw
-  // full-source streams: no trim, no start offset, no volume ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â every music
+  // full-source streams: no trim, no start offset, no volume — every music
   // bed played from source zero over the whole export. The per-clip chain
   // below shares the video side's source-time mapping (#68), so export and
   // preview address a clip's audio identically.
@@ -905,7 +905,7 @@ function buildFilterGraph(
       edgeHeight = rect.height;
     }
 
-    // Transition fades ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â applied in the clip's own (0-based, post-setpts) time
+    // Transition fades — applied in the clip's own (0-based, post-setpts) time
     // so they match the preview's effective-opacity ramp exactly. alpha=1 makes
     // the fade affect transparency so it composites over the layers below.
     let fadeChain = '';
