@@ -16,6 +16,14 @@ interface ProjectState {
   filePath: string | null;
   isLoaded: boolean;
   hasUnsavedChanges: boolean;
+  /**
+   * A change from another editor this window refused to apply, or null.
+   *
+   * Set by `useEditorSync` when an inbound push is dropped because a local
+   * write was still outstanding, so the record exists only for the window that
+   * threw the push away.
+   */
+  droppedSync: DroppedSyncConflict | null;
 
   createNew: () => void;
   openExisting: () => Promise<void>;
@@ -23,6 +31,41 @@ interface ProjectState {
   setName: (name: string) => void;
   markDirty: () => void;
   markClean: () => void;
+  /** Note a refused inbound push, counting it into the open conflict. */
+  recordDroppedSync: (kind: DroppedSyncConflict['kind']) => void;
+  /**
+   * Retire the open conflict: the user dismissed the notice, this window took
+   * another editor's state again, or the project was replaced.
+   */
+  clearDroppedSync: () => void;
+}
+
+/**
+ * One refused inbound push, and what the notice has to be true about.
+ *
+ * Deliberately NOT the payload. A project snapshot is the largest thing the
+ * renderer holds, the record outlives the debounce that caused the drop, and
+ * keeping one would pin a whole project in memory to render a sentence — while
+ * also handing a future reader a second copy of the state that is deliberately
+ * not reconciled (see useEditor's dropped-push comment). Two fields are what
+ * makes that sentence true:
+ *
+ *  - `kind` is MAIN's own verdict, forwarded rather than re-derived, and it is
+ *    the whole difference between losing work and losing nothing: an `edit`
+ *    published a command the user asked for, a `playhead` only moved a cursor.
+ *  - `dropped` counts the rest of the turn, because main collapses a multi-tool
+ *    turn into one push per 30ms window. A user who lost four edits has to be
+ *    told four; a notice that says "a change" once is how a warning stops
+ *    being believed.
+ *
+ * It deliberately does not name the agent tool call that produced the change.
+ * Main's push metadata carries the kind and nothing else, so a tool identity
+ * would mean widening that IPC contract — a main-process change well outside
+ * this fix, and not needed to say what happened.
+ */
+export interface DroppedSyncConflict {
+  kind: 'edit' | 'playhead';
+  dropped: number;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -30,10 +73,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   filePath: null,
   isLoaded: false,
   hasUnsavedChanges: false,
+  droppedSync: null,
 
   createNew: () => {
     useTimelineStore.getState().controller.reset();
-    set({ name: 'Untitled Project', filePath: null, isLoaded: true, hasUnsavedChanges: false });
+    // A refusal recorded against the previous document says nothing about this
+    // one, so it does not follow the user into it.
+    set({
+      name: 'Untitled Project',
+      filePath: null,
+      isLoaded: true,
+      hasUnsavedChanges: false,
+      droppedSync: null,
+    });
   },
 
   openExisting: async () => {
@@ -49,6 +101,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         filePath: result.path || null,
         isLoaded: true,
         hasUnsavedChanges: false,
+        droppedSync: null,
       });
     } catch (err) {
       console.error('Failed to parse project file:', err);
@@ -85,4 +138,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!get().hasUnsavedChanges) set({ hasUnsavedChanges: true });
   },
   markClean: () => set({ hasUnsavedChanges: false }),
+
+  recordDroppedSync: (kind) => {
+    const open = get().droppedSync;
+    // A dropped edit opens a conflict and its later drops extend it; a dropped
+    // cursor move neither opens one nor inherits a count, because a lost
+    // cursor position is not a conflict (useEditorSync stays silent for it).
+    if (!open || (open.kind === 'playhead' && kind === 'edit')) {
+      set({ droppedSync: { kind, dropped: 1 } });
+      return;
+    }
+    set({ droppedSync: { kind: open.kind, dropped: open.dropped + 1 } });
+  },
+  clearDroppedSync: () => {
+    if (get().droppedSync) set({ droppedSync: null });
+  },
 }));

@@ -11,6 +11,7 @@ import { Inspector } from './components/Inspector';
 import { ExportPanel } from './components/ExportDialog';
 import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
 import { RecoveryPrompt } from './components/RecoveryPrompt';
+import { DroppedSyncNotice } from './components/DroppedSyncNotice';
 import { CommandPalette } from './components/CommandPalette';
 import { useProjectStore } from './store/project';
 import { useUiStore, SPLITS_DEFAULTS, type PanelVisibility } from './store/ui';
@@ -92,6 +93,7 @@ export function App() {
     <>
       <MainWorkspace />
       <RecoveryPrompt />
+      <DroppedSyncNotice />
     </>
   );
 }

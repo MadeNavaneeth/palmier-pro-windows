@@ -28,7 +28,7 @@
 
 import { useEffect } from 'react';
 import { useTimelineStore } from '../store/timeline';
-import { useProjectStore } from '../store/project';
+import { useProjectStore, type DroppedSyncConflict } from '../store/project';
 import { StateMirror } from '../../shared/editor/state-mirror';
 import { asMirroredProject } from '../../shared/ui/detached-panels';
 import { sameProjectExceptPlayhead, type EditorController } from '../../shared/editor/controller';
@@ -159,6 +159,15 @@ export interface EditorSync {
  *     from the session. Tagged sibling pushes are held for the same reason and
  *     drained by main's acceptance sequence.
  *
+ *     An untagged push inside that window is therefore DISCARDED — with main
+ *     already told it landed. Sequencing the two is a separate, larger decision
+ *     that is deliberately still open, so what happens here instead is that the
+ *     refusal is recorded and shown: an agent edit lost this way is invisible
+ *     from the agent transcript, which still reads as a success. See
+ *     `reportDroppedSync` at the drop site, and `DroppedSyncNotice` — mounted at
+ *     App level, because a notice inside a panel the user has hidden, detached,
+ *     or left on another tab is not a notice — for what the user is shown.
+ *
  *  3. Only an EDIT is unsaved work. The playhead is the cursor, and it still
  *     travels — the compositor composites the pushed frame and sibling windows
  *     follow it — but neither a local move, a sibling's move, nor the agent's
@@ -227,6 +236,20 @@ export function createEditorSync(options: EditorSyncOptions): EditorSync {
       applyRendererSync(sequence, update.project, update.incoming);
     }
   }
+
+/**
+ * Note a refused inbound push, and nothing else.
+ *
+ * Deliberately no user-facing wording here. The conflict record is the whole
+ * contract between this module and the window: `DroppedSyncNotice` renders it,
+ * and rendering it from the record rather than from a string set here is what
+ * keeps the notice honest. A sentence written at the drop site would have to be
+ * re-derived by anything that displayed it, and would survive the record that
+ * says whether there is anything to display.
+ */
+function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
+  useProjectStore.getState().recordDroppedSync(kind);
+}
 
   /**
    * Mirror one snapshot to main.
@@ -338,25 +361,49 @@ export function createEditorSync(options: EditorSyncOptions): EditorSync {
         return;
       }
 
-      // A local write is outstanding, so this inbound state is dropped. The
-      // local write wins the session, and that is a PRIORITY this module
-      // asserts rather than an ordering it derives: the window is mid-gesture
-      // or mid-debounce, and adopting now would swap the controller out from
-      // under a commit about to be sent, after which the timer would serialize
-      // the adopted state and push that — losing the user's edit from the
-      // window and from the session. So it is dropped, and nothing is queued:
-      // the state is discarded with a success receipt, so an agent edit that
-      // landed inside a 300ms debounce window is gone from this window for
-      // good, with main told the push succeeded. Sequencing these instead —
-      // ordering them by main's acceptance sequence, rebasing, or versioning —
-      // is a separate decision and is deliberately not taken here. The same
-      // rule covers a tagged playhead push, for the same reason.
-      if (pendingLocal) return;
-
-      // Ignore a push that matches what we last sent (our own state echoed).
+      // This window's own state, echoed back. Checked before the pending-local
+      // guard below, because an echo is not a change from another editor: main
+      // demonstrably already holds it, so refusing it costs nothing whatever
+      // else is outstanding. Reordering only decides which of two returns
+      // happens — both return, and nothing is applied, marked, or recorded
+      // either way, so which push wins is untouched.
       if (mirror.isEcho(incoming)) return;
+
+      // A local write is outstanding, so this inbound state is dropped, and
+      // main's reply already told the sender it landed. The local write wins
+      // the session, and that is a PRIORITY this module asserts rather than an
+      // ordering it derives: the window is mid-gesture or mid-debounce, and
+      // adopting now would swap the controller out from under a commit about to
+      // be sent, after which the timer would serialize the adopted state and
+      // push that — losing the user's edit from the window and from the session.
+      // So it is dropped, and nothing is queued: the state is discarded with a
+      // success receipt, so an agent edit that landed inside a 300ms debounce
+      // window is gone from this window for good, with main told the push
+      // succeeded. Sequencing these instead — ordering them by main's
+      // acceptance sequence, rebasing, or versioning — is a separate decision
+      // and is deliberately not taken here.
+      //
+      // WHICH of the two things this can be is what decides whether anything
+      // was lost, and main's own tag is what says so (an `edit` published a
+      // command, a `playhead` only moved the cursor). An edit dropped here is
+      // user-visible data loss that no other surface reports: the agent's turn
+      // completes and its transcript reads as a success. So the refusal is
+      // RECORDED — the kind, and a count so a multi-tool turn's worth of losses
+      // is not reported as one — and `DroppedSyncNotice` renders that record in
+      // front of the user. The payload is not kept: see DroppedSyncConflict.
+      // This holds for an untagged push too, which is reported as the edit it
+      // might be, matching the undoable default the adoption path below already
+      // assumes for it.
+      if (pendingLocal) {
+        reportDroppedSync(isMainSyncMetadata(metadata) ? metadata.kind : 'edit');
+        return;
+      }
+
       // Main demonstrably holds this state, so it need not be echoed back.
       mirror.markConfirmed(incoming);
+      // This window has just taken another editor's state, so it is back in step
+      // and whatever it refused earlier is no longer the live question.
+      useProjectStore.getState().clearDroppedSync();
 
       if (isMainSyncMetadata(metadata) && metadata.kind === 'playhead') {
         // The agent moved the playhead. That is the cursor and nothing else —

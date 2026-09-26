@@ -49,10 +49,16 @@ const VISIBLE_PANELS = JSON.stringify({ media: true, inspector: true, agent: tru
 // The renderer fires a few preboot IPC calls during mount; feature
 // registration is intentionally skipped here, so answer them with no-ops to
 // keep the probe output clean.
-for (const channel of ['editor:sync-from-renderer', 'system:check-ffmpeg']) {
-  ipcMain.removeHandler(channel);
-  ipcMain.handle(channel, () => null);
-}
+//
+// `editor:sync-from-renderer` deliberately never resolves, and that is the
+// point: useEditorSync clears its pending-local flag only once main accepts the
+// window's own snapshot, so an answer that never comes pins the window in
+// exactly the state the refused-push path needs — a local write outstanding —
+// for the whole run. That is what lets the notice below be produced
+// deterministically instead of raced against a 300ms debounce.
+ipcMain.removeHandler('editor:sync-from-renderer');
+ipcMain.handle('editor:sync-from-renderer', () => new Promise(() => {}));
+ipcMain.handle('system:check-ffmpeg', () => null);
 
 /** Runs in the page: generic overflow scan plus the token checks the parity
  * ledger records after every UI batch. */
@@ -76,6 +82,30 @@ const MEASURE = () => {
   const liveTokenElement = document.querySelector('.text-2xs');
   if (liveTokenElement) textProbe = getComputedStyle(liveTokenElement).fontSize;
 
+  // The refused-push notice, measured where it renders. Reported for every
+  // state so the rows without one say so explicitly rather than omitting the
+  // field, and asserted by the driver so a notice pushed off-screen, or wide
+  // enough to be clipped by its column, fails instead of passing quietly.
+  let noticeBox = null;
+  const noticeEl = document.querySelector('[data-dropped-sync-notice]');
+  if (noticeEl) {
+    const r = noticeEl.getBoundingClientRect();
+    const parent = noticeEl.parentElement;
+    const pr = parent ? parent.getBoundingClientRect() : null;
+    noticeBox = {
+      text: noticeEl.textContent,
+      left: Math.round(r.left),
+      top: Math.round(r.top),
+      right: Math.round(r.right),
+      bottom: Math.round(r.bottom),
+      width: Math.round(r.width),
+      height: Math.round(r.height),
+      // Wider than the column it sits in means the text is clipped rather than
+      // wrapped, which is the one way this box could hide its own message.
+      clipped: pr ? r.right > pr.right + 1 : false,
+    };
+  }
+
   return {
     width: window.innerWidth,
     height: window.innerHeight,
@@ -83,6 +113,7 @@ const MEASURE = () => {
     overflowY: doc.scrollHeight - window.innerHeight,
     offenderCount: offenders.length,
     offenders,
+    noticeBox,
     token: getComputedStyle(document.documentElement).getPropertyValue('--text-2xs').trim(),
     textProbe,
     // Proof the workspace -- not the welcome screen -- is what was measured.
@@ -154,6 +185,66 @@ async function prepareWorkspace(win) {
   await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
+/**
+ * Put a lost-agent-edit notice on screen, through the real code path.
+ *
+ * This is the one user-visible thing an app can do to itself without anyone
+ * noticing: useEditorSync refuses an inbound push while a local write is
+ * outstanding, and the notice that now says so is the only trace of the loss
+ * (the agent's own transcript still reads as a success). A layout gate that
+ * never renders it would leave the one line a user gets for real data loss
+ * unmeasured, so it is driven end to end rather than stubbed: main sends
+ * `editor:apply-from-main` in the exact shape and tag it uses for a real agent
+ * turn, the window refuses it for the pending-local reason, and the notice
+ * appears.
+ *
+ * The precondition is held open by the probe's own never-resolving
+ * `editor:sync-from-renderer` handler (see the top of this file), so this is not
+ * a race against a debounce and needs no clip, no gesture and no playback —
+ * pressing Play here instead crashes the renderer, because the probe registers
+ * no compositor and the canvas is handed a zero-size ImageData.
+ *
+ * The notice is REQUIRED to be found. A run that quietly failed to reach the
+ * conflict path would otherwise report a clean zero offenders, which is the
+ * failure mode this whole harness exists to prevent.
+ */
+async function showDroppedSyncNotice(win) {
+  win.webContents.send(
+    'editor:apply-from-main',
+    JSON.stringify({
+      version: 2,
+      name: 'Agent state that was refused',
+      settings: { width: 1920, height: 1080, fps: 30, sampleRate: 48000, backgroundColor: '#000000' },
+      media: [],
+      timeline: { tracks: [], clips: [], markers: [], playheadFrame: 0 },
+    }),
+    { source: 'main', kind: 'edit' },
+  );
+
+  const found = await win.webContents.executeJavaScript(`
+    new Promise((resolve) => {
+      const deadline = Date.now() + 3000;
+      const tick = () => {
+        const el = document.querySelector('[data-dropped-sync-notice]');
+        if (el) return resolve(el.textContent);
+        if (Date.now() > deadline) return resolve(null);
+        setTimeout(tick, 50);
+      };
+      tick();
+    })
+  `);
+  if (!found) {
+    const diagnostics = await win.webContents.executeJavaScript(`
+      JSON.stringify({
+        elements: document.querySelectorAll('body *').length,
+        text: document.body.innerText.slice(0, 200),
+      })
+    `);
+    throw new Error(`a refused push did not produce a notice: ${diagnostics}`);
+  }
+  return found;
+}
+
 app.whenReady().then(async () => {
   try {
     const win = new BrowserWindow({
@@ -206,6 +297,26 @@ app.whenReady().then(async () => {
     );
     if (!Number.isInteger(tablists) || tablists < 2) {
       throw new Error(`grouped workspace rendered ${tablists} tablist(s), expected at least 2`);
+    }
+
+    // State 3: a lost agent edit is on screen. Measured with the same overflow
+    // gate as the two layouts, because the notice is a new line of text in a
+    // column that is already tight at 1024x680 -- and the specific failure this
+    // catches is a wrapped notice pushing the grid below the fold, which the
+    // generic scan reports as an offender rather than as "the notice appeared".
+    await showDroppedSyncNotice(win);
+    for (const size of sizes) {
+      results.push({ ...(await measureAt(win, size)), panelState: 'notice' });
+    }
+    // The notice has to be inside the viewport, unclipped, at BOTH sizes: a
+    // warning about lost work that renders off-screen, or clipped by its own
+    // column, is the same as no warning.
+    for (const r of results.filter((row) => row.panelState === 'notice')) {
+      if (!r.noticeBox) throw new Error(`the notice was gone at ${r.width}x${r.height}`);
+      const b = r.noticeBox;
+      if (b.right > r.width || b.bottom > r.height || b.clipped) {
+        throw new Error(`the notice does not fit ${r.width}x${r.height}: ${JSON.stringify(b)}`);
+      }
     }
 
     console.log(`REPORT:${JSON.stringify(results)}`);
