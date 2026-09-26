@@ -119,7 +119,20 @@ interface ClipClipboardEntry {
 import { computeRippleShifts, mergeRippleRanges, type RippleRange } from './ripple';
 import { timelineSilenceRanges } from './silence-scoping';
 
-export type StateChangeListener = (project: Project) => void;
+/**
+ * What a notification is about, for the subscriber that must tell the two apart.
+ *
+ * `edit` is editorial work: something the user would expect to undo, and work a
+ * crash-recovery snapshot exists to protect. `playhead` is the cursor. It lives
+ * in the project because preview and delivery are both frame-relative, but
+ * moving it authors nothing, so a subscriber must not treat it as unsaved work
+ * — otherwise opening a saved project and pressing Play marks it dirty, the
+ * autosave writes a snapshot, and the next launch offers to recover a project
+ * nobody edited.
+ */
+export type StateChangeKind = 'edit' | 'playhead';
+
+export type StateChangeListener = (project: Project, kind: StateChangeKind) => void;
 
 export interface MediaPlacementResult {
   assetIds: string[];
@@ -632,6 +645,65 @@ function clearSoloState(project: Project): Project {
   };
 }
 
+/**
+ * True when two projects are the same project with the playheads possibly
+ * somewhere else.
+ *
+ * Sibling windows receive whole-project snapshots, and a playhead move is the
+ * one difference in one of them that is not editorial work. Pinning every
+ * timeline's playhead on both sides and comparing the rest is what lets the
+ * receiving window adopt a peer's cursor move without claiming unsaved work,
+ * and therefore without arming the recovery snapshot that raises the
+ * "Unsaved work found" prompt on the next launch. Any other difference is
+ * editorial and answers false, which is the direction that keeps real work
+ * protected.
+ *
+ * Compared by value, the way the snapshots travel: key order and spelling are
+ * not differences, and a key explicitly set to `undefined` is the same as an
+ * absent one, because JSON drops it in transit.
+ */
+export function sameProjectExceptPlayhead(left: Project, right: Project): boolean {
+  if (left === right) return true;
+  return sameJsonValue(withoutPlayheads(left), withoutPlayheads(right));
+}
+
+/** The project with every timeline's playhead pinned, so it cannot differ. */
+function withoutPlayheads(project: Project): Project {
+  const pin = (timeline: Timeline): Timeline => ({ ...timeline, playheadFrame: 0 });
+  const timelines = project.timelines
+    ? Object.fromEntries(
+      Object.entries(project.timelines).map(([id, timeline]) => [id, pin(timeline)]),
+    )
+    : undefined;
+  return {
+    ...project,
+    timeline: pin(project.timeline),
+    ...(timelines ? { timelines } : {}),
+  };
+}
+
+/** Value equality for JSON-shaped data. */
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== 'object' || typeof right !== 'object'
+    || left === null || right === null) {
+    return false;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    return left.every((item, index) => sameJsonValue(item, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).filter((key) => leftRecord[key] !== undefined);
+  const rightKeys = Object.keys(rightRecord).filter((key) => rightRecord[key] !== undefined);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => key in rightRecord
+    && sameJsonValue(leftRecord[key], rightRecord[key]));
+}
+
 export class EditorController {  private project: Project;
   private history: CommandHistory;
   private listeners: Set<StateChangeListener> = new Set();
@@ -902,14 +974,7 @@ export class EditorController {  private project: Project;
    * is open for editing).
    */
   setPlayheadInScope(frame: Frame, scopeId: string | null): void {
-    const target = timelineInScope(this.project, scopeId);
-    this.execute(new ReplaceProjectCommand(
-      withTimelineInScope(this.project, scopeId, {
-        ...target,
-        playheadFrame: clampFrame(frame),
-      }),
-      'Move playhead',
-    ));
+    this.movePlayhead(frame, scopeId);
   }
 
   //  Command execution
@@ -3546,11 +3611,39 @@ export class EditorController {  private project: Project;
   }
 
   setPlayhead(frame: Frame): void {
-    this.project = this.withScopedTimeline({
-      ...this.scopedTimeline(),
-      playheadFrame: clampFrame(frame),
+    this.movePlayhead(frame, this.getActiveTimelineId());
+  }
+
+  /**
+   * The one place a playhead moves, whichever scope asked for it.
+   *
+   * The playhead is the view cursor, not an edit, so it is written straight
+   * onto the project instead of through a command: it never reaches the undo
+   * stack and never displaces an entry from the capped history. That matters
+   * most for the paths that land here once per pointer frame or per keystroke
+   * — the preview scrub, the transport, frame stepping, ruler scrubbing and
+   * the playback engine. As a whole-project `ReplaceProjectCommand` each of
+   * those consumed an undo entry, so Ctrl+Z after a few seconds of scrubbing
+   * answered "Move playhead" while real edits had been shifted out of the
+   * 200-entry stack. `updatedAt` is left alone for the same reason: the cursor
+   * is not something the user authored.
+   *
+   * It still notifies, tagged `playhead`, because the project object this
+   * produces is what the window redraws from, what the renderer mirror pushes
+   * to main — the compositor composites that pushed frame, and sibling windows
+   * adopt it — and what the peer-adoption path compares to decide whether the
+   * incoming snapshot is editorial work (see sameProjectExceptPlayhead).
+   */
+  private movePlayhead(frame: Frame, scopeId: TimelineScopeId): void {
+    const target = timelineInScope(this.project, scopeId);
+    const next = clampFrame(frame);
+    // Nothing moved, so nothing to redraw, mirror, or recomposite.
+    if (target.playheadFrame === next) return;
+    this.project = withTimelineInScope(this.project, scopeId, {
+      ...target,
+      playheadFrame: next,
     });
-    this.notify();
+    this.notify('playhead');
   }
 
   setInFrame(frame: Frame = this.scopedTimeline().playheadFrame): void {
@@ -4453,9 +4546,9 @@ export class EditorController {  private project: Project;
     return () => this.listeners.delete(listener);
   }
 
-  private notify(): void {
+  private notify(kind: StateChangeKind = 'edit'): void {
     for (const listener of this.listeners) {
-      listener(this.project);
+      listener(this.project, kind);
     }
   }
 

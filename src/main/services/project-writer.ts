@@ -42,6 +42,19 @@ const pendingWrites = new Map<string, number>();
 let tempCounter = 0;
 
 /**
+ * Wall-clock instant at which this process evaluated this module, used as the
+ * process-start reference when pruning abandoned staging files.
+ *
+ * Node exposes no portable process start time. `os.uptime()` is *system*
+ * uptime on Windows and POSIX alike, so a start time derived from it is boot
+ * time, and every staging file would look abandoned. Module evaluation is the
+ * best available signal and it errs late: a file created between the real
+ * process start and this line counts as recent, so this reference can only ever
+ * leave residue for a later launch instead of deleting a live write.
+ */
+export const PROCESS_START_MS = Date.now();
+
+/**
  * Queue identity for a destination. Windows paths are case-insensitive, so
  * `C:\Projects\Cut.vproj` and `c:\projects\cut.vproj` must share one queue or
  * they would race each other.
@@ -61,6 +74,26 @@ function tempPathFor(filePath: string): string {
   tempCounter = (tempCounter + 1) % Number.MAX_SAFE_INTEGER;
   const suffix = `${process.pid}.${tempCounter}.${randomBytes(4).toString('hex')}`;
   return path.join(path.dirname(filePath), `.${path.basename(filePath)}.${suffix}.tmp`);
+}
+
+/**
+ * The staging names `tempPathFor` produces, read from the right:
+ * `.<basename>.<pid>.<counter>.<8 lowercase hex digits>.tmp`.
+ *
+ * The recognizer sits beside the producer so the two cannot drift apart. Only
+ * the four trailing segments are constrained: `basename` is `path.basename` of
+ * the destination and may itself contain dots, so a recovery snapshot stages as
+ * `.<sessionId>.json.<pid>.<n>.<hex>.tmp`. Everything else is anchored — the
+ * leading dot, the literal `.tmp` suffix, two decimal numbers, and exactly eight
+ * lowercase hex digits, because `randomBytes(4).toString('hex')` emits nothing
+ * else. Callers pass a directory-entry name, so a match can only ever name a
+ * file inside the directory they listed.
+ */
+const ATOMIC_TEMP_NAME_RE = /^\.(.+)\.\d+\.\d+\.[0-9a-f]{8}\.tmp$/;
+
+/** Whether `fileName` is a staging name this writer would have produced. */
+export function isAtomicWriteTempName(fileName: string): boolean {
+  return ATOMIC_TEMP_NAME_RE.test(fileName);
 }
 
 /**

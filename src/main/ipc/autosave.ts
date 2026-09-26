@@ -15,6 +15,12 @@
  * other valid orphans is retained for later launches; invalid, stale, and
  * overflow files are removed.
  *
+ * The same pass also collects the recovery directory's abandoned atomic-write
+ * staging files. They match no recovery name and hold no validated snapshot, so
+ * nothing else would ever surface or remove them, and a hard kill between the
+ * writer's `open` and `rename` can leave up to `MAX_RECOVERY_FILE_BYTES` behind
+ * on every crash.
+ *
  * The atomic + serialized write contract itself lives in
  * `main/services/project-writer.ts`, shared with explicit project saves.
  */
@@ -22,7 +28,11 @@
 import { ipcMain, app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
-import { writeProjectFile } from '../services/project-writer';
+import {
+  PROCESS_START_MS,
+  isAtomicWriteTempName,
+  writeProjectFile,
+} from '../services/project-writer';
 import {
   NO_SESSION_ERROR,
   getSessionForSender,
@@ -245,6 +255,30 @@ async function removeIfStillOrphan(
 }
 
 /**
+ * Remove one atomic-write staging file abandoned by an earlier process.
+ *
+ * Age is the only safe test, and it is a complete one. A staging name is unique
+ * per write and never reused, so a file whose mtime predates this process can
+ * never become an in-flight write again, while a staging file a live write in
+ * this process is using was necessarily created after this process started.
+ * Deleting an abandoned file therefore cannot disturb a write that still needs
+ * it; deleting a *recent* one would, which is why the age test is not a cleanup
+ * heuristic that may be relaxed.
+ */
+async function removeAbandonedWriteTemp(filePath: string): Promise<void> {
+  try {
+    // lstat, as in the snapshot read: a symlink planted under a staging name is
+    // not writer residue, so it is left alone.
+    const stat = await fs.lstat(filePath);
+    if (!stat.isFile() || stat.mtimeMs >= PROCESS_START_MS) return;
+    await fs.rm(filePath, { force: true });
+  } catch {
+    // Best effort, like every other pruning step: a vanished or unreadable
+    // entry must not make launch fail, and the next launch can try again.
+  }
+}
+
+/**
  * Enumerate, validate, and prune recovery files.
  *
  * `isSessionLive` is injectable so the handler can re-check the live registry
@@ -273,6 +307,12 @@ export async function inspectRecoveryDirectory(
 
   const candidates: RecoveryCandidate[] = [];
   for (const entry of entries) {
+    // Staging residue is not a snapshot and carries no session id, so it is
+    // collected before the recovery-name rules and never enters the orphan cap.
+    if (isAtomicWriteTempName(entry.name)) {
+      await removeAbandonedWriteTemp(path.join(dir, entry.name));
+      continue;
+    }
     const recoveryId = recoverySessionIdFromFileName(entry.name);
     if (
       recoveryId === null

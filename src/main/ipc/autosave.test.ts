@@ -19,6 +19,7 @@ import {
   recoverySessionIdFromFileName,
 } from './autosave';
 import type { RecoverySnapshot } from './autosave';
+import { PROCESS_START_MS } from '../services/project-writer';
 
 const DIR = path.join('userData', 'recovery');
 const scratchDirs: string[] = [];
@@ -173,5 +174,109 @@ describe('orphaned recovery discovery', () => {
       projectName: 'Bad',
       data: JSON.stringify({ name: 'not a project' }),
     }))).toBeNull();
+  });
+});
+
+describe('abandoned atomic-write staging residue', () => {
+  /** Exactly what project-writer stages while writing the recovery `<id>.json`. */
+  function stagedName(id: string): string {
+    return `.${id}.json.${process.pid}.3.0badc0de.tmp`;
+  }
+
+  /** Place an entry's mtime `offsetMs` from the moment this process loaded. */
+  async function ageEntry(filePath: string, offsetMs: number): Promise<void> {
+    const when = new Date(PROCESS_START_MS + offsetMs);
+    await fs.utimes(filePath, when, when);
+  }
+
+  async function writeStaged(dir: string, name: string, offsetMs: number): Promise<string> {
+    const filePath = path.join(dir, name);
+    await fs.writeFile(filePath, 'half-written snapshot', 'utf-8');
+    await ageEntry(filePath, offsetMs);
+    return filePath;
+  }
+
+  it('removes staging residue abandoned before this process started', async () => {
+    const dir = await scratchDir();
+    const staged = await writeStaged(dir, stagedName('crashed-session'), -60_000);
+    await writeSnapshot(dir, 'crashed-session', snapshot('2026-01-02T12:00:00.000Z'));
+
+    const discovery = await inspectRecoveryDirectory(dir, []);
+
+    // A hard kill between the writer's open and rename is all it takes to leave
+    // that file behind, and nothing else in the pipeline would ever remove it.
+    await expect(fs.access(staged)).rejects.toThrow();
+    // The real snapshot beside the residue is untouched by the sweep.
+    expect(discovery.candidate?.recoveryId).toBe('crashed-session');
+    expect(await fs.readdir(dir)).toEqual(['crashed-session.json']);
+  });
+
+  it('never removes a staging file that a live write is still using', async () => {
+    const dir = await scratchDir();
+    // A write in this process created its staging file after this process
+    // started. That is the whole reason the sweep is age-gated.
+    const staged = await writeStaged(dir, stagedName('live-session'), 60_000);
+
+    const discovery = await inspectRecoveryDirectory(dir, []);
+
+    await expect(fs.access(staged)).resolves.toBeUndefined();
+    expect(discovery.candidate).toBeNull();
+  });
+
+  it('leaves files that only resemble staging residue alone', async () => {
+    const dir = await scratchDir();
+    const nearMisses = [
+      'crashed-session.json.1234.9.0badc0de.tmp',     // no leading dot
+      '.crashed-session.json.1234.9.0badc0de.tmp.bak', // trailing suffix
+      '.crashed-session.json.1234.9.0badc0de',        // no .tmp suffix
+      '.crashed-session.json.1234.9.0badc0.tmp',       // 6 hex digits, not 8
+      '.crashed-session.json.1234.9.0badc0de1.tmp',    // 9 hex digits, not 8
+      '.crashed-session.json.1234.9.0BADC0DE.tmp',     // the writer emits lowercase
+      '.crashed-session.json.pid.9.0badc0de.tmp',      // the pid is always numeric
+      '.crashed-session.json.1234.0badc0de.tmp',       // counter segment missing
+      '..1234.9.0badc0de.tmp',                         // nothing was staged against
+      '.crashed-session.json',                         // an unrelated dotted name
+    ];
+    const paths: string[] = [];
+    for (const name of nearMisses) {
+      paths.push(await writeStaged(dir, name, -60_000));
+    }
+    // A directory that borrows the shape is not writer residue either.
+    const stagedDirectory = path.join(dir, stagedName('borrowed-shape'));
+    await fs.mkdir(stagedDirectory);
+    await ageEntry(stagedDirectory, -60_000);
+
+    await inspectRecoveryDirectory(dir, []);
+
+    for (const filePath of [...paths, stagedDirectory]) {
+      await expect(fs.access(filePath)).resolves.toBeUndefined();
+    }
+  });
+
+  it('does not let staging residue take a slot in the orphan cap', async () => {
+    const dir = await scratchDir();
+    for (let index = 0; index < MAX_ORPHAN_RECOVERY_FILES + 3; index += 1) {
+      await writeSnapshot(
+        dir,
+        `orphan-${index}`,
+        snapshot(new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString()),
+      );
+    }
+    for (let index = 0; index < 5; index += 1) {
+      await writeStaged(dir, stagedName(`orphan-${index}`), -60_000);
+    }
+    const inFlight = await writeStaged(dir, stagedName('recent-session'), 60_000);
+
+    const discovery = await inspectRecoveryDirectory(dir, []);
+
+    // The cap bounds recoverable snapshots. Residue is neither retained nor
+    // retained *instead of* a snapshot: the newest orphan still wins, and the
+    // sweep collected the abandoned staging files around it.
+    expect(discovery.candidate?.recoveryId).toBe(`orphan-${MAX_ORPHAN_RECOVERY_FILES + 2}`);
+    expect(discovery.retained).toHaveLength(MAX_ORPHAN_RECOVERY_FILES);
+    const entries = (await fs.readdir(dir)).sort();
+    expect(entries.filter((name) => name.endsWith('.json')))
+      .toHaveLength(MAX_ORPHAN_RECOVERY_FILES);
+    expect(entries.filter((name) => name.endsWith('.tmp'))).toEqual([path.basename(inFlight)]);
   });
 });

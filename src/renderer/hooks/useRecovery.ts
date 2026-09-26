@@ -135,16 +135,75 @@ async function clearRecoverySnapshot(recoveryId: string): Promise<boolean> {
   }
 }
 
+/**
+ * How a Restore click ended.
+ *
+ * `applied` and `persisted` are reported separately because the project reaches
+ * the editor *before* anything is written anywhere else: a failed write leaves
+ * the recovered project on screen and must never be reported as a restore that
+ * did not happen.
+ */
+export type RecoveryRestoreOutcome =
+  /** Applied to the editor and written to this session's recovery file. */
+  | 'restored'
+  /** Applied to the editor; writing a copy elsewhere failed, so the orphan was kept. */
+  | 'restored-not-persisted'
+  /** The snapshot never reached the editor, so nothing changed. */
+  | 'not-applied';
+
+export interface RecoveryRestoreFeedback {
+  /** Message for the prompt's alert line, or null when nothing went wrong. */
+  error: string | null;
+  /** Whether the editor holds the recovered project. */
+  applied: boolean;
+  /**
+   * Whether the Restore/Discard decision is still open. A prompt that stays up
+   * over an already-restored project invites the user to Discard the work in
+   * front of them, so only a restore that changed nothing keeps the prompt.
+   */
+  awaitingDecision: boolean;
+}
+
+/**
+ * The message and prompt state for each outcome.
+ *
+ * Kept apart from the hook so the three cases are decidable without a DOM, and
+ * so the wording cannot drift from the state the prompt is put into.
+ */
+export function recoveryRestoreFeedback(
+  outcome: RecoveryRestoreOutcome,
+): RecoveryRestoreFeedback {
+  if (outcome === 'not-applied') {
+    return {
+      error: 'The recovery snapshot could not be opened, so the project was not restored; the original snapshot was kept.',
+      applied: false,
+      awaitingDecision: true,
+    };
+  }
+  if (outcome === 'restored-not-persisted') {
+    return {
+      error: 'The project was restored, but saving a copy of it failed; the original snapshot was kept.',
+      applied: true,
+      awaitingDecision: false,
+    };
+  }
+  return { error: null, applied: true, awaitingDecision: false };
+}
+
 /** Testable action helper: apply first, then remove the handled orphan. */
 export async function restoreRecoverySnapshot(
   candidate: RecoveryCandidate,
-): Promise<boolean> {
-  if (!applyRecoverySnapshot(candidate.snapshot)) return false;
+): Promise<RecoveryRestoreOutcome> {
+  if (!applyRecoverySnapshot(candidate.snapshot)) return 'not-applied';
   // Do not remove the orphan until the restored state has a replacement in
   // this session's file. That closes the crash window between Restore and the
   // next debounced autosave tick.
-  if (!(await persistRestoredSnapshot())) return false;
-  return clearRecoverySnapshot(candidate.recoveryId);
+  if (!(await persistRestoredSnapshot())) return 'restored-not-persisted';
+  // The project is applied and persisted from here on, so a leftover orphan
+  // file is no longer a failed restore: it is one more recovery point that the
+  // next launch may still offer.
+  await clearRecoverySnapshot(candidate.recoveryId);
+  return 'restored';
 }
 
 /** Testable action helper: remove the selected orphan without touching state. */
@@ -180,14 +239,13 @@ export function useRecovery() {
     if (!candidate || busy) return false;
     setBusy(true);
     setError(null);
-    if (!(await restoreRecoverySnapshot(candidate))) {
-      setError('The project could not be restored safely; the original snapshot was kept.');
-      setBusy(false);
-      return false;
-    }
-    setCandidate(null);
+    const feedback = recoveryRestoreFeedback(await restoreRecoverySnapshot(candidate));
+    // Only a restore that changed nothing leaves the decision open; dismissing
+    // is what keeps a failed write from reading as an un-restored project.
+    if (!feedback.awaitingDecision) setCandidate(null);
+    setError(feedback.error);
     setBusy(false);
-    return true;
+    return feedback.applied;
   }, [busy, candidate]);
 
   const discard = useCallback(async (): Promise<boolean> => {

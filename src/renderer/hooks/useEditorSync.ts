@@ -26,7 +26,7 @@ import { useTimelineStore } from '../store/timeline';
 import { useProjectStore } from '../store/project';
 import { StateMirror } from '../../shared/editor/state-mirror';
 import { asMirroredProject } from '../../shared/ui/detached-panels';
-import type { EditorController } from '../../shared/editor/controller';
+import { sameProjectExceptPlayhead, type EditorController } from '../../shared/editor/controller';
 import type { Project } from '../../shared/types/project';
 
 const PUSH_DEBOUNCE_MS = 300;
@@ -95,7 +95,7 @@ export interface EditorSync {
 /**
  * The renderer half of one window's session mirror.
  *
- * Mounting, editing, and adopting all happen here so the two rules that keep
+ * Mounting, editing, and adopting all happen here so the three rules that keep
  * work from being lost are stated once:
  *
  *  1. Pull before pushing (reload). A reload re-evaluates the bundle, so the
@@ -115,6 +115,13 @@ export interface EditorSync {
  *     adopted state and push that instead, losing the edit from the window and
  *     from the session. Tagged sibling pushes are held for the same reason and
  *     drained by main's acceptance sequence.
+ *
+ *  3. Only an EDIT is unsaved work. The playhead is the cursor, and it still
+ *     travels — the compositor composites the pushed frame and sibling windows
+ *     follow it — but neither a local move nor a sibling's move may mark the
+ *     project dirty. Marking it made pressing Play on a saved project arm the
+ *     autosave, and the snapshot that wrote then arrived on the next launch as
+ *     an "Unsaved work found" prompt for a project nobody had edited.
  */
 export function createEditorSync(options: EditorSyncOptions): EditorSync {
   const { controller, pushSnapshot, onApply } = options;
@@ -145,8 +152,12 @@ export function createEditorSync(options: EditorSyncOptions): EditorSync {
     // setProjectSilent preserves the receiving controller's history and does
     // not notify its subscribers. Refresh the Zustand mirror explicitly
     // because the silent controller update is invisible to that store's
-    // subscription.
-    adoptRendererState(project);
+    // subscription. A snapshot that differs from ours in nothing but the
+    // playhead is the sibling's cursor, adopted without claiming unsaved work.
+    adoptRendererState(
+      project,
+      !sameProjectExceptPlayhead(controller.getProject(), project as Project),
+    );
     mirror.markConfirmed(incoming);
     rendererSequence = sequence;
   }
@@ -200,10 +211,13 @@ export function createEditorSync(options: EditorSyncOptions): EditorSync {
   }
 
   // renderer -> main: mirror authoritative state.
-  const unsubscribe = controller.subscribe(() => {
-    // Any controller mutation (local UI edit or adopted agent edit) means the
-    // project now differs from the last save.
-    useProjectStore.getState().markDirty();
+  const unsubscribe = controller.subscribe((_project, kind) => {
+    // An editorial mutation (local UI edit or adopted agent edit) means the
+    // project now differs from the last save. A playhead move does not: it
+    // authors nothing, so it must not mark the project dirty, or opening a
+    // saved project and pressing Play would arm the autosave and the next
+    // launch would offer to recover a project with no unsaved editorial work.
+    if (kind !== 'playhead') useProjectStore.getState().markDirty();
 
     if (adopting) {
       adopting = false;
@@ -340,12 +354,18 @@ export function useEditorSync() {
   }).dispose, [controller]);
 }
 
-/** Replace the live controller without creating a command or a sync callback. */
-export function adoptRendererState(project: unknown): void {
+/**
+ * Replace the live controller without creating a command or a sync callback.
+ *
+ * `editorial` is false for a snapshot that differs from the one in place in
+ * nothing but the playhead: adopting a peer's cursor is not unsaved work, so
+ * the project stays clean and no recovery snapshot is armed for it.
+ */
+export function adoptRendererState(project: unknown, editorial = true): void {
   const { controller } = useTimelineStore.getState();
   controller.setProjectSilent(project as never);
   useTimelineStore.getState().syncFromController();
-  useProjectStore.getState().markDirty();
+  if (editorial) useProjectStore.getState().markDirty();
 }
 
 /**

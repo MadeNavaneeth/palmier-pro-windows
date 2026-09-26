@@ -9,9 +9,41 @@
 import React from 'react';
 import { useRecovery } from '../hooks/useRecovery';
 
+/**
+ * A notice for the case where there is no candidate left to attach an error to.
+ *
+ * `restoreRecoverySnapshot` applies the project before it persists a copy of
+ * it, so a persist failure leaves an applied project and a non-null error with
+ * no modal left to render it in. Returning null unconditionally showed the user
+ * a loaded project and said nothing about it; the hook already words each outcome
+ * accurately, so the only thing missing was somewhere to put it.
+ *
+ * Split from the component so it is testable without a DOM, matching the
+ * convention used by `summarizeXmlOmissions`, `silenceRemovalStatus` and
+ * `hasCaptionTitles`.
+ */
+export function recoveryNotice(hasCandidate: boolean, error: string | null): string | null {
+  if (hasCandidate || !error) return null;
+  return error;
+}
+
 export function RecoveryPrompt() {
   const { candidate, busy, error, restore, discard } = useRecovery();
-  if (!candidate) return null;
+  const notice = recoveryNotice(candidate !== null, error);
+  if (!candidate) {
+    if (!notice) return null;
+    return (
+      <div className="pointer-events-none fixed bottom-4 right-4 z-50 w-[380px] max-w-[calc(100vw-2rem)]">
+        <div
+          data-recovery-notice
+          role="status"
+          className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-relaxed text-amber-300"
+        >
+          {notice}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

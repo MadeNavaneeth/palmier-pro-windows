@@ -5,12 +5,14 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'fs/promises';
+import { watch } from 'fs';
 import os from 'os';
 import path from 'path';
 import {
   atomicWriteFile,
   drainWrites,
   enqueueWrite,
+  isAtomicWriteTempName,
   pendingWriteCount,
   writeProjectFile,
 } from './project-writer';
@@ -76,6 +78,55 @@ describe('atomicWriteFile', () => {
     await expect(atomicWriteFile(target, undefined as unknown as string)).rejects.toThrow();
 
     expect(await fs.readFile(target, 'utf-8')).toBe('previous contents');
+  });
+});
+
+describe('staging name recognizer', () => {
+  it('recognizes the name a real atomicWriteFile stages under', async () => {
+    const dir = await scratchDir();
+    // The staging file is renamed over the destination before the write
+    // resolves, so the only way to see the name the writer really used is to
+    // watch the directory while it runs.
+    const observed = new Promise<string>((resolve, reject) => {
+      const watcher = watch(dir, (_event, name) => {
+        const entry = name?.toString() ?? '';
+        if (!entry.endsWith('.tmp')) return;
+        clearTimeout(timer);
+        watcher.close();
+        resolve(entry);
+      });
+      const timer = setTimeout(() => {
+        watcher.close();
+        reject(new Error('no staging file was observed'));
+      }, 10_000);
+    });
+
+    await atomicWriteFile(path.join(dir, 'session.json'), '{"savedAt":"now"}');
+    const staged = await observed;
+
+    expect(isAtomicWriteTempName(staged)).toBe(true);
+    expect(staged).toMatch(/^\.session\.json\.\d+\.\d+\.[0-9a-f]{8}\.tmp$/);
+  }, 20_000);
+
+  it('rejects names the writer never produces', () => {
+    for (const name of [
+      'session.json.4321.7.deadbeef.tmp',       // missing the leading dot
+      '.session.json.4321.7.deadbeef',          // missing the .tmp suffix
+      '.session.json.4321.7.deadbeef.tmp.bak',  // a suffix the writer never adds
+      '.session.json.4321.7.dead.tmp',          // 4 hex digits, not 8
+      '.session.json.4321.7.deadbeef1.tmp',     // 9 hex digits, not 8
+      '.session.json.4321.7.DEADBEEF.tmp',      // the writer emits lowercase hex
+      '.session.json.pid.7.deadbeef.tmp',       // the pid is always numeric
+      '.session.json.4321.deadbeef.tmp',        // the counter segment is missing
+      '..4321.7.deadbeef.tmp',                  // nothing was staged against
+    ]) {
+      expect(isAtomicWriteTempName(name)).toBe(false);
+    }
+  });
+
+  it('matches a dotted destination basename, as a recovery snapshot stages', () => {
+    expect(isAtomicWriteTempName('.0f8fad5b-d9cb-469f-a165-70867728950e.json.4321.7.deadbeef.tmp'))
+      .toBe(true);
   });
 });
 
