@@ -1,5 +1,5 @@
 ﻿/**
- * AI IPC handlers â€” wires the PalmierAgent to the renderer via IPC.
+ * AI IPC handlers — wires the PalmierAgent to the renderer via IPC.
  * Streams tokens, tool calls, and results back as events.
  * Manages API key storage via Electron safeStorage.
  *
@@ -187,7 +187,7 @@ export function registerAiHandlers(getSession: (sender: SessionSender) => Sessio
     return { success: true, status, config: status.config };
   });
 
-  // â”€â”€â”€ Chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Chat ──────────────────────────────────────────────────────────────────
   ipcMain.handle('ai:chat', async (event, messages: any[], provider: string) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return;
@@ -272,7 +272,7 @@ export function registerAiHandlers(getSession: (sender: SessionSender) => Sessio
     }
   });
 
-  // â”€â”€â”€ Cancellation (upstream #58) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Cancellation (upstream #58) ───────────────────────────────────────────
   // Its own channel rather than a flag on `ai:chat`, because the point is to be
   // answerable while that handler's promise is still pending. Scoped to the
   // requesting window's session (#137 Slice 2): stopping one workspace's turn
@@ -330,7 +330,7 @@ export function registerAiHandlers(getSession: (sender: SessionSender) => Sessio
     return session.agent?.getSessionSnapshot() ?? { history: [], plan: null };
   });
 
-  // â”€â”€â”€ Key Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Key Management ────────────────────────────────────────────────────────
   ipcMain.handle('ai:set-key', async (_event, provider: string, key: string) => {
     if (!isSafeProviderId(provider)) {
       return { success: false, error: 'Unknown AI provider.' };
@@ -356,7 +356,7 @@ export function registerAiHandlers(getSession: (sender: SessionSender) => Sessio
     return { success: true };
   });
 
-  // â”€â”€â”€ Provider configuration (#17, #140) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Provider configuration (#17, #140) ────────────────────────────────────
   ipcMain.handle(
     'ai:set-provider-config',
     (_event, provider: string, config: { kind?: unknown; baseUrl?: unknown; model?: unknown; binaryPath?: unknown }) => {

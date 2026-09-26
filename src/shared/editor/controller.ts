@@ -29,8 +29,11 @@ import {
   ReplaceProjectCommand,
   ReplaceMarkersCommand,
   ReplaceMediaCommand,
+  scopeTimeline,
+  scopeTimelineExists,
+  replaceScopeTimeline,
 } from './commands';
-import type { Command } from './commands';
+import type { Command, TimelineScopeId } from './commands';
 import { resolveLayoutPreset, type GridLayoutPreset } from './grid-layout';
 import type { BlendMode } from '../types/blend-mode';
 import type { ClipTransition } from './transition';
@@ -191,6 +194,51 @@ function clipsShallowEqual(a: Clip, b: Clip): boolean {
   const bKeys = Object.keys(b) as (keyof Clip)[];
   if (aKeys.length !== bKeys.length) return false;
   return aKeys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && a[key] === b[key]);
+}
+
+/**
+ * What one live preview frame wrote: per item id, the own properties whose
+ * value differs between the scope as it stood before the frame and as it
+ * stood after.
+ *
+ * The two snapshots are consecutive — nothing ran between them — so every
+ * shallow difference is the frame's own write. An id present in only ONE of
+ * them is not a write: a gesture preview never adds or removes a clip or a
+ * marker, so a one-sided id is a change some other editor made while the
+ * gesture was in flight, and it is deliberately left out of the patch.
+ */
+function frameWrites<T extends { id: string }>(
+  before: readonly T[],
+  after: readonly T[],
+): Map<string, Set<string>> {
+  const prior = new Map(before.map((item) => [item.id, item] as const));
+  const writes = new Map<string, Set<string>>();
+  for (const item of after) {
+    const original = prior.get(item.id) as Record<string, unknown> | undefined;
+    if (original === undefined) continue;
+    const current = item as Record<string, unknown>;
+    const changed = new Set(Object.keys(current).filter((key) => !Object.is(original[key], current[key])));
+    if (changed.size > 0) writes.set(item.id, changed);
+  }
+  return writes;
+}
+
+/** The inverse of `frameWrites`: put those properties back, leave the rest. */
+function revertFrameWrites<T extends { id: string }>(
+  items: readonly T[],
+  before: readonly T[],
+  writes: Map<string, Set<string>>,
+): T[] {
+  const prior = new Map(before.map((item) => [item.id, item] as const));
+  return items.map((item) => {
+    const changed = writes.get(item.id);
+    const original = changed ? prior.get(item.id) : undefined;
+    if (!changed || !original) return item;
+    const reverted = { ...item } as Record<string, unknown>;
+    const source = original as Record<string, unknown>;
+    for (const key of changed) reverted[key] = source[key];
+    return reverted as T;
+  });
 }
 
 /** Apply the same rounded, clamped frame conversion used by timeline rescale. */
@@ -406,7 +454,7 @@ function generatedTrackLabelIn(track: Track, tracks: readonly Track[]): string {
 
 /**
  * The settings fields a paste would touch, narrowed by the requested field
- * groups â€” used for value comparison so unchanged pastes add no history.
+ * groups — used for value comparison so unchanged pastes add no history.
  */
 function pickSettings(
   clip: Clip,
@@ -612,6 +660,13 @@ export class EditorController {  private project: Project;
    * it never lands on the undo stack and is not serialized with the project.
    */
   private rippleTimelineMarkers: boolean = DEFAULT_MARKER_SETTINGS.rippleTimelineMarkers;
+  /**
+   * Depth of open `previewFrame` bodies. While non-zero, `execute` applies
+   * commands without publishing them, so a live gesture's frames are applied
+   * and observed but never reach the shared undo/redo stacks. A counter rather
+   * than a flag so a preview inside a preview is still a preview.
+   */
+  private previewFrames: number = 0;
 
   constructor(project?: Project) {
     const narrowed = project
@@ -860,7 +915,83 @@ export class EditorController {  private project: Project;
   //  Command execution
 
   execute(command: Command): void {
-    this.project = this.history.execute(command, this.project);
+    // A preview frame applies without publishing, so it never becomes a
+    // history entry and never displaces one (see previewFrame).
+    this.project = this.previewFrames > 0
+      ? command.execute(this.project)
+      : this.history.execute(command, this.project);
+    this.coerceScope();
+    this.notify();
+  }
+
+  /**
+   * Run `body` as an uncommitted PREVIEW FRAME: its operations apply to the
+   * live project and subscribers see the result at once, but nothing is
+   * published — not to the undo stack, not into an enclosing transaction. The
+   * caller owns the frame and closes it one of two ways: `collapsePreviewFrame`
+   * to roll it back, or by re-running the same operations through the normal
+   * publishing path.
+   *
+   * A live gesture needs this because collapsing a frame means undoing the
+   * previous one, and `undo()` pops whatever is on top of the SHARED history.
+   * An edit adopted while the gesture is in flight — an AI agent's
+   * `ReplaceProjectCommand`, pushed from main — lands on that same stack, so
+   * the next pointer move would revert the agent's edit instead of the
+   * gesture's own frame, and leave main holding a project the edit is no
+   * longer in. A preview frame never reaches the stack, so a frame collapse
+   * cannot consume history that is not the gesture's own.
+   *
+   * The window is synchronous, so a command from elsewhere can only arrive
+   * BETWEEN frames, never inside one.
+   */
+  previewFrame<T>(body: () => T): T {
+    this.previewFrames += 1;
+    try {
+      return body();
+    } finally {
+      this.previewFrames -= 1;
+    }
+  }
+
+  /**
+   * Roll back one live preview frame, identified by the scope as it stood
+   * before and after the frame, without touching the undo/redo stacks.
+   *
+   * Undoing the frame's own command is not enough. Those commands replace a
+   * whole clips array (a ripple trim replaces the whole project), so rolling
+   * one back over a project another editor has since rewritten would take that
+   * edit with it. So the collapse is driven by the two snapshots instead:
+   *
+   * - **nothing intervened** (`current === after`, exact because every
+   *   mutation replaces the project object) — the pre-frame scope is restored
+   *   wholesale, by reference, exactly as undoing the frame's command was.
+   * - **something intervened** — only the properties the frame itself wrote
+   *   are restored, found by diffing the two snapshots. An edit that landed
+   *   mid-gesture survives, including one on a clip the frame moved: the
+   *   gesture wins the properties it is actively dragging and nothing else.
+   */
+  collapsePreviewFrame(before: Timeline, after: Timeline, scopeId: TimelineScopeId = null): void {
+    if (!scopeTimelineExists(this.project, scopeId)) return;
+    const current = scopeTimeline(this.project, scopeId);
+    let restored: Timeline;
+    if (current === after) {
+      restored = before;
+    } else {
+      const clipWrites = frameWrites(before.clips, after.clips);
+      const markerWrites = frameWrites(before.markers ?? [], after.markers ?? []);
+      if (clipWrites.size === 0 && markerWrites.size === 0) return;
+      restored = {
+        ...current,
+        clips: revertFrameWrites(current.clips, before.clips, clipWrites),
+        ...(current.markers
+          ? { markers: revertFrameWrites(current.markers, before.markers ?? [], markerWrites) }
+          : {}),
+      };
+    }
+    this.project = {
+      ...replaceScopeTimeline(this.project, scopeId, restored),
+      updatedAt: new Date().toISOString(),
+    };
     this.coerceScope();
     this.notify();
   }
@@ -1124,8 +1255,8 @@ export class EditorController {  private project: Project;
    *
    * - `overwrite` clears the destination span first (splitting survivors),
    *   leaving other tracks untouched.
-   * - `insert` ripple-pushes the target track's later clips â€” plus any linked
-   *   partners of those clips on their own tracks â€” later by the placed
+   * - `insert` ripple-pushes the target track's later clips — plus any linked
+   *   partners of those clips on their own tracks — later by the placed
    *   length, then lands at `startFrame`.
    * - `append` lands after the last clip on the track.
    *
@@ -1140,7 +1271,7 @@ export class EditorController {  private project: Project;
     mode?: 'overwrite' | 'insert' | 'append';
     startFrame?: Frame;
     durationFrames?: Frame;
-    /** Source window in seconds, [start, end) â€” three-point editing's In/Out. */
+    /** Source window in seconds, [start, end) — three-point editing's In/Out. */
     source?: [number, number];
   }): { clipIds: string[] } | null {
     const asset = this.project.media.find((m) => m.id === params.assetId);
@@ -1159,7 +1290,7 @@ export class EditorController {  private project: Project;
     if (params.source !== undefined) {
       if (params.durationFrames !== undefined) {
         throw new Error(
-          'Set source OR durationFrames, not both â€” source picks a span of the asset, durationFrames an exact timeline length.',
+          'Set source OR durationFrames, not both — source picks a span of the asset, durationFrames an exact timeline length.',
         );
       }
       const [rawStart, rawEnd] = params.source;
@@ -2225,12 +2356,12 @@ export class EditorController {  private project: Project;
 
   //  Timeline markers (upstream PRs #542 / #560) 
 
-  // â”€â”€â”€ Clip settings transfer / paste attributes (R1; upstream #515) â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Clip settings transfer / paste attributes (R1; upstream #515) ────────
 
   /**
    * Copy one clip's presentation settings onto every target clip in a single
    * undoable step (upstream `applyClipSettings`). Only presentation fields
-   * transfer â€” timing, trims, source, linkage, and fades stay the target's:
+   * transfer — timing, trims, source, linkage, and fades stay the target's:
    *
    * - audio targets receive `volume`;
    * - visual targets receive opacity, position, rotation, scale, blend
@@ -2363,7 +2494,7 @@ export class EditorController {  private project: Project;
       replacements.set(id, next);
     }
 
-    // Value comparison on the transferred fields only â€” a rebuilt-but-
+    // Value comparison on the transferred fields only — a rebuilt-but-
     // identical clip must count as unchanged (upstream compares Equatable).
     const settingsDiffer = (a: Clip, b: Clip): boolean => {
       if (a.type === 'audio') {
@@ -2468,7 +2599,7 @@ export class EditorController {  private project: Project;
 
   /**
    * Paste previously captured settings onto targets. Without `fields` every
-   * captured field applies; with it, only the named groups do â€” the
+   * captured field applies; with it, only the named groups do — the
    * property checklist from R1. One undoable step, upstream refusal shape.
    */
   pasteSettingsFromSnapshot(
@@ -2544,7 +2675,7 @@ export class EditorController {  private project: Project;
     };
   }
 
-  // â”€â”€â”€ Offline media relink (upstream EditorViewModel+Relink) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Offline media relink (upstream EditorViewModel+Relink) ──────────────
 
   /**
    * Repoint assets at relocated source files in one undoable step per asset.
@@ -2568,7 +2699,7 @@ export class EditorController {  private project: Project;
   }
 
   /**
-   * Batch relink in ONE undoable step â€” the folder-scan flow hands back a
+   * Batch relink in ONE undoable step — the folder-scan flow hands back a
    * mapping built by the main process. Kind validation runs for every entry
    * before anything is committed; any refusal leaves all paths untouched.
    */
@@ -2656,10 +2787,10 @@ export class EditorController {  private project: Project;
     return true;
   }
 
-  // â”€â”€â”€ Title clips (R3 foundation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Title clips (R3 foundation) ──────────────────────────────────────────
 
   /**
-   * Add a title clip â€” a self-contained text layer needing no media asset.
+   * Add a title clip — a self-contained text layer needing no media asset.
    * Invalid/empty text is refused by returning ''. One undoable step.
    */
   addTitleClip(params: {

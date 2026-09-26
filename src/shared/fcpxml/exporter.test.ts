@@ -176,7 +176,7 @@ describe('exportFcpxml (#154)', () => {
     const xml = exportFcpxml(p);
     expect(xml).toContain('<text-style ref="ts1">A &amp; B &lt;C&gt;');
     expect(xml).toContain('LINE TWO'); // fontCase applies (#330)
-    expect(xml).toContain('fontSize="108"'); // 0.1 Ã— 1080
+    expect(xml).toContain('fontSize="108"'); // 0.1 × 1080
     expect(xml).toContain('fontColor="#FFCC00"');
     expect(xml).toContain('font="Georgia"');
     expect(xml).toContain('alignment="LEFT"');

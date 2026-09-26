@@ -274,7 +274,7 @@ export function TimelineToolbar() {
  * Inspector panels all showing, this row is 400px and the shortcuts button at
  * the far right sat one pixel past the panel edge. The margin lives here rather
  * than as a smaller `gap` on the row, because an element declaring `@container`
- * cannot container-query itself Ã¢â‚¬â€ only its descendants can.
+ * cannot container-query itself — only its descendants can.
  */
 function Divider() {
   return <div className="mx-1 h-5 w-px bg-white/12 @max-md:mx-0.5" />;

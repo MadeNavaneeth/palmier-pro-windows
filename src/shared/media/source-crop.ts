@@ -5,7 +5,7 @@
  * position/scale in every consumer: the preview crops its decoded RGBA
  * buffer (proportional crop of a uniformly scaled frame is identical to
  * cropping the source), and the exporter emits an FFmpeg crop filter ahead
- * of scale. Kept static by design â€” animated crop belongs to the keyframes
+ * of scale. Kept static by design — animated crop belongs to the keyframes
  * contract.
  */
 

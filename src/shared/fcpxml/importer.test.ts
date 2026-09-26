@@ -1,6 +1,6 @@
 ﻿/**
  * Round-trip coverage for the FCPXML interchange (#154): export a fixture
- * project, parse it back, and assert the supported subset survives â€” plus
+ * project, parse it back, and assert the supported subset survives — plus
  * foreign-format tolerance (rational times, gaps) and unsupported notes.
  */
 import { describe, it, expect } from 'vitest';
@@ -120,7 +120,7 @@ describe('#154 round trip', () => {
     });
   });
 
-  it('treats gaps as implicit â€” absolute offsets already encode spacing', () => {
+  it('treats gaps as implicit — absolute offsets already encode spacing', () => {
     const withGap = xml.replace('</spine>', '<gap offset="2s" duration="1s"/></spine>');
     const parsedGap = parseFcpxml(withGap);
     expect(parsedGap.unsupported).toHaveLength(0);

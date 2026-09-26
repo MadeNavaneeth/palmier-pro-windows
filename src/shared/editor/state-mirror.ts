@@ -12,6 +12,13 @@
  *
  * The rule this type enforces: a snapshot counts as mirrored only after the peer
  * confirms it (upstream issue #89).
+ *
+ * Snapshots are compared by VALUE, not by spelling. `EditorController.serialize`
+ * pretty-prints while every peer payload is compact (`JSON.stringify(project)`),
+ * so raw string equality never matched across that boundary and both the dedupe
+ * check and the echo guard were dead code. `serialize()`'s own output is left
+ * alone — other consumers read it — and canonicalization happens here, on the
+ * comparison side.
  */
 
 export type SendSnapshot = (serialized: string) => Promise<unknown>;
@@ -25,14 +32,41 @@ export interface MirrorPushResult {
   error?: unknown;
 }
 
+/** One JSON value, one spelling: sorted keys, no insignificant whitespace. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  const entries = Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`);
+  return `{${entries.join(',')}}`;
+}
+
+/**
+ * Comparable form of a snapshot, or null when it is not JSON.
+ *
+ * A snapshot that cannot be parsed is compared verbatim instead of throwing:
+ * it is a string the peer sent us, and the caller's contract is a boolean.
+ */
+function canonicalSnapshot(serialized: string): string | null {
+  try {
+    return stableStringify(JSON.parse(serialized));
+  } catch {
+    return null;
+  }
+}
+
 export class StateMirror {
-  /** Last snapshot the peer confirmed. Empty until the first success. */
+  /** Last snapshot the peer confirmed, in the spelling it arrived in. */
   private confirmed: string | null = null;
+  /** The same snapshot in comparable form, so a peer's spelling never differs. */
+  private confirmedCanonical: string | null = null;
   private inFlight = false;
 
   /** True when this snapshot differs from what the peer confirmed. */
   needsPush(serialized: string): boolean {
-    return serialized !== this.confirmed;
+    return !this.matches(serialized);
   }
 
   /** The snapshot the peer is known to hold, or null before the first success. */
@@ -68,7 +102,7 @@ export class StateMirror {
         const error = (response as { error?: unknown }).error;
         return { attempted: true, delivered: false, error: error ?? response };
       }
-      this.confirmed = serialized;
+      this.record(serialized);
       return { attempted: true, delivered: true };
     } catch (error) {
       // Deliberately not recorded: leaving `confirmed` alone is what allows the
@@ -86,16 +120,41 @@ export class StateMirror {
    * echoing it back is redundant.
    */
   markConfirmed(serialized: string): void {
-    this.confirmed = serialized;
+    this.record(serialized);
   }
 
   /** True when this snapshot is our own state coming back from the peer. */
   isEcho(serialized: string): boolean {
-    return this.confirmed !== null && serialized === this.confirmed;
+    return this.matches(serialized);
   }
 
   /** Forget the peer's state, so the next push is unconditional. */
   reset(): void {
     this.confirmed = null;
+    this.confirmedCanonical = null;
+  }
+
+  private record(serialized: string): void {
+    this.confirmed = serialized;
+    this.confirmedCanonical = canonicalSnapshot(serialized);
+  }
+
+  /**
+   * Whether the peer is known to hold this exact JSON value.
+   *
+   * The raw spellings are compared first: a project is serialized and
+   * re-serialized constantly, and equal strings are by far the common case, so
+   * this keeps the dedupe off the parse path. Only a differing spelling pays
+   * for canonicalization, which is what makes a pretty snapshot and a compact
+   * payload from the same project compare equal.
+   */
+  private matches(serialized: string): boolean {
+    if (this.confirmed === null) return false;
+    if (serialized === this.confirmed) return true;
+    const canonical = canonicalSnapshot(serialized);
+    // One side is unparseable: fall back to the raw comparison so a non-JSON
+    // snapshot is still deduplicated against the identical string.
+    if (canonical === null || this.confirmedCanonical === null) return false;
+    return canonical === this.confirmedCanonical;
   }
 }

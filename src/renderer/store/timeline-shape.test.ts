@@ -1,11 +1,15 @@
 /**
- * Store-level shape creation and the direct-manipulation gesture protocol.
+ * Store-level shape creation and the property path a shape gesture rides.
  *
  * `addShapeAtPlayhead` mirrors `addTitleAtPlayhead` (one undoable add,
- * selected on success, refusal leaves selection alone). The gesture cases pin
- * the commit pattern `ShapeOverlay` uses: every transient step undoes the
- * previous one before reapplying, so a whole drag occupies ONE history entry,
- * and an unchanged-ending apply (press that never really moved) pushes none.
+ * selected on success, refusal leaves selection alone). The second block pins
+ * the store contract the direct-manipulation gesture depends on: a changed
+ * draft is exactly one undo entry, and an unchanged one adds none — which is
+ * what lets a press that never really moved stay off the history.
+ *
+ * The gesture's own frame protocol (preview, collapse, commit once) is not
+ * re-implemented here. It is tested where it lives, against the functions the
+ * overlay ships: `components/preview/shape-overlay-gesture-history.test.ts`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -58,73 +62,53 @@ describe('addShapeAtPlayhead', () => {
   });
 });
 
-describe('transform gesture commit protocol', () => {
-  /** One pointermove step: undo the previous transient, reapply from the
-   * start snapshot + total delta — the pattern ShapeOverlay drives. */
-  function gestureStep(
+describe('transform gesture store contract', () => {
+  /** One gesture frame's property write, exactly as the overlay applies it. */
+  function shapeStep(
     controller: ReturnType<typeof useTimelineStore.getState>['controller'],
     clipId: string,
-    hasApplied: boolean,
-    mutate: (draft: { x: number; y?: number }) => void,
-    label: string,
+    draft: (clip: { x: number; y: number }) => void,
   ): boolean {
-    if (hasApplied) controller.undo();
-    const report = controller.applyClipProperties([clipId], label, (draft) => {
-      mutate(draft);
+    const report = controller.applyClipProperties([clipId], 'Move shape', (clip) => {
+      draft(clip);
       return true;
     });
     return report.changedClipIds.length > 0;
   }
 
-  it('keeps a whole multi-step move to one history entry that restores the start', () => {
+  it('adds one history entry per changed draft and reports what it changed', () => {
     const { store, controller } = freshStore();
     const clipId = store.getState().addShapeAtPlayhead('rect');
     const startX = clipById(controller, clipId)!.x;
 
-    let hasApplied = false;
-    for (const dx of [10, 25, 40]) {
-      hasApplied = gestureStep(
-        controller,
-        clipId,
-        hasApplied,
-        (draft) => {
-          draft.x = startX + dx;
-        },
-        'Move shape',
-      );
-    }
-    expect(hasApplied).toBe(true);
+    expect(shapeStep(controller, clipId, (clip) => {
+      clip.x = startX + 40;
+    })).toBe(true);
     expect(clipById(controller, clipId)!.x).toBe(startX + 40);
+    expect(controller.getLastCommandDescription()).toBe('setClipProperties');
 
-    // The drag occupied exactly one entry: one undo restores the start
-    // position, the next undo removes the add that preceded the drag.
-    controller.undo();
+    // One undo reverts the whole write: the gesture publishes this once, at
+    // release, and re-derives every frame from its own start snapshot.
+    expect(controller.undo()).toBe(true);
     expect(clipById(controller, clipId)!.x).toBe(startX);
-    controller.undo();
-    expect(clipById(controller, clipId)).toBeUndefined();
   });
 
-  it('ends a press that never moved with no history entry at all', () => {
+  it('adds no history entry for a draft equal to the stored clip', () => {
     const { store, controller } = freshStore();
     const clipId = store.getState().addShapeAtPlayhead('rect');
     const startX = clipById(controller, clipId)!.x;
     const startY = clipById(controller, clipId)!.y;
 
-    // Delta rounds to 0 → draft equals the stored clip → no command, no entry.
-    const applied = gestureStep(
-      controller,
-      clipId,
-      false,
-      (draft) => {
-        draft.x = startX + Math.round(0.4);
-        draft.y = startY + Math.round(-0.4);
-      },
-      'Move shape',
-    );
-    expect(applied).toBe(false);
+    // A pointer delta that rounds to nothing leaves the draft unchanged, so the
+    // controller skips it. That is what makes a press that never really moved
+    // stage no frame and publish no entry.
+    expect(shapeStep(controller, clipId, (clip) => {
+      clip.x = startX + Math.round(0.4);
+      clip.y = startY + Math.round(-0.4);
+    })).toBe(false);
 
     // History still holds only the add: one undo removes the clip outright.
-    controller.undo();
+    expect(controller.undo()).toBe(true);
     expect(clipById(controller, clipId)).toBeUndefined();
   });
 });

@@ -45,7 +45,7 @@ const MEDIA_FILTERS = [
 
 
 export function registerMediaHandlers(): void {
-  // â”€â”€â”€ Import Media (open file dialog) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Import Media (open file dialog) ─────────────────────────────────────────
   ipcMain.handle('media:import', async () => {
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showOpenDialog(win!, {
@@ -74,7 +74,7 @@ export function registerMediaHandlers(): void {
     return probeMediaPaths(safePaths);
   });
 
-  // â”€â”€â”€ Probe single file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Probe single file ───────────────────────────────────────────────────────
   ipcMain.handle('media:probe', async (_event, filePath: string) => {
     try {
       const info = await probeMedia(filePath);
@@ -84,7 +84,7 @@ export function registerMediaHandlers(): void {
     }
   });
 
-  // â”€â”€â”€ Generate thumbnail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Generate thumbnail ──────────────────────────────────────────────────────
   ipcMain.handle('media:thumbnail', async (_event, filePath: string, outputDir: string, timestamp: number = 1) => {
     try {
       const thumbPath = await generateThumbnail(filePath, outputDir, timestamp);
@@ -94,7 +94,7 @@ export function registerMediaHandlers(): void {
     }
   });
 
-  // â”€â”€â”€ Export presets (R2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Export presets (R2) ──────────────────────────────────────────────────────
   ipcMain.handle('export:get-presets', () => {
     return { success: true, presets: loadPresets() };
   });
@@ -104,7 +104,7 @@ export function registerMediaHandlers(): void {
     return { success: true };
   });
 
-  // â”€â”€â”€ Offline check: which asset paths no longer exist on disk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Offline check: which asset paths no longer exist on disk ────────────────
   ipcMain.handle('media:check-offline', async (_event, paths: unknown) => {
     if (!Array.isArray(paths)) return { missing: [] };
     const missing = paths.filter(
@@ -183,7 +183,7 @@ export function registerMediaHandlers(): void {
   });
 
 
-  // â”€â”€â”€ Filmstrip: evenly spaced thumbnails across a video source (R1) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Filmstrip: evenly spaced thumbnails across a video source (R1) ─────────
   ipcMain.handle('media:filmstrip', async (_event, filePath: unknown, count: unknown) => {
     if (typeof filePath !== 'string' || filePath.length === 0) {
       return { success: false, error: 'Invalid source path' };
@@ -237,7 +237,7 @@ export function registerMediaHandlers(): void {
     }
   });
 
-  // â”€â”€â”€ Hardware encoder detection (R2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Hardware encoder detection (R2) ─────────────────────────────────────────
   let hwEncoderCache: string[] | null = null;
   ipcMain.handle('media:hw-encoders', async () => {
     if (hwEncoderCache) return { encoders: hwEncoderCache };
@@ -259,7 +259,7 @@ export function registerMediaHandlers(): void {
     return { encoders };
   });
 
-  // â”€â”€â”€ Folder picker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Folder picker ───────────────────────────────────────────────────────────
   ipcMain.handle('media:choose-folder', async () => {
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showOpenDialog(win!, {
@@ -631,7 +631,7 @@ export function registerMediaHandlers(): void {
   });
 
 
-  // â”€â”€â”€ Extract audio from a video into a library asset (upstream PR #562) â”€â”€â”€â”€â”€
+  // ─── Extract audio from a video into a library asset (upstream PR #562) ─────
   // An optional `window` bakes a source range into the extracted file, which
   // is how the timeline clip entry ("Save as audio") captures the clip's
   // trim; omitted, the full source is extracted (media-panel entry).
@@ -728,7 +728,7 @@ async function probeMediaPaths(filePaths: string[]): Promise<{
 }
 
 
-// â”€â”€â”€ Thumbnail generation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Thumbnail generation ────────────────────────────────────────────────────
 
 async function generateThumbnail(
   filePath: string,

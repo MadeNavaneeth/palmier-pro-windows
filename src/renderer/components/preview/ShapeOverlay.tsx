@@ -11,21 +11,28 @@
  * the upstream view and `TransformOverlayMathTests`.
  *
  * Every pointermove recomputes the whole gesture from the start snapshot plus
- * the total pointer delta, undoes the previous transient, and re-applies
- * through `applyClipProperties` — the timeline drag pattern, so a long drag
- * cannot drift and pointerup leaves exactly one undo entry. A press that ends
- * where it began applies an unchanged draft, which the controller skips, so
- * it adds no history at all. Escape (or pointercancel) drops the transient;
- * Escape then continues to the global deselect, one keypress for both.
+ * the total pointer delta and previews it through `applyClipProperties`, which
+ * applies it without publishing — the timeline drag pattern, so a long drag
+ * cannot drift and the frame that is on screen is always the pointer's. Only
+ * pointerup publishes, re-running that same step through the normal path, so
+ * the gesture leaves exactly one undo entry; Escape drops the transient and
+ * then continues to the global deselect, one keypress for both. A press that
+ * ends where it began applies an unchanged draft, which the controller skips,
+ * so it adds no history at all.
  *
- * All geometry lives in `lib/shape-overlay`; this file only wires pointers,
- * focus, selection, and the store.
+ * Frames never reach the undo history, so closing one cannot consume a
+ * neighbouring entry — an AI edit adopted from main mid-gesture survives the
+ * gesture instead of being reverted by its next pointermove.
+ *
+ * All geometry lives in `lib/shape-overlay`; the frame protocol below is the
+ * gesture's history contract, and this file wires pointers, focus, and
+ * selection around it.
  */
 
 import React, { useEffect, useRef } from 'react';
-import { useTimelineStore } from '../../store/timeline';
+import { scopeTimelineOf, useTimelineStore } from '../../store/timeline';
 import { hasShapeContent } from '../../../shared/editor/shape';
-import type { Clip } from '../../../shared/types/project';
+import type { Clip, Timeline } from '../../../shared/types/project';
 import {
   HANDLE_HIT_RADIUS_PX,
   HANDLE_SCREEN_PX,
@@ -56,24 +63,126 @@ interface ShapeOverlayProps {
   displayHeight: number;
 }
 
-type Gesture =
-  | {
-    mode: 'move' | 'rotate';
-    pointerId: number;
-    clipId: string;
-    startBox: EffectiveBox;
-    startPointer: ProjectPoint;
-    hasApplied: boolean;
+/**
+ * One staged preview frame: the edited scope as it stood before and after the
+ * frame currently on screen, and the scope it was measured in.
+ *
+ * This is the gesture's private staging area. The frame was applied without
+ * publishing, so closing it (the next move, Escape, teardown, or the release
+ * that commits it) restores only what the frame itself wrote and leaves the
+ * shared undo history alone.
+ */
+export interface ShapeGestureFrame {
+  before: Timeline;
+  after: Timeline;
+  scopeId: string | null;
+}
+
+type GestureBase = {
+  pointerId: number;
+  clipId: string;
+  startBox: EffectiveBox;
+  startPointer: ProjectPoint;
+  /** Pointer position of the last processed move; the commit re-derives it. */
+  lastPoint: ProjectPoint;
+  /** The frame on screen, or null when no frame is applied. */
+  frame: ShapeGestureFrame | null;
+};
+
+export type Gesture =
+  | (GestureBase & { mode: 'move' | 'rotate' })
+  | (GestureBase & { mode: 'resize'; corner: CornerId });
+
+/**
+ * Close the staged preview frame, if one is on screen.
+ *
+ * The collapse reverts exactly what that frame wrote, so an edit adopted while
+ * the gesture was in flight survives it — including one in this scope, which a
+ * whole-scope restore would take with it.
+ */
+export function collapseShapeGestureFrame(gesture: Gesture): void {
+  const frame = gesture.frame;
+  if (!frame) return;
+  gesture.frame = null;
+  useTimelineStore.getState().controller.collapsePreviewFrame(frame.before, frame.after, frame.scopeId);
+}
+
+/** What this pointer position means for the gesture, re-derived from its start. */
+function shapeGestureStep(gesture: Gesture, point: ProjectPoint): { next: Partial<Clip>; label: string } {
+  if (gesture.mode === 'move') {
+    const moved = moveBox(
+      gesture.startBox,
+      point.x - gesture.startPointer.x,
+      point.y - gesture.startPointer.y,
+    );
+    return { next: { x: moved.x, y: moved.y }, label: 'Move shape' };
   }
-  | {
-    mode: 'resize';
-    corner: CornerId;
-    pointerId: number;
-    clipId: string;
-    startBox: EffectiveBox;
-    startPointer: ProjectPoint;
-    hasApplied: boolean;
+  if (gesture.mode === 'resize') {
+    const resized = resizeBox(gesture.startBox, gesture.corner, point);
+    return {
+      next: { x: resized.x, y: resized.y, width: resized.width, height: resized.height },
+      label: 'Resize shape',
+    };
+  }
+  return {
+    next: { rotation: rotateBox(gesture.startBox, gesture.startPointer, point) },
+    label: 'Rotate shape',
   };
+}
+
+/**
+ * One gesture frame, applied through `applyClipProperties`.
+ *
+ * `commit` picks between the two uses of that one call: a move PREVIEWS it —
+ * applied to the live project and published nowhere — and pointerup re-runs the
+ * identical step through the normal path, so the gesture lands as exactly one
+ * undo entry carrying the label the step itself names, captured at the moment
+ * the user let go.
+ */
+export function applyShapeGestureFrame(gesture: Gesture, point: ProjectPoint, commit: boolean): void {
+  // Whatever is on screen right now is replaced by this frame, including the
+  // step that changes nothing: the controller skips an unchanged draft, so a
+  // gesture that returns to where it began ends up having moved nothing.
+  collapseShapeGestureFrame(gesture);
+
+  const { next, label } = shapeGestureStep(gesture, point);
+  const { controller } = useTimelineStore.getState();
+  const run = () => controller.applyClipProperties([gesture.clipId], label, (draft) => {
+    if (next.x !== undefined) draft.x = next.x;
+    if (next.y !== undefined) draft.y = next.y;
+    if (next.width !== undefined) draft.width = next.width;
+    if (next.height !== undefined) draft.height = next.height;
+    if (next.rotation !== undefined) draft.rotation = next.rotation;
+    return true;
+  });
+
+  if (commit) {
+    run();
+    return;
+  }
+
+  const scopeId = controller.getActiveTimelineId();
+  const before = scopeTimelineOf(controller.getProject(), scopeId);
+  const report = controller.previewFrame(run);
+  const after = scopeTimelineOf(controller.getProject(), scopeId);
+  // Whether the frame actually wrote anything, rather than whether the mutator
+  // was merely reached: an unchanged draft stages nothing to close.
+  if (report.changedClipIds.length > 0) gesture.frame = { before, after, scopeId };
+}
+
+/**
+ * Pointer release: the staged frame becomes the gesture's one undo entry.
+ *
+ * Re-running the last step through the normal path (rather than publishing the
+ * previewed one) is deliberate. The previewed command captured its "previous"
+ * state when the frame was applied, so publishing it would make one undo of the
+ * gesture restore a project from before any edit adopted mid-gesture. Taking
+ * the capture now means undoing the gesture spares that edit.
+ */
+export function commitShapeGesture(gesture: Gesture): void {
+  if (!gesture.frame) return;
+  applyShapeGestureFrame(gesture, gesture.lastPoint, true);
+}
 
 /** Base step per arrow key in project px; Shift multiplies by ten. */
 const ARROW_DELTAS: Readonly<Record<string, { x: number; y: number }>> = {
@@ -171,14 +280,17 @@ export function ShapeOverlay({
     }
     : null;
 
-  // Undo a still-applied transient if the overlay goes away mid-gesture.
+  // Teardown is not a release: there is no pointerup, so the user never
+  // completed this gesture and never saw it commit. Drop the staged frame
+  // without publishing, so a panel that goes away mid-drag cannot leave the
+  // transient applied with no history behind it — and cannot reach for an
+  // unrelated entry to remove it. These helpers read only their arguments and
+  // the store, so the first render's closures are the ones teardown needs.
   useEffect(
     () => () => {
       const gesture = gestureRef.current;
       gestureRef.current = null;
-      if (gesture?.hasApplied) {
-        useTimelineStore.getState().controller.undo();
-      }
+      if (gesture) collapseShapeGestureFrame(gesture);
     },
     [],
   );
@@ -198,9 +310,7 @@ export function ShapeOverlay({
   const cancelGesture = () => {
     const gesture = gestureRef.current;
     gestureRef.current = null;
-    if (gesture?.hasApplied) {
-      useTimelineStore.getState().controller.undo();
-    }
+    if (gesture) collapseShapeGestureFrame(gesture);
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -227,7 +337,8 @@ export function ShapeOverlay({
         clipId: hit.clipId,
         startBox,
         startPointer: point,
-        hasApplied: false,
+        lastPoint: point,
+        frame: null,
       };
       return;
     }
@@ -242,7 +353,8 @@ export function ShapeOverlay({
           clipId: chromeClip.id,
           startBox: chromeBox,
           startPointer: point,
-          hasApplied: false,
+          lastPoint: point,
+          frame: null,
         }
         : {
           mode: 'resize',
@@ -251,7 +363,8 @@ export function ShapeOverlay({
           clipId: chromeClip.id,
           startBox: chromeBox,
           startPointer: point,
-          hasApplied: false,
+          lastPoint: point,
+          frame: null,
         };
   };
 
@@ -261,48 +374,8 @@ export function ShapeOverlay({
       if (event.pointerId !== gesture.pointerId) return;
       const point = clientToWrapPoint(event.clientX, event.clientY);
       if (!point) return;
-      const { controller } = useTimelineStore.getState();
-      if (gesture.hasApplied) controller.undo();
-
-      let next: Partial<Clip>;
-      let label: string;
-      if (gesture.mode === 'move') {
-        const moved = moveBox(
-          gesture.startBox,
-          point.x - gesture.startPointer.x,
-          point.y - gesture.startPointer.y,
-        );
-        next = { x: moved.x, y: moved.y };
-        label = 'Move shape';
-      } else if (gesture.mode === 'resize') {
-        const resized = resizeBox(gesture.startBox, gesture.corner, point);
-        next = {
-          x: resized.x,
-          y: resized.y,
-          width: resized.width,
-          height: resized.height,
-        };
-        label = 'Resize shape';
-      } else {
-        next = {
-          rotation: rotateBox(gesture.startBox, gesture.startPointer, point),
-        };
-        label = 'Rotate shape';
-      }
-
-      const report = controller.applyClipProperties(
-        [gesture.clipId],
-        label,
-        (draft) => {
-          if (next.x !== undefined) draft.x = next.x;
-          if (next.y !== undefined) draft.y = next.y;
-          if (next.width !== undefined) draft.width = next.width;
-          if (next.height !== undefined) draft.height = next.height;
-          if (next.rotation !== undefined) draft.rotation = next.rotation;
-          return true;
-        },
-      );
-      gesture.hasApplied = report.changedClipIds.length > 0;
+      gesture.lastPoint = point;
+      applyShapeGestureFrame(gesture, point, false);
       return;
     }
 
@@ -315,8 +388,11 @@ export function ShapeOverlay({
   const endGesture = (event: React.PointerEvent<HTMLDivElement>) => {
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
-    // Keep whatever the last step applied — that is the gesture's one entry.
     gestureRef.current = null;
+    // Publish the gesture's one entry, or nothing at all when no frame was
+    // staged. Pointercancel lands here too, so an interrupted drag keeps the
+    // step it had reached rather than dropping it.
+    commitShapeGesture(gesture);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }

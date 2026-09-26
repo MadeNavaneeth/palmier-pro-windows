@@ -282,7 +282,7 @@ function MainWorkspace() {
       try {
         const ffmpeg = await window.palmier.system.checkFfmpeg();
         if (!ffmpeg.available) {
-          console.warn('FFmpeg not found on PATH â€” media features will be limited.');
+          console.warn('FFmpeg not found on PATH — media features will be limited.');
         }
         // The compositor is a progressive enhancement, so a failure here is not
         // fatal -- but it has to be visible, or the preview's degraded fallback
@@ -392,7 +392,7 @@ const PANEL_FRAME = 'flex flex-col overflow-hidden bg-surface-1';
  * fine until enough of them are open at once: at 1024 px with the Agent panel
  * showing, media + inspector + a 400 px preview asks for more than the row has,
  * and because the row is `overflow-hidden` the excess was silently clipped
- * instead of scrolling â€” the rightmost panel simply left the window. Rendered
+ * instead of scrolling — the rightmost panel simply left the window. Rendered
  * checks missed it because they measured document scrollbars and the two toolbar
  * rows, not the workspace row itself.
  *

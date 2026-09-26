@@ -93,6 +93,8 @@ git is not a recovery mechanism in this repository.
   "fix" working-tree line endings, and do not read a CRLF working tree as evidence that a
   `git stash` or `git checkout` round-trip occurred.
 
+- **Never use PowerShell text cmdlets to read or write source files.** On Windows, PowerShell 5.1 decodes a BOM-less UTF-8 file using the ANSI code page and writes it back in that code page, so every non-ASCII character is mangled: an em dash (U+2014) becomes the three characters â€". A second round trip nests the damage (Ã¢â‚¬â€), and one of the bytes involved has no code-page mapping at all, so the original text is then unrecoverable. This silently corrupted comments in 23 source files. Use the read/write/edit tools, or Node with an explicit 'utf8' encoding. Reserve PowerShell for process work — running tests, git, builds — never for file content.
+
 ## Coding Behavior Guidelines (Karpathy)
 
 These principles apply to EVERY code change in this repository. They are

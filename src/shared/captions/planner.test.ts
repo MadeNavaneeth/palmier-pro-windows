@@ -1,7 +1,7 @@
 ﻿/**
  * Caption planner coverage (#91): word-timestamp snapping, pause-aware
  * breaks, char budgets across lines, sentence-punctuation soft breaks, and
- * defensive input handling. These rules are the #91 lesson â€” cue boundaries
+ * defensive input handling. These rules are the #91 lesson — cue boundaries
  * come from real word times, never character-count distribution.
  */
 import { describe, it, expect } from 'vitest';

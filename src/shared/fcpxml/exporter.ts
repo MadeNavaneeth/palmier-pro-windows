@@ -957,7 +957,7 @@ export function exportFcpxmlWithReport(project: Project): FcpxmlExportResult {
     project.media.find((m) => m.id === clip.assetId) ?? null;
 
   if (sortedClips.length === 0) {
-    throw new Error('No clips to export â€” the timeline is empty.');
+    throw new Error('No clips to export — the timeline is empty.');
   }
 
   const lines: string[] = [];
@@ -996,7 +996,7 @@ export function exportFcpxmlWithReport(project: Project): FcpxmlExportResult {
     }
   }
 
-  // â”€â”€ Library / event / spine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Library / event / spine ────────────────────────────────────────────────
   lines.push(
     `</resources><library><event name="${escapeAttr(project.name || 'Palmier Project')}"><project name="${escapeAttr(project.name || 'Palmier Project')}">`,
   );

@@ -8,6 +8,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { EditorController } from './controller';
+import { createEmptyProject } from '../types/project';
 import { StateMirror } from './state-mirror';
 
 describe('deduplication', () => {
@@ -172,5 +174,83 @@ describe('echo handling', () => {
 
     expect(mirror.lastConfirmed()).toBeNull();
     expect(mirror.needsPush('a')).toBe(true);
+  });
+});
+
+/**
+ * Snapshots cross the boundary in two spellings: `EditorController.serialize`
+ * pretty-prints, and every peer payload is compact. Comparing the raw strings
+ * meant neither the dedupe check nor the echo guard could ever match, so every
+ * snapshot after an inbound adoption shipped a redundant push and the echo
+ * guard documented at useEditorSync did not exist.
+ */
+describe('canonical comparison across spellings', () => {
+  const pretty = JSON.stringify({ b: 1, a: [1, { d: 4, c: 3 }] }, null, 2);
+  const compact = JSON.stringify({ b: 1, a: [1, { d: 4, c: 3 }] });
+  const reordered = JSON.stringify({ a: [1, { c: 3, d: 4 }], b: 1 });
+
+  it('does not need the fix to be a no-op for identical strings', async () => {
+    const mirror = new StateMirror();
+    await mirror.push(pretty, async () => undefined);
+
+    expect(mirror.needsPush(pretty)).toBe(false);
+    expect(mirror.isEcho(pretty)).toBe(true);
+  });
+
+  it('sees a compact peer payload as the state it already holds', async () => {
+    const mirror = new StateMirror();
+    const send = vi.fn(async () => undefined);
+    await mirror.push(pretty, send);
+
+    expect(mirror.needsPush(compact)).toBe(false);
+    expect(mirror.isEcho(compact)).toBe(true);
+    // ...and back the other way, which is the direction the renderer actually
+    // hits after adopting an inbound push.
+    expect(mirror.needsPush(pretty)).toBe(false);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores key order, which JSON.stringify does not promise to preserve', () => {
+    const mirror = new StateMirror();
+    mirror.markConfirmed(compact);
+
+    expect(mirror.isEcho(reordered)).toBe(true);
+    expect(mirror.needsPush(reordered)).toBe(false);
+  });
+
+  it('still distinguishes a real change in either spelling', async () => {
+    const mirror = new StateMirror();
+    mirror.markConfirmed(pretty);
+
+    const edited = JSON.stringify({ b: 2, a: [1, { d: 4, c: 3 }] });
+    expect(mirror.needsPush(edited)).toBe(true);
+    expect(mirror.isEcho(edited)).toBe(false);
+    expect(mirror.needsPush(JSON.stringify({ b: 1, a: [1, { d: 5, c: 3 }] }, null, 2))).toBe(true);
+    expect(mirror.needsPush(JSON.stringify({ b: 1, a: [1, { d: 4, c: 3 }], extra: 1 }))).toBe(true);
+  });
+
+  it('round-trips a real project through both spellings', () => {
+    const mirror = new StateMirror();
+    const controller = new EditorController(createEmptyProject('Round trip'));
+    controller.addClip({ assetId: 'asset-1', trackId: 'v1', startFrame: 30, durationFrames: 90 });
+    const serialized = controller.serialize();
+
+    // What main hands the peer back after accepting it.
+    mirror.markConfirmed(JSON.stringify(controller.getProject()));
+    expect(mirror.isEcho(serialized)).toBe(true);
+    expect(mirror.needsPush(serialized)).toBe(false);
+
+    // And what a peer sends after adopting that same state from us.
+    mirror.markConfirmed(serialized);
+    expect(mirror.isEcho(JSON.stringify(controller.getProject()))).toBe(true);
+  });
+
+  it('falls back to the raw string for a snapshot that is not JSON', () => {
+    const mirror = new StateMirror();
+    mirror.markConfirmed('not json');
+
+    expect(mirror.needsPush('not json')).toBe(false);
+    expect(mirror.isEcho('not json')).toBe(true);
+    expect(mirror.isEcho('other')).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 ﻿/**
- * Preload script â€” the narrow, context-isolated bridge between
+ * Preload script — the narrow, context-isolated bridge between
  * the sandboxed renderer and the main process.
  *
  * Only explicitly listed IPC channels are exposed. The renderer
@@ -11,10 +11,10 @@ import type { SilenceConfig } from '../shared/audio/silence-detector';
 import type { MarkerSettings } from '../shared/editor/marker-settings';
 import type { FcpxmlExportResult } from '../shared/fcpxml/exporter';
 
-// â”€â”€â”€ Type-safe API exposed to the renderer as `window.palmier` â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Type-safe API exposed to the renderer as `window.palmier` ───────────────
 
 const api = {
-  // â”€â”€ Project â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Project ──────────────────────────────────────────────────────────────────
   project: {
     save: (projectJson: string, filePath?: string) =>
       ipcRenderer.invoke('project:save', projectJson, filePath),
@@ -31,7 +31,7 @@ const api = {
     ),
   },
 
-  // â”€â”€ Media â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Media ────────────────────────────────────────────────────────────────────
   media: {
     import: () => ipcRenderer.invoke('media:import'),
     importPaths: (filePaths: string[]) => ipcRenderer.invoke('media:import-paths', filePaths),
@@ -157,7 +157,7 @@ const api = {
       ipcRenderer.invoke('audio:volume-analysis', filePath),
   },
 
-  // â”€â”€ System â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── System ───────────────────────────────────────────────────────────────────
   system: {
     getAppInfo: () => ipcRenderer.invoke('system:app-info'),
     gpuInit: () => ipcRenderer.invoke('system:gpu-init'),
@@ -166,7 +166,7 @@ const api = {
     decrypt: (encrypted: string) => ipcRenderer.invoke('system:decrypt', encrypted),
   },
 
-  // â”€â”€ Editor Commands (Phase 2+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Editor Commands (Phase 2+) ──────────────────────────────────────────────
   editor: {
     execute: (commandName: string, args: Record<string, unknown>) =>
       ipcRenderer.invoke('editor:execute', commandName, args),
@@ -193,7 +193,7 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke('grade-presets:remove', id),
   },
 
-  // â”€â”€ AI / MCP (Phase 5+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── AI / MCP (Phase 5+) ─────────────────────────────────────────────────────
   ai: {
     chat: (messages: unknown[], provider: string) =>
       ipcRenderer.invoke('ai:chat', messages, provider),
@@ -234,7 +234,7 @@ const api = {
       ipcRenderer.invoke('skills:set-enabled', name, enabled),
   },
 
-  // â”€â”€ Preview (Phase 3+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Preview (Phase 3+) ──────────────────────────────────────────────────────
   preview: {
     /**
      * `titles` carries renderer-rasterized title-clip RGBA (title clips
@@ -260,7 +260,7 @@ const api = {
     ) => ipcRenderer.invoke('preview:thumbnail', frameIndex, targetHeight, titles),
   },
 
-  // â”€â”€ Export (Phase 4+) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Export (Phase 4+) ───────────────────────────────────────────────────────
   export: {
     start: (options: Record<string, unknown>) =>
       ipcRenderer.invoke('export:start', options),
@@ -277,7 +277,7 @@ const api = {
       ipcRenderer.invoke('export:bake-titles', { files }),
   },
 
-  // â”€â”€ Generation (BYOK media providers, upstream PR #406 family) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Generation (BYOK media providers, upstream PR #406 family) ─────────────
   generation: {
     /** Providers with configured state and per-type model catalogs. */
     providers: () => ipcRenderer.invoke('generation:providers'),
@@ -304,7 +304,7 @@ const api = {
     listDetached: (): Promise<string[]> => ipcRenderer.invoke('panels:list-detached'),
   },
 
-  // â”€â”€ Event subscriptions (main â†’ renderer) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Event subscriptions (main → renderer) ───────────────────────────────────
   on: (channel: string, callback: (...args: unknown[]) => void) => {
     const allowed = [
       'project:changed',
@@ -341,6 +341,6 @@ const api = {
 // Expose as window.palmier
 contextBridge.exposeInMainWorld('palmier', api);
 
-// â”€â”€â”€ Type declaration for the renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Type declaration for the renderer ───────────────────────────────────────
 export type PalmierAPI = typeof api;
 

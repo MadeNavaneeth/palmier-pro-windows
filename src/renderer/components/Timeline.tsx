@@ -1,5 +1,5 @@
 /**
- * Timeline â€” the main timeline panel assembling ruler, tracks, clips,
+ * Timeline — the main timeline panel assembling ruler, tracks, clips,
  * playhead, snap lines, and toolbar. Uses the new timeline store and
  * drag/keyboard hooks.
  */
@@ -41,7 +41,7 @@ export function Timeline({ fill = false, height }: { fill?: boolean; height?: nu
   // Sort tracks: video (higher order on top), audio at bottom. Display order
   // is what marquee row math maps against.
   const sortedTracks = [...tracks].sort((a, b) => b.order - a.order);
-  /** Lane row height â€” must match the h-12 track rows. */
+  /** Lane row height — must match the h-12 track rows. */
   const TRACK_ROW_HEIGHT = 48;
 
   // Rubber-band marquee state in client coordinates; the band can cross

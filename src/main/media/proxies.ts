@@ -1,7 +1,7 @@
 /**
  * Proxy generation (roadmap R2): background 540p mezzanine transcodes.
  *
- * Generation state is deliberately NOT persisted and NOT part of undo â€”
+ * Generation state is deliberately NOT persisted and NOT part of undo —
  * only the final attach (controller.setProxyState) is an editor command.
  * A crash mid-generation leaves no proxy field behind, so nothing can
  * reference a half-written file; the next Generate attempt starts fresh

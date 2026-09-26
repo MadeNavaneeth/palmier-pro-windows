@@ -1,5 +1,5 @@
 ﻿/**
- * Inspector â€” properties for the current clip selection.
+ * Inspector — properties for the current clip selection.
  *
  * Exposes blend mode (upstream #203), opacity, fades, transitions and the
  * silence-removal controls (upstream PR #426). A single clip is edited directly;
@@ -2027,11 +2027,11 @@ function VolumeKeyframeControls({ clipId }: { clipId: string }) {
             {track.map((point) => (
               <button
                 key={point.frame}
-                title={`Frame ${point.frame}: ${point.value} dB â€” click to remove`}
+                title={`Frame ${point.frame}: ${point.value} dB — click to remove`}
                 onClick={() => setTrack(track.filter((p) => p.frame !== point.frame))}
                 className="rounded bg-surface-4/60 px-1 py-0.5 font-mono text-[8px] text-text-secondary hover:bg-red-500/20 hover:text-red-300"
               >
-                f{point.frame}:{point.value}dBÃ—
+                f{point.frame}:{point.value}dB×
               </button>
             ))}
           </div>
@@ -2058,7 +2058,7 @@ function VolumeKeyframeControls({ clipId }: { clipId: string }) {
         </div>
       ) : (
         <p className="text-[10px] text-text-muted">
-          No keyframes â€” volume follows the clip's static level. Add two or more to animate.
+          No keyframes — volume follows the clip's static level. Add two or more to animate.
         </p>
       )}
     </div>
@@ -2069,7 +2069,7 @@ function VolumeKeyframeControls({ clipId }: { clipId: string }) {
  * Motion keyframes (keyframes v1): per-axis position tracks. "Set" captures
  * the clip's current position at the playhead as a keyframe (or updates the
  * existing one on that frame); chips list the points with remove buttons.
- * Evaluation/sanitization live in shared/media/motion.ts â€” this UI only
+ * Evaluation/sanitization live in shared/media/motion.ts — this UI only
  * collects intent.
  */
 function MotionControls({ clipId }: { clipId: string }) {
@@ -2125,12 +2125,12 @@ function MotionControls({ clipId }: { clipId: string }) {
               {(track ?? []).map((point) => (
                 <button
                   key={point.frame}
-                  title={`Frame ${point.frame}: ${point.value}px â€” click to remove`}
+                  title={`Frame ${point.frame}: ${point.value}px — click to remove`}
                   onClick={() =>
                     setAxis(axis, (track ?? []).filter((p) => p.frame !== point.frame))}
                   className="rounded bg-surface-4/60 px-1 py-0.5 font-mono text-[8px] text-text-secondary hover:bg-red-500/20 hover:text-red-300"
                 >
-                  f{point.frame}:{Math.round(point.value)}Ã—
+                  f{point.frame}:{Math.round(point.value)}×
                 </button>
               ))}
               <button
@@ -2265,7 +2265,7 @@ function OpacityKeyframeControls({ clipId }: { clipId: string }) {
  * Silence removal, with its settings exposed (upstream PR #426).
  *
  * Before this the button ran with hardcoded values, so a pass that cut too much
- * or too little could not be adjusted â€” the only recourse was undo. The two
+ * or too little could not be adjusted — the only recourse was undo. The two
  * duration controls mirror upstream's Minimum Pause and Speech Padding, in
  * milliseconds. Threshold has no upstream counterpart: upstream decides silence
  * from an on-device speech mask, while this port measures an RMS envelope, which
@@ -2345,7 +2345,7 @@ function SilenceRemovalControls({
         disabled={working}
         className="mt-0.5 rounded border border-surface-3 bg-surface-2 px-2 py-1 text-xs text-text-primary transition hover:border-surface-4 hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {working ? 'Analyzingâ€¦' : 'Remove Silence'}
+        {working ? 'Analyzing…' : 'Remove Silence'}
       </button>
       <label
         className="flex cursor-pointer items-center gap-1.5 text-2xs text-text-secondary"
@@ -2626,7 +2626,7 @@ function MultiClipInspector() {
 
         {visualClips.length === 0 && (
           <p className="text-2xs text-text-muted">
-            Audio only â€” compositing properties don't apply.
+            Audio only — compositing properties don't apply.
           </p>
         )}
       </div>
@@ -2744,7 +2744,7 @@ function ProjectSettingsSection() {
                   {preset.label}
                 </option>
               ))}
-              <option value="custom">Customâ€¦</option>
+              <option value="custom">Custom…</option>
             </select>
           </span>
         </div>
@@ -2765,7 +2765,7 @@ const FPS_OPTIONS = [24, 25, 30, 48, 50, 60];
 
 /**
  * Custom `width:height` entry. Shows the resolution the ratio resolves to, or
- * the refusal reason, and only enables Apply for a valid edited ratio â€” the same
+ * the refusal reason, and only enables Apply for a valid edited ratio — the same
  * gating as upstream's CustomAspectRatioSheet.
  */
 function CustomAspectRatioEditor({

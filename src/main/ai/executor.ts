@@ -1,5 +1,5 @@
 ﻿/**
- * Tool Executor â€” runs tool calls against the EditorController.
+ * Tool Executor — runs tool calls against the EditorController.
  * Shared by both the in-app agent and the MCP server.
  */
 
@@ -641,7 +641,7 @@ export class ToolExecutor {
 
   private async dispatch(name: string, args: any): Promise<ToolResult> {
     switch (name) {
-      // â”€â”€ Read operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // ── Read operations ───────────────────────────────────────────────────
       case 'get_timeline': {
         // The tool contract promises project settings alongside the timeline, and
         // set_project_settings is only useful if the agent can read the canvas
@@ -1579,7 +1579,7 @@ export class ToolExecutor {
         }
       }
 
-      // â”€â”€ Write operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // ── Write operations ──────────────────────────────────────────────────
       case 'add_clip': {
         if (args.mode !== undefined || args.source !== undefined) {
           const placed = this.editor.placeClipWithMode({
@@ -1731,7 +1731,7 @@ export class ToolExecutor {
         if (!applied) {
           return {
             success: false,
-            error: 'Blend mode not applied â€” clip not found or is an audio clip (audio has no compositing stage).',
+            error: 'Blend mode not applied — clip not found or is an audio clip (audio has no compositing stage).',
           };
         }
         return { success: true, data: { clipId: args.clipId, blendMode: args.blendMode } };
@@ -1748,7 +1748,7 @@ export class ToolExecutor {
         // defaults, so a no-argument request performs the edit the Inspector
         // describes; supplied arguments override for this call only and do not
         // rewrite the controls. Normalizing both layers matters because the MCP
-        // socket is another caller â€” an out-of-range threshold would otherwise
+        // socket is another caller — an out-of-range threshold would otherwise
         // report the whole clip silent (upstream PR #426).
         const config = resolveSilenceConfig(loadSilenceSettings(), {
           ...(args.thresholdDb !== undefined ? { thresholdDb: args.thresholdDb } : {}),
@@ -1813,7 +1813,7 @@ export class ToolExecutor {
         if (!ok) {
           return {
             success: false,
-            error: 'Cross-dissolve failed â€” clips must be adjacent on the same track and longer than the dissolve.',
+            error: 'Cross-dissolve failed — clips must be adjacent on the same track and longer than the dissolve.',
           };
         }
         return { success: true, data: { durationFrames: d } };
@@ -2171,7 +2171,7 @@ export class ToolExecutor {
           sourceSeconds: atSeconds,
         });
         if (!decoded?.data) {
-          return { success: false, error: `Could not decode a frame at ${atSeconds}s â€” check the offset against the asset duration.` };
+          return { success: false, error: `Could not decode a frame at ${atSeconds}s — check the offset against the asset duration.` };
         }
 
         const hash = createHash('sha1')
@@ -2926,7 +2926,7 @@ export class ToolExecutor {
         if (transcription.words.length === 0 && transcription.segments.length === 0) {
           return {
             success: true,
-            data: { cues: 0, text: transcription.text, note: 'Transcription returned no timed words â€” nothing was placed.' },
+            data: { cues: 0, text: transcription.text, note: 'Transcription returned no timed words — nothing was placed.' },
           };
         }
 
@@ -2976,7 +2976,7 @@ export class ToolExecutor {
         if (configured.length === 0) {
           return {
             success: false,
-            error: `No generation provider with an API key supports ${args.type}. Add a key under Settings â†’ Generation (providers: ${listGenerationProviders().map((p) => p.id).join(', ')}).`,
+            error: `No generation provider with an API key supports ${args.type}. Add a key under Settings → Generation (providers: ${listGenerationProviders().map((p) => p.id).join(', ')}).`,
           };
         }
         const provider = (args.providerId && configured.find((p) => p.id === args.providerId))
@@ -3166,7 +3166,7 @@ export class ToolExecutor {
   /**
    * Scoped removal (upstream PR #426's `clipIds` contract): the selected
    * audio clips are the detection sources, their silence maps to timeline
-   * ranges, and one ripple transaction per anchor track cuts them â€” linked
+   * ranges, and one ripple transaction per anchor track cuts them — linked
    * partners and sync-locked tracks ride along. Detection runs before any
    * edit, so a missing source refuses the whole request instead of
    * half-editing it; one detector call per distinct source path.

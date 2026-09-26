@@ -109,7 +109,7 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
     expect(args).toContain('h264_nvenc');
   });
 
-  // â”€â”€â”€ Color grading (R4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Color grading (R4) ──────────────────────────────────────────────────
 
   it('emits eq filter for color-graded clips and omits it for ungraded ones', () => {
     const project = projectWithMedia(
@@ -169,7 +169,7 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
     expect(identityArgs).not.toContain('geq=');
   });
 
-  // â”€â”€â”€ Title drawtext (R3) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Title drawtext (R3) ──────────────────────────────────────────────────
 
   it('emits escaped, centered, time-gated drawtext for title clips', () => {
     const project = projectWithMedia(
@@ -190,7 +190,7 @@ describe('videoCodecArgs (R2 hardware encoders)', () => {
 
     const graph = build(project).find((arg) => arg.includes('drawtext'))!;
     expect(graph).toContain("drawtext=text='Episode\\: \\'One\\' 100\\%\\nTake two'");
-    expect(graph).toContain('fontsize=108'); // 0.1 Ã— 1080
+    expect(graph).toContain('fontsize=108'); // 0.1 × 1080
     expect(graph).toContain('fontcolor=#ffcc00');
     expect(graph).toContain(':x=(w-text_w)/2:y=(h-text_h)/2');
     expect(graph).toContain("between(t,1.0000,3.0000)");
@@ -603,7 +603,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     );
 
     const graph = build(project).find((arg) => arg.includes('trim='))!;
-    // Both chains read [1:v] â€” the single consolidated input.
+    // Both chains read [1:v] — the single consolidated input.
     expect(graph.match(/\[1:v\]trim=/g)).toHaveLength(2);
     expect(graph).not.toContain('[2:');
   });
@@ -634,7 +634,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(graph).toContain(
       '[2:a]atrim=start=1.0000:end=4.3333,asetpts=PTS-STARTPTS,volume=0.5000,adelay=3000:all=1[a0]',
     );
-    // Clip B: default 100-frame source window starting at frame 300 â†’ 10s
+    // Clip B: default 100-frame source window starting at frame 300 → 10s
     // delay, unity gain.
     expect(graph).toContain('[2:a]atrim=start=0.0000:end=3.3333,asetpts=PTS-STARTPTS,adelay=10000:all=1[a1]');
     expect(graph).toContain('[a0][a1]amix=inputs=2:normalize=0[aout]');
@@ -838,7 +838,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     expect(args).toContain('-t');
   });
 
-  // â”€â”€â”€ Range export (R2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Range export (R2) ─────────────────────────────────────────────────────
 
   function buildWithRange(project: Project, start: number, end: number): string[] {
     return buildFfmpegArgs(
@@ -902,7 +902,7 @@ describe('buildFfmpegArgs input consolidation (#546)', () => {
     );
 
     const graph = buildWithRange(project, 150, 600).find((arg) => arg.includes('atrim'))!;
-    // Absolute delay would be 10s; inside a range starting at 5s â†’ 5s.
+    // Absolute delay would be 10s; inside a range starting at 5s → 5s.
     expect(graph).toContain('adelay=5000:all=1');
   });
 

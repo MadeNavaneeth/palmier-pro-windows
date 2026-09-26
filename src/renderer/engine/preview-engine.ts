@@ -1,5 +1,5 @@
 ﻿/**
- * PreviewEngine â€” drives the 60fps real-time preview rendering loop.
+ * PreviewEngine — drives the 60fps real-time preview rendering loop.
  *
  * Architecture:
  * 1. Each animation frame: collect visible layers at current playhead
@@ -20,7 +20,7 @@ import { drawTitle } from './title-render';
 import { drawShapeBox } from './shape-render';
 import { evaluateMotion } from '../../shared/media/motion';
 
-// â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface LayerFrame {
   clip: Clip;
@@ -36,7 +36,7 @@ export interface PreviewEngineConfig {
 
 export type EngineState = 'idle' | 'playing' | 'seeking' | 'rendering';
 
-// â”€â”€â”€ Frame Cache (renderer-side) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Frame Cache (renderer-side) ─────────────────────────────────────────────
 
 class FrameCache {
   private cache = new Map<string, ImageBitmap>();
@@ -71,7 +71,7 @@ class FrameCache {
   }
 }
 
-// â”€â”€â”€ PreviewEngine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── PreviewEngine ───────────────────────────────────────────────────────────
 
 export class PreviewEngine {
   private canvas: HTMLCanvasElement;
@@ -116,7 +116,7 @@ export class PreviewEngine {
     this.ctx = ctx;
   }
 
-  // â”€â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Public API ──────────────────────────────────────────────────────────
 
   setProject(project: Project): void {
     this.project = project;
@@ -199,7 +199,7 @@ export class PreviewEngine {
     this.frameCache.clear();
   }
 
-  // â”€â”€â”€ Render Loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Render Loop ─────────────────────────────────────────────────────────
 
   private scheduleNextFrame(): void {
     this.rafId = requestAnimationFrame(() => this.tick());
@@ -266,7 +266,7 @@ export class PreviewEngine {
    * Start a render without waiting for it.
    *
    * The rAF loop and the seek/playhead setters cannot await a decode, so the
-   * promise is detached â€” but explicitly, with a rejection handler, so a broken
+   * promise is detached — but explicitly, with a rejection handler, so a broken
    * render surfaces through `onError` instead of vanishing (#89).
    */
   private renderFrameDetached(frame: Frame): void {
@@ -479,7 +479,7 @@ export class PreviewEngine {
     // For video clips, request frame from main process
     try {
       const result = await window.palmier.media.thumbnail(
-        clip.assetId, // In real impl, resolve assetId â†’ file path via project store
+        clip.assetId, // In real impl, resolve assetId → file path via project store
         '', // outputDir handled by main
         timestampSec,
       );
@@ -518,7 +518,7 @@ export class PreviewEngine {
     }
   }
 
-  // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Helpers ─────────────────────────────────────────────────────────────
 
   private getVisibleLayers(frame: Frame): Clip[] {
     if (!this.project) return [];

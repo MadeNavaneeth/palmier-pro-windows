@@ -752,7 +752,7 @@ function sequenceSpineBody(sequenceTag: string): string | null {
 export function parseFcpxml(xml: string): ParsedFcpxml {
   const unsupported: string[] = [];
 
-  // â”€â”€ Project canvas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Project canvas ──────────────────────────────────────────────────────
   const formatTag = extractTagBlock(xml, 'format')[0] ?? '';
   const frameDuration = attr(formatTag, 'frameDuration');
   const frameDurationSec = frameDuration ? parseFcpxmlTime(frameDuration) : null;
@@ -768,7 +768,7 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
 
   const eventName = attr(extractTagBlock(xml, 'event')[0] ?? '', 'name');
 
-  // â”€â”€ Assets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Assets ──────────────────────────────────────────────────────────────
   const assets: ImportedAsset[] = [];
   for (const tag of extractTagBlock(xml, 'asset')) {
     const ref = attr(tag, 'id');
@@ -794,7 +794,7 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   }
   const assetByRef = new Map(assets.map((a) => [a.ref, a]));
 
-  // â”€â”€ Title styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Title styles ────────────────────────────────────────────────────────
   const stylesById = new Map<string, ReturnType<typeof titleStyleOf>>();
   for (const match of xml.matchAll(TITLE_STYLE_RE)) {
     stylesById.set(match[1], titleStyleOf(match[2]));
@@ -1104,7 +1104,7 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     for (const childRef of sequence.childRefs) includeSequence(childRef);
   }
 
-  // â”€â”€ Spine children â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Spine children ──────────────────────────────────────────────────────
   const projectTags = extractTagBlock(xml, 'project');
   const rootProject = [...projectTags].reverse().find((tag) => extractTagBlock(tag, 'spine')[0]);
   const spineXml = rootProject
@@ -1112,7 +1112,7 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     : extractTagBlock(xml, 'spine').at(-1) ?? '';
   const clips: ImportedClip[] = [];
 
-  // Titles carry a body (<text>â€¦), so scan opening tags and consume through
+  // Titles carry a body (<text>…), so scan opening tags and consume through
   // each element's closing tag rather than matching self-contained tokens.
   // Skip the outer spine's own opening tag so it is not mistaken for nested.
   const innerXml = spineXml.slice(spineXml.indexOf('>') + 1);

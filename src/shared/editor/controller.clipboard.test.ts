@@ -104,7 +104,7 @@ describe('clipboard copy/paste (R1)', () => {
 
     expect(newIds).toHaveLength(1);
     const clips = ctrl.getClips().filter((c) => c.trackId === 'a1').sort((a, b) => a.startFrame - b.startFrame);
-    // Victim split around [250,300): head fragment 200â†’250, tail 300â†’400.
+    // Victim split around [250,300): head fragment 200→250, tail 300→400.
     expect(clips.map((c) => [c.startFrame, c.startFrame + c.durationFrames])).toEqual([
       [0, 50],
       [200, 250],

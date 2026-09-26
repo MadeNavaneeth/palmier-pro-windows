@@ -2,7 +2,7 @@
  * Caption planning from word timings (#91).
  *
  * The failure mode upstream reported was captions distributed by character
- * count â€” text drifting off-sync with speech because cue boundaries ignored
+ * count — text drifting off-sync with speech because cue boundaries ignored
  * where words actually begin and end. This planner takes word-level timings
  * (from ANY transcription source: cloud API, local whisper, manual) and
  * produces cues that:
@@ -14,7 +14,7 @@
  *
  * Pure and engine-agnostic: whatever produces `WordTiming[]`, the cue math
  * lives here and is unit-tested against broadcast-style defaults
- * (42 chars/line, 2 lines â€” the Netflix/CEA-608-inspired norm).
+ * (42 chars/line, 2 lines — the Netflix/CEA-608-inspired norm).
  */
 
 export interface WordTiming {
@@ -162,7 +162,7 @@ export function planCaptions(
 
     bucket.push(word);
 
-    // Sentence-ending punctuation is a soft break even under budget â€” reading
+    // Sentence-ending punctuation is a soft break even under budget — reading
     // rhythm beats packing density.
     if (/[.!?]$/.test(word.word) && i < clean.length - 1) flush();
   }
