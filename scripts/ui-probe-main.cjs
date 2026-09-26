@@ -30,6 +30,22 @@ const sizes = JSON.parse(process.env.UI_PROBE_SIZES || '[]');
  */
 const GROUPED_PANELS = JSON.stringify([['media', 'agent'], ['inspector', 'export']]);
 
+/**
+ * Every panel visible, persisted with the grouping above because a region only
+ * renders a tab strip when it holds more than one VISIBLE member: App.tsx
+ * computes `visible = dockedMembers(group, panels, detached)` and
+ * `tabbed = visible.length > 1`, and `<PanelTabs>` is the only `role="tablist"`
+ * in the app. Visibility is persisted separately from the grouping, under
+ * `palmier.layout.panels` as a `PanelVisibility` record
+ * (`Record<'media' | 'inspector' | 'agent' | 'export', boolean>`), and the
+ * store's first-run default hides Agent and Export (ui.ts `DEFAULT_PANELS`).
+ * Writing only the grouping therefore left the tablist assertion resting on
+ * whatever visibility the machine happened to have persisted: with the default,
+ * both grouped regions hold one visible member, no tab strip renders, and the
+ * probe failed for a reason that had nothing to do with the layout it measures.
+ */
+const VISIBLE_PANELS = JSON.stringify({ media: true, inspector: true, agent: true, export: true });
+
 // The renderer fires a few preboot IPC calls during mount; feature
 // registration is intentionally skipped here, so answer them with no-ops to
 // keep the probe output clean.
@@ -171,9 +187,12 @@ app.whenReady().then(async () => {
       results.push({ ...(await measureAt(win, size)), panelState: 'default' });
     }
 
-    // State 2: tabbed regions, persisted the way the store persists them.
+    // State 2: tabbed regions, persisted the way the store persists them --
+    // the grouping AND the panel visibility, because the tab strips this state
+    // exists to measure are rendered from each region's visible members.
     await win.webContents.executeJavaScript(
-      `localStorage.setItem('palmier.layout.panelGroups', ${JSON.stringify(GROUPED_PANELS)})`,
+      `localStorage.setItem('palmier.layout.panelGroups', ${JSON.stringify(GROUPED_PANELS)});`
+      + ` localStorage.setItem('palmier.layout.panels', ${JSON.stringify(VISIBLE_PANELS)})`,
     );
     await win.webContents.reload();
     await prepareWorkspace(win);
