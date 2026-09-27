@@ -189,18 +189,28 @@ export function registerEditorSyncHandlers(
  * Attached once when the session's main window is created; the subscription
  * lives and dies with the session's controller, so teardown needs no explicit
  * unsubscribe.
+ *
+ * The payload is read INSIDE the timer, from the controller, not closed over
+ * from the notification. The window is 30ms wide and `setProjectSilent` — the
+ * mirror write every renderer push performs — deliberately does not notify, so
+ * nothing re-arms the timer and nothing refreshes a captured project: a
+ * renderer push landing inside the window left main holding the window's newer
+ * state while this callback still carried the snapshot from notify time, and
+ * the window then adopted that stale snapshot back over its own edit. Reading
+ * the project at send time makes the payload what main actually holds when it
+ * is sent, so the only thing this window can deliver is current.
  */
 export function attachSessionEditorPush(session: Session): void {
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
   let collapsedKind: StateChangeKind = 'playhead';
-  session.controller.subscribe((project, kind) => {
+  session.controller.subscribe((_project, kind) => {
     if (kind === 'edit') collapsedKind = 'edit';
     if (pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(() => {
       pushTimer = null;
       const metadata = { source: MAIN_SYNC_SOURCE, kind: collapsedKind };
       collapsedKind = 'playhead';
-      const payload = JSON.stringify(project);
+      const payload = JSON.stringify(session.controller.getProject());
       for (const contents of session.windows.values()) {
         if (contents.isDestroyed()) continue;
         contents.send('editor:apply-from-main', payload, metadata);
