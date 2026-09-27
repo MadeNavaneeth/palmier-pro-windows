@@ -23,7 +23,7 @@
  * (`adjust-volume`) as the exporter writes them — plus the same elements from
  * third-party files, narrowed on read. Gaps are implicit —
  * absolute clip offsets already encode spacing. Everything else lands in
- * `unsupported` as readable notes so nothing disappears silently, by five
+ * `unsupported` as readable notes so nothing disappears silently, by six
  * mechanisms:
  *
  * 1. `UNREPRESENTED_ELEMENTS` — every element this importer reads for nothing,
@@ -50,6 +50,19 @@
  *    actionable part).
  * 5. The construct scan below, for the effects, filters, notes and shape-ish
  *    elements.
+ * 6. An `adjust-*` NESTED inside another element is refused rather than read: it
+ *    belongs to the containing element, not to this one (see
+ *    `reportNestedAdjustments`). The four readers that transport a clip's look are
+ *    scoped to the element's DIRECT children, so a per-channel or anchored
+ *    sub-clip's adjustment can no longer be applied to the parent as if it were
+ *    the parent's own.
+ *
+ * Two mechanisms here are the OPPOSITE of reporting, and matter as much: a
+ * self-closing element is never absorbed into a later match of the same name, and
+ * an attribute value may legally contain a `>` inside its quotes. Both live in
+ * `tagBlockPattern`, and both used to lose elements silently rather than
+ * mis-report them — a loss no note could describe, because the note would have had
+ * to describe an element that was never read.
  *
  * Shape-ish constructs (generators, shapes, graphics) have no Windows analogue —
  * upstream has no shapes and no FCPXML shape transport — so they are reported and
@@ -248,7 +261,7 @@ function parseDbAmount(value: string | null): number | null {
 
 /** Linear 0-1 opacity from <adjust-blend>; undefined when absent/unusable. */
 function blendOf(tag: string): number | undefined {
-  const match = tag.match(/<adjust-blend\b[^>]*amount="([^"]*)"/);
+  const match = adjustBlock(tag, 'adjust-blend')?.match(/<adjust-blend\b[^>]*amount="([^"]*)"/);
   if (!match) return undefined;
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return undefined;
@@ -256,7 +269,7 @@ function blendOf(tag: string): number | undefined {
 }
 
 function transformOf(tag: string): ImportedVideoClip['transform'] {
-  const match = tag.match(/<adjust-transform\b[^>]*>/);
+  const match = adjustBlock(tag, 'adjust-transform')?.match(/<adjust-transform\b[^>]*>/);
   if (!match) return undefined;
   const scale = parsePair(attr(match[0], 'scale')) ?? [1, 1];
   const rotation = numAttr(match[0], 'rotation') ?? 0;
@@ -344,7 +357,7 @@ function cropTrimOf(
  * inaudible either way. Unity gain carries nothing, keeping plans clean.
  */
 function volumeOf(tag: string): { volume: number; muted: boolean } | undefined {
-  const match = tag.match(/<adjust-volume\b[^>]*amount="([^"]*)"/);
+  const match = adjustBlock(tag, 'adjust-volume')?.match(/<adjust-volume\b[^>]*amount="([^"]*)"/);
   if (!match) return undefined;
   const db = parseDbAmount(match[1]);
   if (db === null) return undefined;
@@ -640,8 +653,12 @@ function timeMapSpeed(
   unsupported: string[],
 ): number | undefined {
   if (!hasTimeMapElement(tag)) return undefined;
+  // Whole-string, because a `timeMap` is meaningless anywhere but on the spine
+  // element itself, so a nested one is not this element's business. It runs
+  // through the SHARED pattern rather than a third copy of the old regex, so the
+  // self-closing precedence and quoted-value handling it now has apply here too.
   const openingCount = (tag.match(/<timeMap\b/g) ?? []).length;
-  const blocks = tag.match(/<timeMap\b[^>]*(?:\/>|>[\s\S]*?<\/timeMap>)/g) ?? [];
+  const blocks = tag.match(tagBlockPattern('timeMap', 'g')) ?? [];
   if (openingCount !== 1 || blocks.length !== 1) {
     reportTimeMap(label, 'could not be parsed as one complete timeMap', unsupported);
     return undefined;
@@ -653,7 +670,7 @@ function timeMapSpeed(
     return undefined;
   }
 
-  const pointTags = block.match(/<timept\b[^>]*(?:\/>|>[\s\S]*?<\/timept>)/g) ?? [];
+  const pointTags = block.match(tagBlockPattern('timept', 'g')) ?? [];
   if (pointTags.length !== 2) {
     reportTimeMap(label, 'a constant speed needs exactly two timept children', unsupported);
     return undefined;
@@ -701,11 +718,69 @@ function timeMapSpeed(
 }
 
 /**
- * One adjust element's block: self-closing or paired. Non-greedy up to the
- * first closing tag — our supported elements never nest themselves.
+ * The `<name>` blocks that are DIRECT children of an element, in document order.
+ *
+ * Depth, not a pattern, is what separates "this element adjusts itself" from
+ * "something this element contains adjusts itself", so this tracks the tag
+ * tokens rather than searching for the name: a direct child is matched only at
+ * depth 0, and its whole subtree is returned with it. Every token is read with
+ * `tagBlockPattern`'s attribute area, so a `>` inside a quoted value does not
+ * desynchronise the depth count.
+ *
+ * The parent's own opening tag is the first token and is skipped rather than
+ * counted, so depth 0 means "immediately inside the parent". An element left
+ * unclosed by a malformed document is returned as the remaining text, which is
+ * what a whole-string search used to do with it.
+ */
+function directChildBlocks(block: string, name: string): string[] {
+  const children: string[] = [];
+  // Capture 1 is a leading '/', 2 the name, 3 the attribute area, 4 a trailing '/'.
+  const token = /<(\/?)([A-Za-z][\w:.-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
+  let match = token.exec(block);
+  if (match === null) return children;
+  let depth = 0;
+  let start = -1;
+  while ((match = token.exec(block)) !== null) {
+    const [text, closing, tagName, , selfClosing] = match;
+    if (closing) {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        children.push(block.slice(start, match.index + text.length));
+        start = -1;
+      }
+    } else if (selfClosing) {
+      if (depth === 0 && tagName === name) children.push(text);
+    } else {
+      if (depth === 0 && tagName === name && start < 0) start = match.index;
+      depth++;
+    }
+  }
+  if (start >= 0) children.push(block.slice(start).trimEnd());
+  return children;
+}
+
+/**
+ * This element's DIRECT `<name>` child block, or null.
+ *
+ * Scoped rather than searched across the element's whole tag string, because a
+ * spine element's own text INCLUDES its descendants. Searching it whole meant an
+ * adjustment nested inside a DIFFERENT element was read as the parent's:
+ * `<audio-channel-source srcCh="1"><adjust-volume amount="-6.0206dB"/></audio-channel-source>`
+ * set the CLIP's volume to 0.5, and an anchored sub-clip's `<adjust-volume
+ * amount="-20dB"/>` set the parent's with nothing reported at all. A per-channel
+ * adjustment is the CHANNEL's and an anchored sub-clip's adjustment is that
+ * sub-clip's; neither is the parent's, so applying either is a wrong value — the
+ * same class as the crop-mode bug, and not something a note can correct
+ * afterwards. Sharing `tagBlockPattern` also gives this the self-closing
+ * precedence `extractTagBlock` now has, which a self-closing `<adjust-blend/>`
+ * followed by a keyframed (hence paired) one previously defeated.
+ *
+ * Only the first match is returned, because the DTD allows at most one of each
+ * of the four elements this importer reads — which is what `blendOf`,
+ * `volumeOf`, `cropTrimOf` and `transformOf` always assumed.
  */
 function adjustBlock(tag: string, name: string): string | null {
-  return tag.match(new RegExp(`<${name}\\b[^>]*(?:/>|>[\\s\\S]*?</${name}>)`))?.[0] ?? null;
+  return directChildBlocks(tag, name)[0] ?? null;
 }
 
 interface AdjustParam {
@@ -925,6 +1000,68 @@ function transformKeyframesOf(
   return parsed ? result : undefined;
 }
 
+/**
+ * Elements the DTD lets a spine element CONTAIN, each of which may carry its own
+ * `adjust-*` children. Quoted from `%spine-element`'s content model and the
+ * audio/video source groups: an ANCHORED sub-clip, a per-channel or per-role
+ * audio source, the visual sources, the filters, and the other sub-elements.
+ *
+ * `ref-clip` is here as the ANCHORED form specifically — a ref-clip nested INSIDE
+ * a clip, which is a different thing from a ref-clip at spine level. A spine-level
+ * carrier is this importer's own parent clip and its adjustments ARE read (our
+ * writer emits the parent clip's look onto the carrier, exporter.ts), whereas an
+ * anchored sub-clip's adjustments belong to that sub-clip.
+ */
+const NESTED_ADJUST_CONTAINERS = [
+  'ref-clip', 'audio-channel-source', 'audio-aux-source', 'audio-role-source', 'audio-source',
+  'video-source', 'source-video', 'source-audio', 'source-ref-clip',
+  'filter-audio', 'filter-video', 'blend', 'transition', 'effect',
+  'sync-clip', 'sync-source', 'caption', 'audio', 'mc-source', 'markers',
+];
+
+/** The four adjust elements this importer reads for a spine element's own look. */
+const OWN_ADJUST_ELEMENTS = ['adjust-blend', 'adjust-transform', 'adjust-crop', 'adjust-volume'];
+
+/**
+ * A nested adjustment is the CONTAINING element's, not the spine element's, so it
+ * is not applied — and it is now said rather than silently dropped, which is what
+ * the pre-fix anchored case failed to do (an anchored sub-clip's
+ * `<adjust-volume amount="-20dB"/>` set the parent's level with `unsupported`
+ * empty).
+ *
+ * Reported rather than honoured, for the same reason the channel ROUTING matrix
+ * is not mapped onto `Clip.pan`: a per-channel or per-anchored-clip adjustment
+ * belongs to a different element with a different meaning, and applying it to the
+ * parent fabricates a value rather than omitting one. Once the four readers were
+ * scoped to direct children the wrong value was gone, and what remained is a
+ * document stating something this importer cannot express — which is exactly the
+ * class `unsupported` exists to name.
+ *
+ * Once per (container, adjustment) pair, and only for a real nesting: our writer
+ * emits all four as DIRECT children of a spine element, so a document it produced
+ * cannot reach this, which is the calibration that keeps the list from becoming a
+ * note per clip.
+ */
+function reportNestedAdjustments(
+  tag: string,
+  element: string,
+  label: string,
+  unsupported: string[],
+): void {
+  for (const container of NESTED_ADJUST_CONTAINERS) {
+    for (const nested of directChildBlocks(tag, container)) {
+      for (const name of OWN_ADJUST_ELEMENTS) {
+        if (directChildBlocks(nested, name).length === 0) continue;
+        unsupported.push(
+          `${element} "${label}" has a <${name}> inside <${container}>;`
+          + ' a nested adjustment belongs to the element that contains it,'
+          + ' so it is not applied to this element.',
+        );
+      }
+    }
+  }
+}
+
 /** Reports a keyframed adjust child we do not transport (the base value still lands). */
 function reportAnimatedElement(
   tag: string,
@@ -945,11 +1082,61 @@ function hasUnclaimedKeyframes(tag: string, claimedElements: string[]): boolean 
   return rest.includes('<keyframeAnimation');
 }
 
+/**
+ * A complete `<name>` block: the whole opening tag, plus the body and closing
+ * tag when the element is not self-closing.
+ *
+ * ONE scanner, shared by every block extractor, because the previous pair of
+ * regexes (`extractTagBlock` and `adjustBlock`, both
+ * `<${name}\b[^>]*(?:/>|>[\s\S]*?</${name}>)`) shared a defect that was
+ * invisible in every supported document and destructive in an ordinary one.
+ *
+ * `[^>]*` is GREEDY, so on `<asset ... />` it consumed the terminating `/`
+ * before the alternation was ever offered the `/>` branch. With no backtracking
+ * needed — `>` matches straight after the swallowed `/` — the long form won, and
+ * the block ran to the NEXT `</asset>`. The `/>` branch could therefore only
+ * ever match by backtracking, which happened to be true exactly when no later
+ * `</asset>` existed. So a self-closing element followed by a paired one of the
+ * same name swallowed everything between them: assets were consumed whole, and
+ * because our writer emits a paired `<asset>` exactly when
+ * `MediaAsset.startTimecode` is set, which asset was paired depended on the
+ * order the user imported their media. The same shape hid in
+ * `adjustBlock`, where a self-closing `<adjust-blend/>` followed by a KEYFRAMED
+ * (hence paired) one matched as a single block and applied the second's
+ * keyframes to the first's static amount.
+ *
+ * The attribute area is LAZY and the alternation is ordered self-closing first,
+ * so the shortest form that can match wins at every step:
+ *
+ *   - `(?:[^>"']|"[^"]*"|'[^']*')*?` expands one quoted VALUE or one plain
+ *     character at a time and stops at the first position where the element can
+ *     close. A quoted value is consumed whole, so a `>` inside it does not end
+ *     the tag: XML forbids only `<` and `&` raw in an attribute value, so
+ *     `name="A > B"` is legal and a foreign document can carry it. The old
+ *     `[^>]*` stopped at that `>`, which left no position either branch could
+ *     satisfy, so the element was lost outright rather than mis-parsed. Our own
+ *     writer escapes `>` at the sink, so this is foreign-input-only. Bare `'` and
+ *     `"` are excluded from the plain branch so a value containing the other
+ *     quote cannot be split by it.
+ *   - LAZY is what makes the `/>` branch reachable. Greedily, the plain branch
+ *     would swallow the `/` of a self-closing tag and `>` would then match
+ *     straight after it — never reaching the `/>` alternative at all.
+ *   - `(?:\/>|>...)` tries `/>` before `>`, so a self-closing element is exactly
+ *     its own tag and never runs on to a later closing tag.
+ *   - `[\s\S]*?` is lazy, so a PAIRED element still ends at the FIRST
+ *     `</name>`. A name that nests inside itself (`<gap>` inside `<gap>`) is not
+ *     counted as depth, which is why the two spine extractors that look for a
+ *     `gap` take the first match explicitly: they want the OUTERMOST one.
+ */
+function tagBlockPattern(name: string, flags: string): RegExp {
+  return new RegExp(
+    `<${name}\\b(?:[^>"']|"[^"]*"|'[^']*')*?(?:\\/>|>[\\s\\S]*?</${name}>)`,
+    flags,
+  );
+}
+
 function extractTagBlock(xml: string, tagName: string): string[] {
-  // Non-greedy up to the closing tag; our supported elements never nest
-  // themselves, and <title>'s inner <text> tags don't collide with its name.
-  const re = new RegExp(`<${tagName}\\b[^>]*(?:/>|>[\\s\\S]*?</${tagName}>)`, 'g');
-  return xml.match(re) ?? [];
+  return xml.match(tagBlockPattern(tagName, 'g')) ?? [];
 }
 
 const TITLE_STYLE_RE = /<text-style-def\b[^>]*id="([^"]*)"[^>]*>([\s\S]*?)<\/text-style-def>/g;
@@ -1018,6 +1205,7 @@ function parseAssetClipTag(
     : Math.max(0, Math.round(startSec * fps * effectiveSpeed(speed)));
   const base = { lane, startFrame, durationFrames, sourceInFrame };
   reportUnrepresentedAttributes(tag, 'Asset-clip', label, unsupported);
+  reportNestedAdjustments(tag, 'Asset-clip', label, unsupported);
   if (isAudioOnly) {
     if (timeMapPresent) {
       reportTimeMap(label, 'constant speed is visual-only and is not imported', unsupported);
@@ -1336,6 +1524,7 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
       reportTimeMap(label, 'constant speed is not imported for compound clips', unsupported);
     }
     reportUnrepresentedAttributes(tag, 'Ref-clip', label, unsupported);
+    reportNestedAdjustments(tag, 'Ref-clip', label, unsupported);
 
     const opacity = blendOf(tag);
     const opacityTrack = opacityKeyframesOf(tag, startFrame, fps, label, unsupported);

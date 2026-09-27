@@ -574,96 +574,250 @@ describe('#154 constructs read for nothing', () => {
     expect(parseFcpxml(compoundXml).unsupported).toEqual([]);
   });
 
-  it('pins a PRE-EXISTING parse defect it did not introduce: an asset with a <timecode> child', () => {
-    // Found while re-auditing, isolated to one variable, and NOT part of this
-    // change. `extractTagBlock`'s regex is
-    // `<asset\b[^>]*(?:/>|>[\s\S]*?</asset>)`, and `[^>]*` can swallow the `/` of a
-    // self-closing tag. When a LATER asset is paired, the long alternative wins
-    // from the FIRST self-closing one and the match runs to that `</asset>`, so
-    // every asset before it is consumed as one block and dropped. Our own writer
-    // emits a paired asset whenever `MediaAsset.startTimecode` is set, which is why
-    // this is reachable from a palmier project and not only from a foreign one.
-    //
-    // Pinned as CURRENT behaviour so the defect is on record and a future fix shows
-    // up as this test changing. It is a wrong parse, not an omission, so no note
-    // can express it: the fix is in the extraction, not in reporting.
-    const selfClosing = (id: string, name: string) =>
-      `<asset id="${id}" name="${name}" src="file:///X:/${name}" start="0s" duration="10s" hasVideo="1"/>`;
-    const paired = (id: string, name: string) =>
-      `<asset id="${id}" name="${name}" src="file:///X:/${name}" start="0s" duration="10s" hasVideo="1">`
-      + '<timecode start="3600s" duration="10s" format="r1"/></asset>';
-    const spine = '<asset-clip ref="2" name="A" lane="0" offset="0s" start="0s" duration="1s"/>'
-      + '<asset-clip ref="3" name="B" lane="0" offset="1s" start="0s" duration="1s"/>';
+});
 
-    // All self-closing: every asset is read. This is what our writer emits unless
-    // an asset carries a source timecode.
-    const allSelfClosing = parseFcpxml(document(spine, selfClosing('2', 'a.mp4') + selfClosing('3', 'b.mp4')));
+describe('#154 two parse defects closed', () => {
+  const selfClosing = (id: string, name: string) =>
+    `<asset id="${id}" name="${name}" src="file:///X:/media/${name}" start="0s" duration="10s" hasVideo="1"/>`;
+  const paired = (id: string, name: string) =>
+    `<asset id="${id}" name="${name}" src="file:///X:/media/${name}" start="0s" duration="10s" hasVideo="1">`
+    + '<timecode start="3600s" duration="10s" format="r1"/></asset>';
+  const clipTo = (ref: string, name: string, offset: number) =>
+    `<asset-clip ref="${ref}" name="${name}" lane="0" offset="${offset}s" start="0s" duration="1s"/>`;
+
+  function doc(resources: string, spine: string) {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      resources,
+      '</resources><library><event name="E"><project name="E"><spine>',
+      spine,
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+  }
+
+  it('reads every asset in EVERY ordering, self-closing or paired', () => {
+    // The defect: `extractTagBlock`'s `[^>]*` is GREEDY, so on `<asset ... />` it
+    // eats the terminating `/` before the alternation gets a chance to try `/>`.
+    // `/>` therefore only ever matched by BACKTRACKING, which is to say only when
+    // no later `</asset>` existed to satisfy the long form instead. A self-closing
+    // asset followed by a paired one therefore matched all the way to the paired
+    // one's `</asset>`, swallowing the first asset whole and reporting the second
+    // clip as an unknown resource.
+    //
+    // Reachable from a palmier project, not only a foreign one: our writer emits a
+    // PAIRED asset (one with a `<timecode>` child) exactly when the asset carries
+    // `MediaAsset.startTimecode`, so which asset is paired is decided by the order
+    // the user happened to import their media in.
+    const spine2 = clipTo('2', 'A', 0) + clipTo('3', 'B', 1);
+    const spine3 = spine2 + clipTo('4', 'C', 2);
+
+    // All self-closing: the common case, and what our writer emits for every asset
+    // without a source timecode.
+    const allSelfClosing = parseFcpxml(doc(selfClosing('2', 'a.mp4') + selfClosing('3', 'b.mp4'), spine2));
     expect(allSelfClosing.assets.map((a) => a.ref)).toEqual(['2', '3']);
     expect(allSelfClosing.clips).toHaveLength(2);
     expect(allSelfClosing.unsupported).toEqual([]);
 
-    // Paired asset FIRST, self-closing second: also fine, which is why the
-    // existing round-trip test passes — its fixture's timecode asset is first.
-    const pairedFirst = parseFcpxml(document(spine, paired('2', 'a.mp4') + selfClosing('3', 'b.mp4')));
+    // Paired FIRST: worked before and must keep working.
+    const pairedFirst = parseFcpxml(doc(paired('2', 'a.mp4') + selfClosing('3', 'b.mp4'), spine2));
     expect(pairedFirst.assets.map((a) => a.ref)).toEqual(['2', '3']);
+    expect(pairedFirst.clips).toHaveLength(2);
     expect(pairedFirst.unsupported).toEqual([]);
 
-    // Self-closing asset FIRST, paired SECOND: BROKEN. The match starts at the
-    // first asset and runs to the paired one's `</asset>`, so the first asset is
-    // never seen and its clip is refused with a misleading "unknown resource",
-    // while the paired asset is swallowed whole and never becomes an asset either.
-    const swallowed = parseFcpxml(document(spine, selfClosing('2', 'a.mp4') + paired('3', 'b.mp4')));
-    expect(swallowed.assets.map((a) => a.ref)).toEqual(['2']);
-    expect(swallowed.clips).toHaveLength(1);
-    expect(swallowed.unsupported).toEqual(['Asset-clip "B" references unknown resource 3.']);
+    // Self-closing FIRST, paired SECOND: this was the data loss.
+    const swallowed = parseFcpxml(doc(selfClosing('2', 'a.mp4') + paired('3', 'b.mp4'), spine2));
+    expect(swallowed.assets.map((a) => a.ref)).toEqual(['2', '3']);
+    expect(swallowed.clips).toHaveLength(2);
+    expect(swallowed.unsupported).toEqual([]);
+    // And the paired asset's own timecode still arrives, so the fix is not a
+    // refusal to read a paired block.
+    expect(swallowed.assets.find((a) => a.ref === '3')?.startTimecode).toBe('01:00:00:00');
+
+    // Interleaved, three assets, paired in the MIDDLE: the case where neither
+    // "everything paired" nor "everything self-closing" reasoning finds the bug.
+    const interleaved = parseFcpxml(doc(
+      selfClosing('2', 'a.mp4') + paired('3', 'b.mp4') + selfClosing('4', 'c.mp4'),
+      spine3,
+    ));
+    expect(interleaved.assets.map((a) => a.ref)).toEqual(['2', '3', '4']);
+    expect(interleaved.clips).toHaveLength(3);
+    expect(interleaved.unsupported).toEqual([]);
+
+    // Two paired in a row, then a self-closing one.
+    const pairedThenSelf = parseFcpxml(doc(
+      paired('2', 'a.mp4') + paired('3', 'b.mp4') + selfClosing('4', 'c.mp4'),
+      spine3,
+    ));
+    expect(pairedThenSelf.assets.map((a) => a.ref)).toEqual(['2', '3', '4']);
+    expect(pairedThenSelf.clips).toHaveLength(3);
+    expect(pairedThenSelf.unsupported).toEqual([]);
   });
 
-  it('pins a SECOND pre-existing defect: a NESTED adjustment is read as the clip own', () => {
-    // Same class as the crop-mode refusal, and found by the same re-audit.
-    // `blendOf`, `volumeOf`, `cropTrimOf` and `transformOf` each search the spine
-    // element's WHOLE tag string, so an adjustment nested inside another element
-    // is read as the element's own. Measured, one per reader:
+  it('reads a > inside a quoted attribute value, which XML permits raw', () => {
+    // Checked rather than assumed. XML forbids only `<` and `&` raw in an
+    // attribute value, so `name="A > B"` is LEGAL, and the old `[^>]*` stopped at
+    // the first `>` wherever it was. That left no position the alternatives could
+    // satisfy, so the whole asset was lost rather than mis-parsed. Our own writer
+    // escapes `>` (`escapeAttr`), so this is foreign-input-only.
+    const plain = parseFcpxml(doc(
+      '<asset id="2" name="A > B" src="file:///X:/media/a.mp4" start="0s" duration="10s" hasVideo="1"/>',
+      clipTo('2', 'A', 0),
+    ));
+    expect(plain.assets.map((a) => a.ref)).toEqual(['2']);
+    expect(plain.clips).toHaveLength(1);
+    expect(plain.unsupported).toEqual([]);
+
+    // And with a paired asset carrying that value, so a following `</asset>` is not
+    // what makes it work.
+    const pairedGt = parseFcpxml(doc(
+      '<asset id="2" name="A > B" src="file:///X:/media/a.mp4" start="0s" duration="10s" hasVideo="1">'
+      + '<timecode start="3600s" duration="10s" format="r1"/></asset>',
+      clipTo('2', 'A', 0),
+    ));
+    expect(pairedGt.assets.map((a) => a.ref)).toEqual(['2']);
+    expect(pairedGt.clips).toHaveLength(1);
+    expect(pairedGt.unsupported).toEqual([]);
+  });
+
+  it('round-trips a project whose TIMECODE asset is not first, with nothing lost', () => {
+    // The real-world shape of the defect, in the form it reaches a user: two video
+    // assets where the SECOND carries a source timecode. Exported, re-imported, and
+    // every asset and clip must still be there.
     //
-    //   <audio-channel-source srcCh="1"><adjust-volume amount="-6.0206dB"/></audio-channel-source>
-    //     -> the clip arrives at volume 0.5
-    //   ...adjust-blend amount="0.4"   -> the clip arrives at opacity 0.4
-    //   ...adjust-crop mode="trim"     -> the clip arrives cropped
-    //   ...adjust-transform scale=.5   -> the clip arrives at that geometry
+    // The two-video shape is deliberate and measured. Resource ids are assigned in
+    // CLIP order, not `media` order, and the exporter visits video before audio, so
+    // putting the timecode on an AUDIO asset — or on the first video clip — always
+    // emits the paired asset first, which is the one ordering the old regex handled.
+    // A timecode on a LATER video clip is what puts a self-closing asset ahead of a
+    // paired one, and that is the ordering that lost data.
+    const p = baseProject();
+    p.media.push(
+      { id: 'a', path: 'C:/media/plain.mp4', filename: 'plain.mp4', type: 'video', duration: 60, fileSize: 1, addedAt: '', width: 1920, height: 1080, audioCodec: 'aac' },
+      { id: 'b', path: 'C:/media/tc.mp4', filename: 'tc.mp4', type: 'video', duration: 60, fileSize: 1, addedAt: '', width: 1920, height: 1080, audioCodec: 'aac', startTimecode: '01:00:00:00' },
+    );
+    const clipBase = {
+      label: 'Shot', trackId: 'v1', type: 'video' as const,
+      startFrame: 0, durationFrames: 90, inPoint: 0, outPoint: 90,
+      x: 0, y: 0, width: 1920, height: 1080, rotation: 0, scaleX: 1, scaleY: 1,
+      opacity: 1, anchorX: 0, anchorY: 0, volume: 1, muted: false,
+    };
+    p.timeline.clips.push(
+      { ...clipBase, id: 'c1', assetId: 'a' },
+      { ...clipBase, id: 'c2', assetId: 'b', trackId: 'v2' },
+    );
+
+    const xml = exportFcpxml(p);
+    // The precondition, asserted from the emitted document, so this test cannot
+    // quietly stop covering the defect if the exporter's ordering ever changes: a
+    // self-closing `<asset` really does precede the paired one.
+    const block = xml.slice(xml.indexOf('<resources>'), xml.indexOf('</resources>'));
+    const pairedAt = block.indexOf('src="file:///C:/media/tc.mp4"');
+    expect(block.indexOf('<timecode ')).toBeGreaterThan(pairedAt);
+    expect(block.lastIndexOf('<asset ', pairedAt)).toBeGreaterThan(block.indexOf('<asset '));
+
+    const plan = parseFcpxml(xml);
+    expect(plan.assets).toHaveLength(2);
+    expect(plan.assets.find((a) => a.path === 'C:/media/tc.mp4')?.startTimecode).toBe('01:00:00:00');
+    // The plain asset must NOT inherit the other one's timecode: pre-fix the
+    // swallowed merged block handed `plain.mp4` the timecode that belongs to
+    // `tc.mp4`, so this is a wrong value as well as a loss.
+    expect(plan.assets.find((a) => a.path === 'C:/media/plain.mp4')?.startTimecode).toBeUndefined();
+    expect(plan.clips).toHaveLength(2);
+    expect(plan.unsupported).toEqual([]);
+  });
+
+  it('does NOT read a NESTED adjustment as the element own, for any of the four', () => {
+    // The defect: `blendOf`, `volumeOf`, `cropTrimOf` and `transformOf` each
+    // searched the spine element's WHOLE tag string, so an adjustment nested inside
+    // a DIFFERENT element became the parent's. Measured, one per reader, inside
+    // `<audio-channel-source srcCh="1" outCh="L">`:
     //
-    // and an ANCHORED element's adjustments are read too, with no note at all:
+    //   adjust-volume    -6.0206dB  -> the clip arrived at volume 0.5
+    //   adjust-blend      0.4       -> the clip arrived at opacity 0.4
+    //   adjust-crop      trim       -> the clip arrived cropped
+    //   adjust-transform 0.5 0.5    -> the clip arrived at that geometry
     //
-    //   <ref-clip ref="9" ...><adjust-volume amount="-20dB"/></ref-clip>
-    //     -> the parent clip arrives at volume 0.1, unsupported === []
-    //
-    // A per-channel or per-anchored-clip adjustment is not the parent's, so this
-    // is a wrong value, not an omission — no note can express it, because the
-    // wrong value is already applied. The fix is to scope the four readers to the
-    // element's DIRECT children, which is a parse change and not this pass.
-    // Pinned as current behaviour so the defect is on record.
+    // A per-channel adjustment is the CHANNEL's, not the clip's, so applying it to
+    // the parent is the same wrong-value class as the crop-mode bug. The fix is
+    // scoping the four readers to the element's DIRECT children.
     const read = (body: string): Record<string, unknown> => {
-      const plan = parseFcpxml(withBody(body));
+      const plan = parseFcpxml(doc(
+        '<asset id="2" name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s" duration="10s" hasVideo="1" hasAudio="1"/>',
+        `<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s">${body}</asset-clip>`,
+      ));
       expect(plan.clips).toHaveLength(1);
       return plan.clips[0] as unknown as Record<string, unknown>;
     };
     const routing = (inner: string) => `<audio-channel-source srcCh="1" outCh="L">${inner}</audio-channel-source>`;
 
-    expect(read(routing('<adjust-volume amount="-6.0206dB"/>')).volume).toBeCloseTo(0.5, 4);
-    expect(read(routing('<adjust-blend amount="0.4"/>')).opacity).toBe(0.4);
+    // Nothing nested sets the parent's field: the plan carries no such key at all.
+    expect(read(routing('<adjust-volume amount="-6.0206dB"/>')).volume).toBeUndefined();
+    expect(read(routing('<adjust-blend amount="0.4"/>')).opacity).toBeUndefined();
     expect(read(routing('<adjust-crop mode="trim"><trim-rect left="10" top="5" right="0" bottom="0"/></adjust-crop>')).cropTrim)
-      .toEqual({ left: 10, top: 5, right: 0, bottom: 0 });
+      .toBeUndefined();
     expect(read(routing('<adjust-transform scale="0.5 0.5" position="10 10"/>')).transform)
-      .toEqual({ positionX: 10, positionY: 10, scaleX: 0.5, scaleY: 0.5, rotation: 0 });
+      .toBeUndefined();
 
-    // The anchored case, which is also the one with no note at all.
-    const anchored = parseFcpxml(withBody(
-      '<ref-clip ref="9" name="Anchor" lane="1" offset="0s" duration="1s">'
-      + '<adjust-volume amount="-20dB"/></ref-clip>',
+    // A DIRECT child is still read, which is the point of scoping rather than
+    // ignoring: this is how every real adjustment arrives, and these four readers
+    // are how the majority of an imported clip's look is transported.
+    expect(read('<adjust-volume amount="-6.0206dB"/>').volume).toBeCloseTo(0.5, 4);
+    expect(read('<adjust-blend amount="0.4"/>').opacity).toBe(0.4);
+    expect(read('<adjust-crop mode="trim"><trim-rect left="10" top="5" right="0" bottom="0"/></adjust-crop>').cropTrim)
+      .toEqual({ left: 10, top: 5, right: 0, bottom: 0 });
+    expect(read('<adjust-transform scale="0.5 0.5" position="10 10"/>').transform)
+      .toEqual({ positionX: 10, positionY: 10, scaleX: 0.5, scaleY: 0.5, rotation: 0 });
+  });
+
+  it('REPORTS an anchored element own nested adjustment, and does not set the parent', () => {
+    // The anchored form produced no note at all before:
+    //
+    //   <ref-clip ref="2" ...><adjust-volume amount="-20dB"/></ref-clip>
+    //     -> the parent clip arrived at volume 0.1, unsupported === []
+    //
+    // An anchored sub-clip's level is not the parent's, so it is not applied — and
+    // a document stating an adjustment this importer cannot apply is exactly what
+    // the omission reporting exists for, so it is now said.
+    // The anchored form: a ref-clip NESTED INSIDE the asset-clip, as an anchored
+    // sub-clip. Its level is the sub-clip's, not the parent's. Pre-fix the parent
+    // arrived at volume 0.1 with `unsupported` empty, because the whole-string
+    // search found the adjustment two levels down.
+    const anchored = parseFcpxml(doc(
+      '<asset id="2" name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s" duration="10s" hasVideo="1" hasAudio="1"/>',
+      '<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s">'
+      + '<ref-clip ref="9" name="Anchor" lane="1" offset="0s" duration="1s">'
+      + '<adjust-volume amount="-20dB"/></ref-clip></asset-clip>',
     ));
-    expect((anchored.clips[0] as unknown as Record<string, unknown>).volume).toBeCloseTo(0.1, 4);
-    expect(anchored.unsupported).toEqual([]);
+    expect(anchored.clips).toHaveLength(1);
+    expect((anchored.clips[0] as unknown as Record<string, unknown>).volume).toBeUndefined();
+    expect(anchored.unsupported).toHaveLength(1);
+    expect(anchored.unsupported[0]).toContain('Asset-clip "Take 1"');
+    expect(anchored.unsupported[0]).toContain('<ref-clip>');
+    expect(anchored.unsupported[0]).toContain('adjust-volume');
+
+    // The same for a compound carrier, which reads the same four fields.
+    const carrier = parseFcpxml(doc(
+      '<asset id="2" name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s" duration="10s" hasVideo="1" hasAudio="1"/>'
+      + '<media id="nest1" name="Nest"><sequence format="r1" duration="1s" tcStart="0s"><spine>'
+      + '<gap name="Timeline" offset="0s" start="0s" duration="1s">'
+      + '<asset-clip ref="2" name="Inner" lane="1" offset="0s" start="0s" duration="1s"/>'
+      + '</gap></spine></sequence></media>',
+      '<ref-clip ref="nest1" name="Anchor" lane="1" offset="0s" start="0s" duration="1s">'
+      + '<audio-channel-source srcCh="1" outCh="L"><adjust-volume amount="-20dB"/>'
+      + '</audio-channel-source></ref-clip>',
+    ));
+    expect(carrier.clips).toHaveLength(1);
+    expect((carrier.clips[0] as unknown as Record<string, unknown>).volume).toBeUndefined();
+    // Two notes here, not one: `audio-channel-source` is also an element this
+    // importer reads for nothing, so the construct scan reports it as well. Both
+    // statements are true and neither is a duplicate of the other.
+    expect(carrier.unsupported.some(
+      (n) => n.includes('Ref-clip "Anchor"') && n.includes('adjust-volume'),
+    )).toBe(true);
   });
 });
-
 /**
  * A hostile id is neutralised at INGEST, and the rewrite is REPORTED.
  *

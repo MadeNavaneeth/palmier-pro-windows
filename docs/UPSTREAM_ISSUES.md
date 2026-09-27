@@ -433,40 +433,17 @@ every adjust element, attribute and field it CAN emit, still re-imports with
 an empty `unsupported` list. The module header's mechanism list went from
 four to five to say so.
 
-**FOUR THINGS REMAIN OPEN, and two of them are wrong parses rather than
-omissions, so no note can express them.** Both were found by the same
-re-audit, both are pinned as current behaviour by tests, and neither is fixed
-here. (1) **An asset can be swallowed whole, taking its clip with it.**
-`extractTagBlock`'s regex is `<asset\b[^>]*(?:/>|>[\s\S]*?</asset>)`, and
-`[^>]*` can swallow the `/` of a self-closing tag, so when a LATER asset is
-paired the long alternative wins from the FIRST self-closing one and the
-match runs to that `</asset>`. Measured: a document whose first asset is
-self-closing and whose second carries a `<timecode>` child yields `assets:
-['2']`, one clip, and `Asset-clip "B" references unknown resource 3.` — and
-our own writer emits a paired asset whenever `MediaAsset.startTimecode` is
-set, so this is reachable from a palmier project, not only a foreign one. It
-is invisible today only because the existing round-trip fixture happens to
-put its timecode asset FIRST. (2) **A NESTED adjustment is read as the
-element's own.** `blendOf`, `volumeOf`, `cropTrimOf` and `transformOf` each
-search the spine element's WHOLE tag string, so an adjustment inside another
-element becomes the parent's: measured, a per-channel `<audio-channel-source
-srcCh="1"><adjust-volume amount="-6.0206dB"/></audio-channel-source>` places
-the clip at `volume 0.5`, `adjust-blend amount="0.4"` at `opacity 0.4`, an
-`adjust-crop` as the clip's crop and an `adjust-transform` as its geometry;
-and an ANCHORED element's adjustment is read too, with no note at all —
-`<ref-clip ref="9" ...><adjust-volume amount="-20dB"/></ref-clip>` places the
-parent at `volume 0.1` and reports nothing. Same class as the crop-mode
-refusal, and the same reason it cannot be reported: the wrong value is
-already applied. The fix is to scope the four readers to the element's DIRECT
-children, which is a parse change and not this pass. (3) `srcEnable` on a
-FOREIGN producer's clip set to `audio` or `all` — unreported by the
-calibration decision above. (4) The ANCHORED form of `caption`, `sync-clip`,
-`audio`, `mc-source` and `sync-source`: at spine level `reportSpineElement`
-already names each one, so only a child of a spine element this module
-consumes whole is a gap, and it is recorded rather than given a duplicate
-note. Also left: a clip-level `tcStart`/`tcFormat`/`modDate` (the first
-duplicates a value already transported at asset level, and all three would be
-a note per clip), the `<format>` colour-management attributes, and
+**TWO THINGS REMAIN OPEN here, and NEITHER is a wrong parse any more.** Both
+wrong parses this list used to carry are now closed and measured below. (1)
+`srcEnable` on a FOREIGN producer's clip set to `audio` or `all` — unreported
+by the calibration decision above, which stands because our own writer puts
+`srcEnable="video"` on every `<ref-clip>` it emits. (2) The ANCHORED form of
+`caption`, `sync-clip`, `audio`, `mc-source` and `sync-source`: at spine level
+`reportSpineElement` already names each one, so only a child of a spine element
+this module consumes whole is a gap, and it is recorded rather than given a
+duplicate note. Also left: a clip-level `tcStart`/`tcFormat`/`modDate` (the
+first duplicates a value already transported at asset level, and all three
+would be a note per clip), the `<format>` colour-management attributes, and
 `asset@auxVideoFlags`. **Channel routing is NOT mapped onto `Clip.pan`, and
 `pan` is the wrong concept for it.** `srcCh`/`outCh` is a ROUTING matrix —
 which source channel feeds which output bus, from `L,R,C,LFE,Ls,Rs,X` — while
@@ -547,6 +524,166 @@ exported document still imports with an empty `unsupported` list.
 
 No disposition changes: PRs #154/#289 stay `Partial`, and a malformed
 pre-existing document is a parse bug (#154, above), not a security one.
+
+### #154 — TWO WRONG PARSES, both now closed
+
+These were the two items this ledger listed as "wrong parses rather than
+omissions, so no note can express them", pinned as current behaviour rather
+than fixed. They are now fixed, because a wrong value cannot be reported after
+the fact — the note would describe a value that was never applied. Each fix was
+measured before and after, on the documents that reach a user.
+
+**(1) A SELF-CLOSING ASSET WAS ABSORBED INTO A LATER MATCH — data loss, and a
+wrong value besides.** `extractTagBlock` and `adjustBlock` shared one regex,
+`<${name}\b[^>]*(?:/>|>[\s\S]*?</${name}>)`, and `[^>]*` is GREEDY. On
+`<asset ... />` it therefore consumed the terminating `/` before the alternation
+was ever offered the `/>` branch, and `>` matched straight after the swallowed
+`/`. So `/>` could only ever match BY BACKTRACKING, which happened to be true
+exactly when no later `</asset>` existed to satisfy the long form instead: a
+self-closing element followed by a paired one of the same name matched all the
+way to that one's `</asset>`.
+
+Measured, on the two-asset and three-asset orderings, assets / clips / notes:
+
+| ordering | before | after |
+| --- | --- | --- |
+| all self-closing (2) | 2 / 2 / 0 | 2 / 2 / 0 |
+| paired first, self-closing 2nd (2) | 2 / 2 / 0 | 2 / 2 / 0 |
+| self-closing first, paired 2nd (2) | **1 / 1 / 1** | 2 / 2 / 0 |
+| interleaved sc, paired, sc (3) | **2 / 2 / 1** (refs `2,4`) | 3 / 3 / 0 |
+| paired, paired, self-closing (3) | 3 / 3 / 0 | 3 / 3 / 0 |
+| `>` inside a quoted attribute value | **0 / 0 / 1** | 1 / 1 / 0 |
+
+The interleaved row is the one worth reading twice: three assets in, two out,
+and it was the MIDDLE one that vanished while the first and last survived — so
+no ordering argument catches it.
+
+**Reachable from a palmier project, and the loss is a wrong value too.** Our
+writer emits a PAIRED asset exactly when the asset carries
+`MediaAsset.startTimecode`, so which asset is paired is decided by clip order.
+Resource ids are assigned in CLIP order, not `media` order, and the exporter
+visits video before audio — so the timecode asset is emitted first whenever it
+is an audio asset or the first video clip, and that is the ONE ordering the old
+regex handled. A timecode on a LATER video clip is what puts a self-closing asset
+ahead of a paired one. Measured on that real export: the `tc.mp4` asset and its
+clip were both gone, its clip refused with `Asset-clip "Shot" references
+unknown resource 3.`, **and the surviving `plain.mp4` asset was handed
+`tc.mp4`'s `01:00:00:00`** — the swallowed merged block's `id` paired with the
+other asset's `<timecode>` child. So this was a loss AND a fabricated timecode,
+which is why a `timecode` on a project could come back attached to the wrong
+clip.
+
+**The `>` case was checked rather than assumed, and a foreign document CAN carry
+it.** XML forbids only `<` and `&` raw in an attribute value, so `name="A > B"`
+is legal. `[^>]*` stopped at that `>` wherever it was, which left no position at
+which either alternative could match, so the whole element was LOST rather than
+mis-parsed — a different failure from the swallow, with the same cause. Our own
+writer escapes `>` at the sink, so this is foreign-input-only.
+
+**The fix is one shared, attribute-aware scanner** (`tagBlockPattern`), used by
+`extractTagBlock`, `adjustBlock` and the two `timeMapSpeed` block matches that
+were a third and fourth copy of the same regex:
+
+    <${name}\b(?:[^>"']|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?</${name}>)
+
+The attribute area is LAZY and the alternation tries `/>` before `>`, so the
+shortest form that can match wins at each step: a self-closing element is
+exactly its own tag, a paired one still ends at the first `</name>`, and a
+quoted value is consumed whole so a `>` inside it cannot end the tag. The same
+defect was latent in `adjustBlock` on its own account — a self-closing
+`<adjust-blend/>` followed by a KEYFRAMED (hence paired) one matched as a single
+block, applying the second's keyframes to the first's static amount — so one
+scanner also removes a third copy of the bug. The `%asset`/asset-def versus
+spine-asset distinction is untouched: `<asset>` is only read inside `<resources>`
+and spine refs are resolved through the asset map, and every caller of the
+extractor (spine, gap, format, event, asset, media, sequence, project) is a
+fixed-name single match whose paired or self-closing form is unaffected.
+
+**(2) A NESTED ADJUSTMENT WAS READ AS THE ELEMENT'S OWN.** `blendOf`,
+`volumeOf`, `cropTrimOf` and `transformOf` each searched the spine element's
+WHOLE tag string, which includes its descendants, so an adjustment inside a
+DIFFERENT element became the parent's. Measured, nested in
+`<audio-channel-source srcCh="1" outCh="L">`:
+
+| nested adjustment | parent's field, before | after |
+| --- | --- | --- |
+| `adjust-volume amount="-6.0206dB"` | `volume 0.4999999950079739` | absent |
+| `adjust-blend amount="0.4"` | `opacity 0.4` | absent |
+| `adjust-crop mode="trim"` | `cropTrim {left 10, top 5, right 0, bottom 0}` | absent |
+| `adjust-transform scale="0.5 0.5"` | `transform {10,10,0.5,0.5,0}` | absent |
+| anchored `<ref-clip>…adjust-volume -20dB` | `volume 0.1`, **no note** | absent, **reported** |
+
+All four DIRECT-child cases are unchanged, which is the point of scoping rather
+than ignoring — those four readers are how the majority of an imported clip's
+look is transported, and the test asserts each still reads.
+
+The fix is a new `directChildBlocks`, which walks tag tokens with a DEPTH count
+and returns only depth-0 children, so "this element adjusts itself" is
+separated from "something this element contains adjusts itself". `adjustBlock`
+is now `directChildBlocks(tag, name)[0]`, and the three readers that had their
+own inline patterns go through it.
+
+**The anchored case is now REPORTED, which is the disposition.** A per-channel or
+anchored sub-clip's adjustment belongs to that element, so it is not applied —
+and once the four readers were scoped, what remained was a document stating
+something this importer cannot express, which is exactly what `unsupported`
+exists to name. `reportNestedAdjustments` emits one note per (container,
+adjustment) pair, e.g. `Asset-clip "Take 1" has a <adjust-volume> inside
+<ref-clip>; a nested adjustment belongs to the element that contains it, so it
+is not applied to this element.` Reported rather than honoured, for the same
+reason channel ROUTING is not mapped onto `Clip.pan`: applying a sub-element's
+adjustment to the parent fabricates a value rather than omitting one.
+
+**One correction to the earlier note, and it would have been expensive.** The
+obvious reading of the anchored row is that a spine-level `<ref-clip>`'s own
+adjustments are the anchored element's and should be refused. They are not:
+**our own writer puts the parent clip's look on the `ref-clip` carrier**
+(`exporter.ts` `renderCompound` emits `adjust-conform`, crop, transform, blend
+and volume as the carrier's children), so refusing them would have stripped the
+look from every compound clip on import. The anchored case is a `ref-clip`
+NESTED INSIDE a clip. `ref-clip` is in `NESTED_ADJUST_CONTAINERS` for that
+reason, and the doc comment says so, because the distinction is invisible in the
+element name.
+
+**Other readers of the same whole-tag-string search, and what was done about
+each.** The audit went past the four named in the original note:
+
+- `reportUnrepresentedAttributes` reads `adjust-blend@mode` via `adjustBlock`, so
+  it is now direct-child scoped for free. A nested blend mode is no longer
+  reported as the clip's own.
+- `opacityKeyframesOf` and `transformKeyframesOf` read `adjust-blend` /
+  `adjust-transform` via `adjustBlock`, so they are scoped too: a nested
+  keyframe animation can no longer become the clip's motion or opacity track.
+- `reportAnimatedElement` and `hasUnclaimedKeyframes` also go through
+  `adjustBlock`. The first is now scoped, which is a fix — a nested keyframed
+  `adjust-volume` no longer reports "this clip animates volume". The second
+  strips the claimed blocks and then asks whether any `<keyframeAnimation` is
+  left ANYWHERE, nested or not, which is the behaviour it wants: an unclaimed
+  keyframe is unclaimed wherever it sits. Left as is, deliberately.
+- `hasTimeMapElement` is a presence test, so nesting cannot change its answer.
+  `timeMapSpeed`'s two block matches were a third and fourth copy of the buggy
+  regex and now use `tagBlockPattern`.
+- `paramsIn` and `keyframesIn` are handed an already-extracted `adjust-*` block
+  and are not affected.
+- `reportUnrepresentedAttributes`'s plain `attr(tag, …)` calls are unaffected:
+  a nested element cannot introduce a same-named attribute on the parent.
+
+**Mutation-checked separately, and the two fix sets do not overlap.** Reverting
+ONLY the scanner fails exactly 3 tests (the ordering table, the `>`-in-a-value
+case, and the real `startTimecode` round trip). Reverting ONLY the direct-child
+scoping and the new report fails exactly 2 (the nested-adjustment table and the
+anchored report). 186/187 pass respectively, so each fix is carried by its own
+tests and neither is standing on the other.
+
+**The module header is corrected.** Its mechanism list went from five to six
+(`reportNestedAdjustments` is the sixth), and it now says plainly that two of
+the mechanisms are the OPPOSITE of reporting — a self-closing element is never
+absorbed into a later match, and an attribute value may legally contain a `>`
+— because a loss is not something a note can describe: the note would have to
+describe an element that was never read.
+
+No disposition changes: PRs #154/#289 stay `Partial`. Neither defect was a
+regression from this branch — both predate it — and no other ledger row moves.
 
 ### #164 — keyboard shortcuts
 
