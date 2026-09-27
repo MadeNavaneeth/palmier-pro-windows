@@ -103,3 +103,18 @@ This repository is an independent GPL-3.0 derivative of Palmier Pro. When report
 ## GPL Attribution
 
 Preserve GPL attribution and the upstream credit in `ATTRIBUTION.md`, `README.md`, and release notes. New files derived from GPL-covered upstream work must retain appropriate notices.
+
+**A test that loads a large module graph inside a test body is charged for it
+against the 5 s default.** `controller.source-placement.test.ts` was the only one
+of the 47 test files that use `ToolExecutor` to reach it through `await
+import(...)` inside a test rather than a static top-level import. The other 46
+paid the executor's module graph at collection time, where no test is timed, so
+the cost was real for all of them and fell on this one test's budget. Measured:
+the import alone is 0.7 s on an idle box and 6-12 s at 36 workers, while the
+tool call it exists to exercise is 7-43 ms, so 99% of the test was module
+loading. It failed at the 5 s wall in three separate tasks, never because of
+the change under test, and passed under `npm test` while failing in focused
+runs - the signature of contention rather than a slow test. Raising the ceiling
+was measured and rejected: the real cost is 11-12 s and scales with load, so a
+file-scoped timeout would have been a longer symptom rather than a fix. Import
+at the top, as the other 46 do.
