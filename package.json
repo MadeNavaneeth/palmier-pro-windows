@@ -131,7 +131,9 @@
       "category": "Video",
       "mimeTypes": ["video/*", "audio/*"],
       "desktop": {
-        "Name": "Palmier Pro"
+        "entry": {
+          "Name": "Palmier Pro"
+        }
       }
     },
     "publish": {
