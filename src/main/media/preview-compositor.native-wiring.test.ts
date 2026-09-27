@@ -174,6 +174,33 @@ function settle(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * This file's real cost, and the vitest budget it needs.
+ *
+ * The first case below costs 545ms idle and 4.2-9.4s with the CPU
+ * oversubscribed 3x (60 spinners on 20 cores), and ~99% of that is the cold
+ * `import('./preview-compositor')` behind `freshCompositors()` -- the two
+ * 320x180 composites are 2.4ms and 0.4ms. Re-importing per case is what keeps
+ * one case's resolved addon out of the next, so the cost cannot be reduced
+ * without giving that up, and vitest's 5000ms default sits below it.
+ *
+ * That is the flake: `Test timed out in 5000ms`, on a test whose work is
+ * entirely synchronous. The timeout then cascaded into a second, misleading
+ * failure -- vitest does not cancel a timed-out test, so the abandoned body
+ * resumed later and called `getPreviewCompositorFor` again after the next
+ * case's `mockReset()`, and the *next* test reported `expected "spy" to be
+ * called 1 times, but got 2 times`. Both go away once the budget is honest.
+ *
+ * 30_000 is the budget `preview-compositor.real-addon.test.ts` already uses
+ * for driver work, and is over 3x the worst case measured here. Set through
+ * `vi.setConfig`, so it covers this file only -- the rest of the suite keeps
+ * the 5s default -- and vitest charges measured time, not the budget, so an
+ * idle box pays nothing for it.
+ */
+const LOAD_TIMEOUT_MS = 30_000;
+
+vi.setConfig({ testTimeout: LOAD_TIMEOUT_MS });
+
 beforeEach(() => {
   loadNativeAddon.mockReset();
   vi.restoreAllMocks();
@@ -343,5 +370,49 @@ describe('native addon wiring into production preview compositors', () => {
     expect(warnings).toHaveBeenCalledTimes(1);
     expect(errors, 'a recoverable loss is not a permanent addon failure').not.toHaveBeenCalled();
     disposePreviewCompositor('device-lost');
+  });
+
+  /**
+   * The wait the other cases use must stay independent of machine load.
+   *
+   * `settle()` is a `setTimeout(..., 0)` macrotask, so it is only sound
+   * while the addon is attached from the loader's `.then()` -- an
+   * already-resolved promise continuation, and microtasks always run before
+   * timers, which no amount of contention can reorder. That is why a slow
+   * machine here cost a timeout and never a lost addon.
+   *
+   * This pins the premise rather than the symptom: the attach is recorded and
+   * has to land before the first timer callback. If the wiring ever grew a
+   * macrotask or IO hop before attaching, the order inverts and `settle()`
+   * starts losing the race on a loaded machine -- the failure this file is
+   * most likely to get wrong, and one no timeout can hide.
+   */
+  it('attaches the addon before any timer runs, so settle() cannot lose a race', async () => {
+    const addon = spyAddon();
+    loadNativeAddon.mockResolvedValue(addon);
+    const { getPreviewCompositorFor, disposePreviewCompositor } = await freshCompositors();
+
+    const order: string[] = [];
+    const compositor = getPreviewCompositorFor('attach-order');
+    // getPreviewCompositorFor queues the attach as a microtask, so recording
+    // it here records it before it happens.
+    const attach = compositor.setNativeAddon.bind(compositor);
+    compositor.setNativeAddon = (loaded) => {
+      order.push('attach');
+      attach(loaded);
+    };
+    setTimeout(() => order.push('timer'), 0);
+    await settle();
+
+    expect(order, 'the addon must be attached on the microtask queue, before any macrotask')
+      .toEqual(['attach', 'timer']);
+
+    // And it is the real addon, not the fallback: the frame went through it.
+    const { win, send } = fakeWin(141);
+    compositor.setProject(projectWithVideoClip());
+    await compositor.compositeFrame(0, win);
+    expect(addon.calls).toHaveLength(1);
+    expectPixels(frames(send), 320 * 180 * 4, 7);
+    disposePreviewCompositor('attach-order');
   });
 });
