@@ -338,18 +338,66 @@ the nested sequence and `import_fcpxml`, with undo arity unchanged and the
 duplication counts, twin speed, twin level and differently-renamed twin name
 all still asserted.
 
-**Recorded, not fixed:** the same audit found that a static `<adjust-color>`
-(and the rest of the `adjust-*` family) is read for nothing and reported for
-nothing, so the importer's own header claim that grades "land in
-`unsupported`" holds for `<effect-ref>`/`<effect>` only; that `adjust-blend
-mode="..."` is ignored, so a third-party blend mode is a silent drop; and
-that the per-asset `<audioSources>`/`<videoSources>`/`<keywords>`/`<rating>`
-children and the clip-level `<metronome>`/`<rate>`/`<marker>`/`<keyword>`
-children are read for nothing either. All were measured by parsing each
-construct and printing the resulting `unsupported` list, not by reading the
-code. None is a regression, and no disposition changes: PRs #154/#289 stay
-`Partial`.
+**Two of that audit's findings were a different class from the rest, and both
+are now closed — one reported, one REFUSED.** `adjust-blend mode` and
+`adjust-crop mode` are not missing model fields: the first is a **shipped**
+feature (`Clip.blendMode`, twelve W3C modes, live in preview and export)
+arriving unreported, and the second was **actively misread into a wrong
+value**. Both were measured the same way as the rest — parse the construct,
+print `plan.unsupported`, apply it, print the placed clip — and the crop
+finding is worth stating precisely, because the natural guess about what
+`mode` means is wrong. `mode="add"` is not an FCPXML value: Apple's DTD makes
+the attribute `#REQUIRED` and enumerates it `(trim | crop | pan)`, and
+documents the element as holding "an optional adjustment for each crop mode,
+although only one mode is active", i.e. `crop-rect?`, `trim-rect?` and
+`(pan-rect, pan-rect)?` may all be present with one live. So the wrong-crop
+path is not an exotic mode, it is a **valid** `mode="crop"` document carrying
+an inactive `<trim-rect>`: the old regex took the first `trim-rect` in the
+block whatever the mode said, and placed `crop {left 0.169, right 0.056, top
+0.2, bottom 0.05}` on a clip the document says is not cropped that way.
+`cropTrimOf` now applies `trim` and refuses `crop` (a scale-in, not an edge
+trim), `pan` (a Ken Burns start/end pair, and our crop is one static edge
+trim), any value outside the enumeration, and a missing mode — which the DTD
+forbids and the old code silently assumed was `trim`. Each names the value
+found and applies no crop; `trim` still applies its rect unchanged, and the
+crop-keyframe note no longer claims a "base crop kept" for a refused block.
+Blend `mode` is reported, never honoured, because `<!ATTLIST adjust-blend
+mode CDATA #IMPLIED>` is an **open** enumeration — the DTD publishes no value
+list, so honouring it is gated on finding a verified mapping rather than
+assumed, the same stance the exporter already took — and the note says the
+composite is dropped while `amount` still applies as plain opacity.
 
+**The rest of the family is now reported too**, once per document each rather
+than once per element, which is the calibration that makes it safe: our
+writer emits only `adjust-conform`, `adjust-blend@amount`,
+`adjust-transform`, `adjust-crop`, `adjust-volume` and `timeMap`, so a real
+exported document still re-imports with an empty `unsupported` list. The list
+comes from the DTD's `%intrinsic-params-video` / `-audio` / `%timing-params`
+groups: `info-asc-cdl`, `adjust-color`, `adjust-corners`,
+`adjust-stabilization`, `adjust-rollingShutter`, `adjust-loudness`,
+`adjust-noiseReduction`, `adjust-humReduction`, `adjust-EQ`,
+`adjust-matchEQ`, `adjust-panner`, `conform-rate`, `fadeIn`, `fadeOut`.
+Several mirror a feature this editor SHIPS — color grade, EQ, noise
+reduction, fades — which is what made the silence a defect rather than a gap,
+and `conform-rate` is the consequential one, being a retime in the same group
+as `timeMap`, so a document conforming 24p into 30p arrived at normal speed
+with nothing said. `adjust-conform` is deliberately excluded: the writer puts
+it on every visual element, so reporting it would be a note per clip on every
+import. This also **corrects the importer's own header, which claimed grades
+and blend modes "land in `unsupported`" when only `<effect-ref>`/`<effect>`
+did.**
+
+**Still open, listed honestly:** the per-asset
+`<audioSources>`/`<videoSources>`/`<keywords>`/`<rating>` children and
+`asset@hasMarkers`/`matches`; the clip-level `<marker>`/`<keyword>` children;
+and `<mute>`, which the DTD places under `audio-source` rather than under a
+param, so it was left out of the family list deliberately. **Two items from
+the previous note here are withdrawn as factually wrong:** `<metronome>` and
+`<rate>` are not FCPXML elements in any DTD — FCPXML has `conform-rate` and
+an `asset@audioRate` **attribute**, and no metronome at all — so they were
+never constructs for this importer to miss, and naming them understated what
+the family scan had to cover. No disposition changes: PRs #154/#289 stay
+`Partial`, and none of this is a regression.
 ### #164 — keyboard shortcuts
 
 Bindings live in data, not in a switch statement. `shortcutConflicts()` is

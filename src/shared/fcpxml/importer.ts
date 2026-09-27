@@ -9,26 +9,36 @@
  * <video> elements and connected visual elements (lane attr), compound
  * <ref-clip> carriers with recursively validated <media>/<sequence> resources,
  * titles with inline text-style refs; upstream <adjust-conform type="fit"/> is accepted
- * and ignored because it is a consumer fit hint with no local clip field,
+ * and ignored because it is a consumer fit hint with no local clip field (and
+ * because this writer puts it on every visual element, so reporting it would be
+ * a note per clip on every import),
  * decimal ("1.5s") and rational ("45/30s") times, opacity (`adjust-blend`,
  * including nested amount keyframes), constant visual retiming
  * (`<timeMap>` with two linear `<timept>` children), static geometry
  * (`adjust-transform` attributes) and keyframed
  * position/scale/rotation (`<param>`/`<keyframeAnimation>` children, mapped
- * to the motion tracks), crop (`adjust-crop` trim-rect) and volume
+ * to the motion tracks), crop (`adjust-crop` **in `trim` mode only** — see
+ * `cropTrimOf` for why every other mode is refused rather than read) and volume
  * (title keyframes remain explicitly reported rather than partially applied)
  * (`adjust-volume`) as the exporter writes them — plus the same elements from
  * third-party files, narrowed on read. Gaps are implicit —
- * absolute clip offsets already encode spacing. Everything else — grades,
- * blend modes, crop/volume keyframes, effects, groups, non-sequence references —
- * lands in `unsupported` as readable notes so nothing disappears silently,
- * including the two spine-element attributes this editor has no field for at
- * all: a DISABLED `enabled="0"` and an `audioRole` other than the `dialogue`
- * our writer stamps on every audio element (see
- * `reportUnrepresentedAttributes` for why the default values are quiet).
- * Shape-ish constructs (generators, shapes, graphics) have no Windows
- * analogue — upstream has no shapes and no FCPXML shape transport — so they
- * are reported and skipped the same way, as is any unknown spine element.
+ * absolute clip offsets already encode spacing. Everything else lands in
+ * `unsupported` as readable notes so nothing disappears silently, by four
+ * mechanisms: the adjustment elements this importer reads for NOTHING are
+ * reported once per document each (`UNREPRESENTED_ADJUSTMENTS`: grades,
+ * corners, stabilization, rolling shutter, loudness, noise reduction, hum
+ * reduction, EQ, panning, `conform-rate`, and `fadeIn`/`fadeOut` — several of
+ * which mirror a feature this editor SHIPS, which is why their silence was a
+ * defect and not a gap); an `adjust-crop` in any mode but `trim` is refused; an
+ * `adjust-blend mode` is reported while its `amount` still applies as plain
+ * opacity, because the DTD's `mode` is an open `CDATA` with no published value
+ * list to map and a wrong composite is worse than a plain one; and the two
+ * spine-element attributes this editor has no field for at all are reported when
+ * they state something (a DISABLED `enabled="0"`, an `audioRole` other than the
+ * `dialogue` our writer stamps on every audio element). Shape-ish constructs
+ * (generators, shapes, graphics) have no Windows analogue — upstream has no
+ * shapes and no FCPXML shape transport — so they are reported and skipped the
+ * same way, as is any unknown spine element.
  */
 
 import { secondsToTimecode } from '../media/timecode';
@@ -248,10 +258,65 @@ function transformOf(tag: string): ImportedVideoClip['transform'] {
   };
 }
 
-function cropTrimOf(tag: string): ImportedVideoClip['cropTrim'] {
-  const match = tag.match(/<adjust-crop\b[^>]*>[\s\S]*?<trim-rect\b[^>]*>/);
-  if (!match) return undefined;
-  const rect = match[0].slice(match[0].indexOf('<trim-rect'));
+/**
+ * The whole of one clip's `<adjust-crop>`, and the only mode this importer reads.
+ *
+ * `adjust-crop@mode` is **#REQUIRED** in Apple's FCPXML DTD and its value set is
+ * exactly `(trim | crop | pan)`:
+ *
+ *     <!-- This element contains an optional adjustment for each crop mode,
+ *          although only one mode is active. -->
+ *     <!ELEMENT adjust-crop (crop-rect?, trim-rect?, (pan-rect, pan-rect)?)>
+ *     <!ATTLIST adjust-crop mode (trim | crop | pan) #REQUIRED>
+ *
+ * The mode selects WHICH child rect is the live adjustment, and the three mean
+ * different things. `trim-rect` "specifies trim values as a percentage of
+ * original frame height" — the edges trimmed OFF, i.e. the region kept — which is
+ * what `cropFromTrim` inverts, and it is the only mode whose rect is a set of
+ * edge amounts. `crop-rect` is the scale-in ("Crop" in FCP's Cropping panel), not
+ * an edge trim. `pan-rect` is a start/end pair driving a Ken Burns move, and the
+ * DTD notes its attributes cannot be keyframed.
+ *
+ * So `trim` is applied and nothing else is. That is not only a missing-feature
+ * boundary: because the DTD lets a document carry `crop-rect?`, `trim-rect?` AND
+ * `(pan-rect, pan-rect)?` together with only ONE active, a `mode="crop"`
+ * document can legitimately carry an inactive `<trim-rect>` beside its live
+ * `<crop-rect>`. Reading that as the crop would apply a rect the document itself
+ * says is switched off — a wrong crop, with nothing to distinguish it from a
+ * right one. Refusing every other mode (and a missing one, which the DTD does
+ * not permit at all) turns that silent wrong value into a visible omission, which
+ * is the same stance the exporter takes on `adjust-blend@mode`: a wrong composite
+ * is worse than a plain one.
+ *
+ * The crop keyframe report lives here rather than at the call site because its
+ * truth now depends on the mode: "base crop kept" would be a lie about a block
+ * that was refused outright.
+ */
+function cropTrimOf(
+  tag: string,
+  element: string,
+  label: string,
+  unsupported: string[],
+): ImportedVideoClip['cropTrim'] {
+  const block = adjustBlock(tag, 'adjust-crop');
+  if (!block) return undefined;
+  const mode = attr(block, 'mode');
+  if (mode !== 'trim') {
+    unsupported.push(
+      `${element} "${label}" has adjust-crop mode="${mode ?? '(none)'}";`
+      + ' only mode="trim" is imported, so no crop is applied from it.',
+    );
+    return undefined;
+  }
+  // In trim mode the keyframe note is true whether or not a non-identity base
+  // was read: an absent base IS identity, and identity is what is kept.
+  if (block.includes('<keyframeAnimation')) {
+    unsupported.push(
+      `${element} "${label}" animates crop; crop keyframes are not transported (base crop kept).`,
+    );
+  }
+  const rect = block.match(/<trim-rect\b[^>]*>/)?.[0];
+  if (!rect) return undefined;
   const read = (name: string): number => numAttr(rect, name) ?? 0;
   const trim = { left: read('left'), top: read('top'), right: read('right'), bottom: read('bottom') };
   if (!(trim.left > 0 || trim.right > 0 || trim.top > 0 || trim.bottom > 0)) return undefined;
@@ -306,6 +371,17 @@ function reportTimeMap(label: string, reason: string, unsupported: string[]): vo
  * audio element to every round trip and bury every other note in the list; any
  * other designation is information a third-party document authored and this
  * editor cannot hold, which is what gets reported.
+ *
+ * `adjust-blend@mode` is the one of the three that is NOT a missing model field:
+ * `Clip.blendMode` ships twelve W3C modes end to end, so a document naming a
+ * composite is a SHIPPED feature arriving unreported rather than a format feature
+ * we lack. It is still not honoured, and the reason is upstream's, not ours —
+ * `<!ATTLIST adjust-blend mode CDATA #IMPLIED>`, an OPEN enumeration, so the
+ * DTD publishes no value list to map from, and the exporter emits no `mode`
+ * because "a wrong composite in Resolve is worse than a plain one". Honouring it
+ * is therefore gated on finding a verified value mapping, not assumed, and until
+ * then the note says so while `amount` keeps applying as the plain opacity it
+ * always was.
  */
 function reportUnrepresentedAttributes(
   tag: string,
@@ -320,7 +396,59 @@ function reportUnrepresentedAttributes(
   if (role !== null && role !== 'dialogue') {
     unsupported.push(`${element} "${label}" has audioRole="${role}"; audio roles are not imported.`);
   }
+  const blend = adjustBlock(tag, 'adjust-blend');
+  const blendMode = blend === null ? null : attr(blend, 'mode');
+  if (blendMode !== null) {
+    unsupported.push(
+      `${element} "${label}" has adjust-blend mode="${blendMode}";`
+      + ' the composite mode is not imported, and the amount still applies.',
+    );
+  }
 }
+
+/**
+ * The adjustment elements this importer reads for NOTHING, reported once per
+ * document each.
+ *
+ * Taken from the `%intrinsic-params-video`, `%intrinsic-params-audio` and
+ * `%timing-params` groups of Apple's FCPXML DTD, minus the five this module does
+ * read (`adjust-conform`, `adjust-blend@amount`, `adjust-transform`,
+ * `adjust-crop` in trim mode, `adjust-volume`) and `timeMap`. `conform-rate` is
+ * the consequential one: it is a retime, in the same `%timing-params` group as
+ * `timeMap`, so a document conforming 24p into a 30p sequence was arriving at
+ * normal speed with nothing said. `fadeIn`/`fadeOut` are `param` children, and
+ * `Clip.fadeInFrames`/`fadeOutFrames` ship, so an animated fade was the same
+ * class of silent drop as an unreported blend mode.
+ *
+ * ONE note per document rather than one per element, which is the calibration
+ * that keeps this safe to add: our writer emits only `adjust-conform`,
+ * `adjust-blend@amount`, `adjust-transform`, `adjust-crop`, `adjust-volume` and
+ * `timeMap`, so a document we produced can never trip any entry here.
+ * `adjust-conform` is deliberately absent for the same reason it is deliberately
+ * read and discarded: the writer puts it on every visual element, so reporting it
+ * would be a note per clip on every import.
+ *
+ * Spelled as the DTD spells it, including the internal capitals
+ * (`adjust-EQ`, `adjust-noiseReduction`, `adjust-humReduction`, `fadeIn`),
+ * because that is what a reader can look up; the MATCH is case-insensitive,
+ * because producers are not consistent about it.
+ */
+const UNREPRESENTED_ADJUSTMENTS: readonly string[] = [
+  'info-asc-cdl',
+  'adjust-color',
+  'adjust-corners',
+  'adjust-stabilization',
+  'adjust-rollingShutter',
+  'adjust-loudness',
+  'adjust-noiseReduction',
+  'adjust-humReduction',
+  'adjust-EQ',
+  'adjust-matchEQ',
+  'adjust-panner',
+  'conform-rate',
+  'fadeIn',
+  'fadeOut',
+];
 
 /**
  * Read the upstream constant-speed map. The model has one speed scalar, so a
@@ -719,14 +847,13 @@ function parseAssetClipTag(
 
   const opacity = blendOf(tag);
   const opacityTrack = opacityKeyframesOf(tag, startFrame, fps, label, unsupported);
-  const cropTrim = cropTrimOf(tag);
+  // Owns the whole <adjust-crop> block, including its mode refusal and its
+  // keyframe report: see cropTrimOf for why the note cannot live out here.
+  const cropTrim = cropTrimOf(tag, 'Asset-clip', label, unsupported);
   const transform = transformOf(tag);
   const transformKeyframes = transformKeyframesOf(tag, startFrame, fps, label, unsupported);
   reportAnimatedElement(tag, 'adjust-volume',
     `Asset-clip "${label}" animates volume; keyframed volume is not transported (static level kept).`,
-    unsupported);
-  reportAnimatedElement(tag, 'adjust-crop',
-    `Asset-clip "${label}" animates crop; crop keyframes are not transported (base crop kept).`,
     unsupported);
   const clip: ImportedClip = {
     kind: 'video',
@@ -958,14 +1085,11 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
 
     const opacity = blendOf(tag);
     const opacityTrack = opacityKeyframesOf(tag, startFrame, fps, label, unsupported);
-    const cropTrim = cropTrimOf(tag);
+    const cropTrim = cropTrimOf(tag, 'Ref-clip', label, unsupported);
     const transform = transformOf(tag);
     const transformKeyframes = transformKeyframesOf(tag, startFrame, fps, label, unsupported);
     reportAnimatedElement(tag, 'adjust-volume',
       `Ref-clip "${label}" animates volume; keyframed volume is not transported (static level kept).`,
-      unsupported);
-    reportAnimatedElement(tag, 'adjust-crop',
-      `Ref-clip "${label}" animates crop; crop keyframes are not transported (base crop kept).`,
       unsupported);
     if (hasUnclaimedKeyframes(tag, ['adjust-transform', 'adjust-blend', 'adjust-volume', 'adjust-crop'])) {
       unsupported.push(`Ref-clip "${label}" animates a parameter; keyframes are not imported.`);
@@ -1286,6 +1410,17 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   for (const construct of ['<effect-ref', '<effect ', '<filter-video', '<filter-audio', '<note>', '<chapter-marker', '<generator', '<shape', '<graphic']) {
     if (xml.includes(construct)) {
       unsupported.push(`${construct.replace(/[<>=]/g, '')} elements are skipped.`);
+    }
+  }
+
+  // The adjustment elements read for nothing, once per document each. Its own
+  // loop because the match has to be case-insensitive — the DTD spells several
+  // with internal capitals and producers are not consistent — which the
+  // construct list above is not, and deliberately was not made.
+  const loweredXml = xml.toLowerCase();
+  for (const element of UNREPRESENTED_ADJUSTMENTS) {
+    if (loweredXml.includes(`<${element.toLowerCase()}`)) {
+      unsupported.push(`${element} elements are skipped.`);
     }
   }
 
