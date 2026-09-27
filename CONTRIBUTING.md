@@ -48,6 +48,19 @@ cargo check
 cargo test
 ```
 
+**A green Windows run is not evidence about Linux.** CI runs these gates twice:
+`checks` on `windows-latest` and `linux` on `ubuntu-latest`, the second ending in
+`dist:linux` (AppImage + deb). The `linux` job was added in the same PR that
+carried the FCPXML work (PR #30), and it failed nine of its first ten runs: three
+at `Install dependencies` in both jobs, three more at `Unit tests` in both, and
+only then the three Linux alone could fail - `Rust tests`, because a `cargo test`
+harness is not a Node host and so has nothing to link `napi_*` against, then
+`Build Linux packages` twice, for the electron-builder `.desktop` shape and then
+the deb maintainer field. Each fix moved the failure one stage further down the
+pipeline, so the stages a Windows run never reaches are the ones to expect to
+break first. Run the Linux gate locally before pushing rather than in a pull
+request; the first green `linux` run was 36313354966.
+
 ## Coding Standards
 
 - Keep TypeScript strict and prefer explicit domain types over `any`.
