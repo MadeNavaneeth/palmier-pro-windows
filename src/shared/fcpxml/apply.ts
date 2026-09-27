@@ -16,6 +16,7 @@ import { nanoid } from 'nanoid';
 import type { Project, Clip, Timeline, Track } from '../types/project';
 import type { EditorController } from '../editor/controller';
 import type {
+  ImportedAudioClip,
   ImportedClip,
   ImportedSequence,
   ImportedVideoClip,
@@ -56,6 +57,13 @@ export interface ImportedClipFields {
   opacity?: number;
   /** Constant visual speed recovered from a linear FCPXML timeMap. */
   speed?: number;
+  /**
+   * The clip's TIMELINE length in project frames, when the surface placing it
+   * knows it. Read only alongside `speed`, to re-assert the length next to the
+   * source window it belongs to (see `importedSpeedPatch`); a title has no
+   * timeline placement of its own, so it omits this.
+   */
+  durationFrames?: number;
   opacityTrack?: MotionTrack;
   volume?: number;
   muted?: boolean;
@@ -90,14 +98,75 @@ export interface ImportedTitleFields extends ImportedClipFields {
  */
 function importedSpeedPatch(
   clip: ImportedClipFields,
+  placedDurationFrames?: number,
 ): ((draft: Clip) => void) | null {
   if (clip.speed === undefined) return null;
   const speed = effectiveSpeed(clip.speed);
+  // The TIMELINE length the surface actually PLACED, which is the rescaled one
+  // and not `clip.durationFrames` (that is in the document's own frame rate).
+  // `trimClip` derives `durationFrames` from the span it is given divided by the
+  // clip's speed AT THAT MOMENT, so a source span handed before the speed is on
+  // the clip makes it read a source length as a timeline one. Re-asserting the
+  // placed length here is what makes the pair order-INDEPENDENT: whichever of
+  // the two runs first, this writes the same window and the same length.
+  const planned = placedDurationFrames;
   return (draft) => {
     draft.speed = speed;
+    if (planned !== undefined) draft.durationFrames = planned;
     // The trim pass has already established draft.inPoint; the model encodes the
-    // consumed source span in outPoint just like EditorController.setClipSpeed.
+    // consumed source span in outPoint just like EditorController.setClipSpeed,
+    // and `outPoint - inPoint === round(durationFrames * speed)` is the invariant
+    // both of them maintain.
     draft.outPoint = draft.inPoint + Math.round(draft.durationFrames * speed);
+  };
+}
+
+/**
+ * The constant speed a plan clip carries, or undefined.
+ *
+ * Only a VISUAL element can be retimed: FCPXML's `<timeMap>` is a visual
+ * construct, and `ImportedAudioClip` has no such field to read. Narrowing here
+ * keeps that fact in one place instead of at each call site.
+ */
+function recoveredSpeed(clip: ImportedVideoClip | ImportedAudioClip): number | undefined {
+  return clip.kind === 'video' ? clip.speed : undefined;
+}
+
+/**
+ * The SOURCE window an imported clip occupies, in source frames.
+ *
+ * One definition, shared by both materializers, and it is the SAME derivation
+ * three other places already use:
+ *
+ *   - `EditorController.sourceWindowForSlice` — `outPoint = inPoint +
+ *     round((end - start) * effectiveSpeed(clip.speed))`, with the start boundary
+ *     rounded once and the span rounded once.
+ *   - `EditorController.setClipSpeed`, which `importedSpeedPatch` mirrors.
+ *   - `trimWindowDurationFrames`, read BACKWARDS here: it is
+ *     `round((out - in) / speed)`, so a caller asking for a TIMELINE length `D`
+ *     over speed `S` must hand it a source span of `round(D * S)`.
+ *
+ * The defect this replaces: both materializers handed `trimClip` an out-point of
+ * `sourceIn + durationFrames`, which adds a TIMELINE length to a SOURCE position.
+ * That arithmetic is only correct when the speed is 1. At any other speed it is
+ * wrong by exactly the speed factor — measured at `speed: 2` it handed 105 where
+ * the derivation says 195, and at `speed: 0.5` it handed 105 where the
+ * derivation says 60 — and it was rescued only because `importedSpeedPatch` ran
+ * afterwards and overwrote `outPoint` from `durationFrames`. The end state came
+ * out right; the value in between was a lie, and correctness rested on statement
+ * order rather than on an invariant.
+ *
+ * `speed` absent means 1, so a document with no recovered timeMap takes the same
+ * path and gets the same unscaled span it always got.
+ */
+function importedSourceWindow(
+  sourceIn: number,
+  durationFrames: number,
+  speed: number | undefined,
+): { inPoint: number; outPoint: number } {
+  return {
+    inPoint: sourceIn,
+    outPoint: sourceIn + Math.round(durationFrames * effectiveSpeed(speed)),
   };
 }
 
@@ -129,6 +198,7 @@ function importedLevelPatch(
 export function importedClipPatch(
   clip: ImportedClipFields,
   ctx: PlacementContext,
+  placedDurationFrames?: number,
 ): ((draft: Clip) => boolean) | null {
   const sets: Array<(draft: Clip) => void> = [];
   if (clip.opacity !== undefined) {
@@ -137,7 +207,7 @@ export function importedClipPatch(
   }
   // Speed and the source window it implies stay in the same undoable batch as
   // the rest of the adjustment.
-  const speedPatch = importedSpeedPatch(clip);
+  const speedPatch = importedSpeedPatch(clip, placedDurationFrames);
   if (speedPatch) sets.push(speedPatch);
   if (clip.opacityTrack) {
     // The importer already narrows the track through the shared sanitizer;
@@ -258,8 +328,9 @@ function linkedTwinPatch(
   element: ImportedClip,
   half: ImportedVideoClip | null,
   twinName?: string,
+  placedDurationFrames?: number,
 ): ((draft: Clip) => void) | null {
-  const speed = importedSpeedPatch(element);
+  const speed = importedSpeedPatch(element, placedDurationFrames);
   const level = half === null ? null : importedLevelPatch(half);
   const name = linkedTwinLabel(element, half);
   const label = name === null || name === twinName ? null : name;
@@ -307,11 +378,12 @@ export function applyImportedAdjustments(
   clip: ImportedClip,
   ctx: PlacementContext,
   siblings: readonly ImportedClip[],
+  placedDurationFrames?: number,
 ): void {
   const adjustments = new Map<string, (draft: Clip) => boolean>();
-  const patch = importedClipPatch(clip, ctx);
+  const patch = importedClipPatch(clip, ctx, placedDurationFrames);
   if (patch) adjustments.set(clipId, patch);
-  const twinPatch = linkedTwinPatch(clip, linkedAudioHalfFor(clip, siblings));
+  const twinPatch = linkedTwinPatch(clip, linkedAudioHalfFor(clip, siblings), undefined, placedDurationFrames);
   if (twinPatch) {
     for (const linkedId of editor.expandLinkedClipIds([clipId])) {
       if (linkedId === clipId || adjustments.has(linkedId)) continue;
@@ -537,17 +609,15 @@ export function applyFcpxmlPlan(
       durationFrames,
     });
     // Source trim is a follow-up edit: addClip has no In/Out params.
-    // The span stays UNSCALED by any recovered speed, deliberately. trimClip takes
-    // source frames, but it derives the timeline length from the window via
-    // trimWindowDurationFrames = round((out - in) / effectiveSpeed(clip.speed)),
-    // and the clip's speed is still undefined (= 1) here because the speed lands
-    // later in the importedClipPatch batch below. So a pre-scaled span would make
-    // the trim derive a doubled durationFrames, which the patch would then scale
-    // a second time when it rewrites outPoint: a 2x clip would import as 4x.
-    // The unscaled span is what yields the correct source window, and importedClipPatch
-    // converts it to the real outPoint, so both operations agree on the end state.
+    // The span is a SOURCE window derived from the plan's own speed term
+    // (`importedSourceWindow`), never a timeline length added to a source
+    // position. `trimClip` reads its span back through
+    // `trimWindowDurationFrames = round((out - in) / effectiveSpeed(clip.speed))`,
+    // and `importedSpeedPatch` re-asserts the planned length beside the window, so
+    // the two agree whichever order they run in.
     if (clip.sourceInFrame > 0) {
-      editor.trimClip(clipId, sourceIn, sourceIn + durationFrames);
+      const window = importedSourceWindow(sourceIn, durationFrames, recoveredSpeed(clip));
+      editor.trimClip(clipId, window.inPoint, window.outPoint);
     }
     // Imported adjustments (opacity, opacity animation, speed, volume, crop,
     // geometry) ride one undoable batch; a clip carrying none adds no history.
@@ -559,7 +629,7 @@ export function applyFcpxmlPlan(
       canvasHeight,
       sourceWidth: dims?.width,
       sourceHeight: dims?.height,
-    }, plan.clips);
+    }, plan.clips, durationFrames);
     placedClips += 1;
   }
 
@@ -768,7 +838,7 @@ function materializeCompoundFcpxmlPlan(
   let titles = 0;
   let skippedOffline = 0;
   const rootPatches = new Map<string, (draft: Clip) => void>();
-  const addAdjustmentPatch = (clipId: string, clip: ImportedClip): void => {
+  const addAdjustmentPatch = (clipId: string, clip: ImportedClip, placedDurationFrames: number): void => {
     const ctx: PlacementContext = clip.kind === 'title' || isImportedCompoundClip(clip)
       ? {
         canvasWidth,
@@ -782,7 +852,7 @@ function materializeCompoundFcpxmlPlan(
         sourceWidth: sourceDimsByPath.get(clip.assetPath)?.width,
         sourceHeight: sourceDimsByPath.get(clip.assetPath)?.height,
       };
-    const adjustment = importedClipPatch(clip, ctx);
+    const adjustment = importedClipPatch(clip, ctx, placedDurationFrames);
     if (!adjustment) return;
     rootPatches.set(clipId, (draft) => {
       adjustment(draft);
@@ -792,8 +862,10 @@ function materializeCompoundFcpxmlPlan(
   // pair's ONE source window — so it needs the same speed the visual clip gets,
   // exactly as EditorController.setClipSpeed writes it onto a linked group — plus
   // the level the dropped audio element carried, which is the twin's own.
-  const addLinkedTwinPatch = (clipId: string, clip: ImportedClip): void => {
-    const twinPatch = linkedTwinPatch(clip, linkedAudioHalfFor(clip, plan.clips));
+  const addLinkedTwinPatch = (clipId: string, clip: ImportedClip, placedDurationFrames: number): void => {
+    const twinPatch = linkedTwinPatch(
+      clip, linkedAudioHalfFor(clip, plan.clips), undefined, placedDurationFrames,
+    );
     if (!twinPatch) return;
     for (const linkedId of editor.expandLinkedClipIds([clipId])) {
       if (linkedId === clipId) continue;
@@ -890,10 +962,12 @@ function materializeCompoundFcpxmlPlan(
       durationFrames,
     });
     if (clip.sourceInFrame > 0) {
-      editor.trimClip(clipId, sourceIn, sourceIn + durationFrames);
+      // Same source-window derivation as the flat path, so the two cannot drift.
+      const window = importedSourceWindow(sourceIn, durationFrames, recoveredSpeed(clip));
+      editor.trimClip(clipId, window.inPoint, window.outPoint);
     }
-    addAdjustmentPatch(clipId, clip);
-    addLinkedTwinPatch(clipId, clip);
+    addAdjustmentPatch(clipId, clip, durationFrames);
+    addLinkedTwinPatch(clipId, clip, durationFrames);
     placedClips += 1;
   }
 
@@ -1176,7 +1250,7 @@ function materializeCompoundFcpxmlPlan(
         // twin unscaled is a state EditorController.setClipSpeed never writes.
         // Its level is its OWN, read off the dropped audio element; the sibling's
         // is not a substitute, because the twin owns its own.
-        linkedTwinPatch(imported, half, twinName)?.(twin);
+        linkedTwinPatch(imported, half, twinName, durationFrames)?.(twin);
         clips.push(twin);
       } else {
         clips.push(clip);
@@ -1188,7 +1262,7 @@ function materializeCompoundFcpxmlPlan(
         canvasHeight,
         sourceWidth: dims?.width,
         sourceHeight: dims?.height,
-      });
+      }, durationFrames);
       if (adjustment) adjustment(clip);
       placed += 1;
     }

@@ -2126,7 +2126,7 @@ export class ToolExecutor {
             canvasHeight: this.editor.getProject().settings.height,
             sourceWidth: dims?.width,
             sourceHeight: dims?.height,
-          }, plan.clips);
+          }, plan.clips, durationFrames);
           placed += 1;
         }
 

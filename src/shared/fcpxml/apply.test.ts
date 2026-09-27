@@ -583,12 +583,25 @@ describe('flat linked A/V round trip', () => {
     // Both halves moved in the one adjustment batch, so undo arity is unchanged.
     expect(target.getLastCommandDescription()).toBe('setClipProperties');
     expect(target.undo()).toBe(true);
+    // The state one undo back is the TRIM's own, and it changed with the span the
+    // trim is handed. It used to read `out: 45` — the unscaled 15 + 30 — which was
+    // a source out-point computed from a timeline length, and only self-consistent
+    // because the clip's speed was still 1 at that moment. The trim now receives the
+    // source window the plan actually names (15 + round(30 * 2) = 75), so the
+    // intermediate satisfies the model's own invariant at 1x too:
+    // `out - in === round(durationFrames * speed)` is 60 === 60.
+    //
+    // The FINAL state is untouched by this and is asserted above: in 15, out 75,
+    // duration 30, speed 2, on both halves.
     const afterUndo = target.getClips();
     expect(afterUndo.map((clip) => ({ in: clip.inPoint, out: clip.outPoint, speed: clip.speed })))
       .toEqual([
-        { in: 15, out: 45, speed: undefined },
-        { in: 15, out: 45, speed: undefined },
+        { in: 15, out: 75, speed: undefined },
+        { in: 15, out: 75, speed: undefined },
       ]);
+    // And the length the trim derived at 1x is the source span, which the batch
+    // then converts back to the timeline length the plan placed.
+    expect(afterUndo.map((clip) => clip.durationFrames)).toEqual([60, 60]);
   });
 
   it('keeps an unspeeded flat pair byte-identical to the pre-fix import', () => {
