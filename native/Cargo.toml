@@ -23,6 +23,18 @@ env_logger = "0.11"
 [build-dependencies]
 napi-build = "2"
 
+# `cargo test` links a standalone test binary, not a cdylib, and on Linux a
+# cdylib's `napi_*` references are resolved by the Node process that loads the
+# addon -- something a test binary has no equivalent of, so the test harness has
+# nothing to link against and the link fails. `dyn-symbols` routes those
+# references through a symbol table resolved at startup, which is what Windows
+# already does on every target, and `noop` keeps napi from trying to dlopen a
+# host that a test binary never has. Same version as [dependencies] so cargo
+# unifies the two into one build; dev-only, so a real `cargo build` links the
+# .node exactly as before.
+[dev-dependencies]
+napi = { version = "2", features = ["dyn-symbols", "noop"] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"
