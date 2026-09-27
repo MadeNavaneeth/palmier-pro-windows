@@ -407,4 +407,164 @@ describe('compound ref-clip export (#154/#289)', () => {
   });
 });
 
+/**
+ * Every attribute value in the emitted FCPXML must be escaped, whatever produced
+ * it. This is the sink `js/incomplete-html-attribute-sanitization` flagged (the
+ * rule's "HTML attribute" wording is generic JS phrasing; the attribute definition
+ * it names is FCPXML's), and it is a correctness fix as much as a security one: a
+ * value carrying a raw `"` or `<` produces a document that is not well-formed XML
+ * at all, so the exporter can emit something no consumer can read.
+ *
+ * The fix belongs at the SINK rather than at each producer, because an attribute
+ * value can arrive from a `.vproj` on disk, from the Agent, or from an import, not
+ * only from a field we happen to validate today.
+ */
+describe('every exported attribute value is escaped (#154 security)', () => {
+  /**
+   * Every attribute value in the document whose RAW text carries a character that
+   * cannot appear unescaped there: `<`, `>`, or `"`, or a `&` that does not begin
+   * an entity. A dependency-free structural check, so it does not depend on this
+   * repo's own parser being lenient enough to notice.
+   */
+  function unescapedAttributeValues(xml: string): string[] {
+    const found: string[] = [];
+    const tag = /<[A-Za-z][^>]*>/g;
+    let match: RegExpExecArray | null;
+    while ((match = tag.exec(xml)) !== null) {
+      const attrs = match[0].match(/[A-Za-z][\w:.-]*="([^"]*)"/g) ?? [];
+      for (const attr of attrs) {
+        const raw = attr.slice(attr.indexOf('"') + 1, -1);
+        if (raw.includes('<') || raw.includes('>') || raw.includes('"')) {
+          found.push(`${match[0].slice(0, 40)} -> ${attr}`);
+        } else if (/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9A-Fa-f]+);)/.test(raw)) {
+          found.push(`${match[0].slice(0, 40)} -> ${attr} (bare &)`);
+        }
+      }
+    }
+    return found;
+  }
+
+  /** A project with one media clip, optionally carrying an extra title. */
+  function withTitle(titleColor?: string): Project {
+    const p = baseProject();
+    addMedia(p, 'a', 'X:/clip.mp4', 'video', 'aac');
+    addClip(p, { durationFrames: 60, inPoint: 0, outPoint: 60 });
+    p.timeline.clips.push({
+      ...clipFixture({
+        id: 'title', assetId: '__title__', type: 'title', text: 'Cap', label: 'Cap',
+        startFrame: 0, durationFrames: 30, inPoint: 0, outPoint: 30,
+        ...(titleColor === undefined ? {} : { titleColor }),
+      }),
+    } as Project['timeline']['clips'][number]);
+    return p;
+  }
+
+  it('escapes a title colour carrying a double quote', () => {
+    const hostile = '"><inject a="1';
+    const xml = exportFcpxml(withTitle(hostile));
+
+    // The defect, before the fix: the value closed the attribute, so `><inject a="1`
+    // left the tag as element content and an <inject> element entered the document.
+    //   fontColor=""><INJECT A="1" alignment="CENTER"/>
+    // After: one attribute, one value, and nothing that can end a tag.
+    //   fontColor="&quot;&gt;&lt;INJECT A=&quot;1" alignment="CENTER"/>
+    // (`titleColor` is upper-cased by the emitter, so the value reads INJECT.)
+    expect(unescapedAttributeValues(xml)).toEqual([]);
+    expect(xml).not.toContain('<INJECT');
+    expect(xml).not.toContain('<inject');
+    expect(xml).toContain('fontColor="&quot;&gt;&lt;INJECT A=&quot;1"');
+  });
+
+  it('escapes a title colour carrying <, > or &', () => {
+    // The exact escaped form per character. Before the fix a raw `<` opened a tag
+    // inside the attribute and a raw `&` was not the start of an entity, so both
+    // were malformed XML; `titleColor` is upper-cased by the emitter.
+    for (const [hostile, escaped] of [
+      ['a<b', 'A&lt;B'],
+      ['a>b', 'A&gt;B'],
+      ['a&b', 'A&amp;B'],
+      ['<script>x</script>', '&lt;SCRIPT&gt;X&lt;/SCRIPT&gt;'],
+    ] as const) {
+      const xml = exportFcpxml(withTitle(hostile));
+
+      expect(unescapedAttributeValues(xml), hostile).toEqual([]);
+      expect(xml, hostile).toContain(`fontColor="${escaped}"`);
+      expect(xml, hostile).not.toContain('<SCRIPT>');
+    }
+  });
+
+  it('escapes the ids and refs on the compound path, which are attribute values too', () => {
+    // These are internally generated (`nest<N>`, `ts<N>`, a resource number), so
+    // they are not the reachable hole — but an unescaped interpolation is a latent
+    // one, and the fix is at the sink. Asserted on the emitted form so a future
+    // refactor that emits a real id cannot reopen it silently.
+    const p = baseProject();
+    addMedia(p, 'a', 'X:/clip.mp4', 'video', 'aac');
+    addClip(p, { durationFrames: 60, inPoint: 0, outPoint: 60 });
+    p.timeline.clips.push({
+      ...clipFixture({
+        id: 'title', assetId: '__title__', type: 'title', text: 'Cap', label: 'Cap',
+        startFrame: 0, durationFrames: 30, inPoint: 0, outPoint: 30,
+      }),
+    } as Project['timeline']['clips'][number]);
+    p.timelines = { 'nest-1': timelineFixture('nest-1', [clipFixture()]) } as Project['timelines'];
+    addRootCompound(p, 'carrier', 'nest-1');
+
+    const xml = exportFcpxml(p);
+
+    expect(unescapedAttributeValues(xml)).toEqual([]);
+    expect(xml).toContain('<media id="nest1"');
+    expect(xml).toContain('<ref-clip ref="nest1"');
+    expect(xml).toContain('<text-style-def id="ts1"');
+    expect(xml).toContain('<title ref="ts1"');
+  });
+
+  it('leaves a project with safe ids byte-identical to the pre-fix export', () => {
+    // The fix must be provably inert on the common path. This fixture exercises
+    // the asset, title, compound-media and ref-clip attribute paths at once, and
+    // the expectation is the exporter's output VERBATIM, captured before the fix,
+    // so a single changed character anywhere in the emitter fails here.
+    const p = baseProject();
+    addMedia(p, 'a', 'X:/clip.mp4', 'video', 'aac');
+    addClip(p, { durationFrames: 60, inPoint: 0, outPoint: 60 });
+    p.timeline.clips.push({
+      ...clipFixture({
+        id: 'title', assetId: '__title__', type: 'title', text: 'Cap', label: 'Cap',
+        startFrame: 0, durationFrames: 30, inPoint: 0, outPoint: 30,
+        titleColor: '#ffcc00', titleFontFamily: 'Georgia', titleAlign: 'left',
+      }),
+    } as Project['timeline']['clips'][number]);
+    p.timelines = { 'nest-1': timelineFixture('nest-1', [clipFixture()]) } as Project['timelines'];
+    addRootCompound(p, 'carrier', 'nest-1');
+
+    const xml = exportFcpxml(p);
+
+    expect(unescapedAttributeValues(xml)).toEqual([]);
+    expect(xml).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>'
+      + '<fcpxml version="1.11"><resources>'
+      + '<format id="r1" frameDuration="0.033333s" width="1920" height="1080"/>'
+      + '<asset id="2" name="clip.mp4" src="file:///X:/clip.mp4" start="0s" duration="60.000000s"'
+      + ' hasVideo="1" hasAudio="1" format="r1"/>'
+      + '<media id="nest1" name="nest-1"><sequence format="r1" duration="2.000000s" tcStart="0s"'
+      + ' tcFormat="NDF" audioLayout="stereo" audioRate="48k"><spine>'
+      + '<gap name="Timeline" offset="0s" start="0s" duration="2.000000s">'
+      + '<asset-clip ref="2" name="Clip" lane="1" offset="0.000000s" start="0.000000s"'
+      + ' duration="2.000000s" enabled="1"><adjust-conform type="fit"/></asset-clip>'
+      + '</gap></spine></sequence></media></resources>'
+      + '<library><event name="My Film"><project name="My Film"><spine>'
+      + '<asset-clip ref="2" name="Clip" lane="2" offset="0.000000s" start="0.000000s"'
+      + ' duration="2.000000s" enabled="1"><adjust-conform type="fit"/></asset-clip>'
+      + '<title ref="ts1" name="Cap" lane="2" offset="0.000000s" start="0.000000s"'
+      + ' duration="1.000000s" enabled="1"><text><text-style ref="ts1">Cap</text-style></text>'
+      + '<adjust-conform type="fit"/></title>'
+      + '<ref-clip ref="nest1" name="nest-1" lane="2" offset="0.000000s" start="0.000000s"'
+      + ' duration="2.000000s" enabled="1" srcEnable="video"><adjust-conform type="fit"/></ref-clip>'
+      + '</spine></project></event></library>'
+      + '<text-style-def id="ts1"><text-style font="Georgia" fontSize="97" fontColor="#FFCC00"'
+      + ' alignment="LEFT"/></text-style-def></fcpxml>',
+    );
+  });
+});
+
 

@@ -664,6 +664,170 @@ describe('#154 constructs read for nothing', () => {
   });
 });
 
+/**
+ * A hostile id is neutralised at INGEST, and the rewrite is REPORTED.
+ *
+ * This is defence in depth behind the sink fix, not the fix: `exporter.ts` now
+ * escapes every attribute value, so a hostile id cannot produce malformed XML
+ * however it arrives. This stops it travelling through the model as a compound
+ * reference — which is `AGENTS.md`'s "validate inputs" rule applied where the
+ * value enters, not where it eventually leaves by.
+ *
+ * A sanitizer, not a silent drop: an id that had to be rewritten says so through
+ * the existing `unsupported` channel, because a quiet rewrite is the same class of
+ * defect as a quiet drop — the document said one thing and the imported project
+ * would contain another with nothing to say so.
+ */
+describe('a hostile id is neutralised at ingest and reported (#154 security)', () => {
+  /**
+   * A producer that wants a hostile CHARACTER in an id has to escape it, because a
+   * raw `"` would end the attribute. So the reachable forms are the escaped ones,
+   * and — measured, not assumed — this importer's `attr()` does NOT XML-decode:
+   * `id="a&amp;b"` arrives as the eight characters `a&amp;b`, and `id="a&quot;b"`
+   * arrives as `a&quot;b`, never as a string containing a real `"`. The rewrite
+   * below is therefore about characters that are legal to write escaped and
+   * illegal in an id, which is exactly the set that can reach the plan.
+   */
+  const HOSTILE = 'a&amp;b';
+  const CLEANED = 'a_amp_b';
+
+  function doc(assetId: string, clipRef: string): string {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      `<asset id="${assetId}" name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s"`
+      + ' duration="10s" hasVideo="1"/>',
+      '</resources><library><event name="E"><project name="E"><spine>',
+      `<asset-clip ref="${clipRef}" name="Take 1" lane="0" offset="0s" start="0s" duration="1s"/>`,
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+  }
+
+  it('rewrites a hostile asset id and the ref pointing at it, keeping them paired', () => {
+    // Both sides go through the SAME function, so a document whose id needed
+    // cleaning still pairs; that is why the report fires twice, once per site.
+    const plan = parseFcpxml(doc(HOSTILE, HOSTILE));
+
+    expect(plan.assets.map((asset) => asset.ref)).toEqual([CLEANED]);
+    expect(plan.clips).toHaveLength(1);
+    expect(plan.clips[0]).toMatchObject({ kind: 'video', assetPath: 'X:/media/clip.mp4' });
+    expect(plan.unsupported).toEqual([
+      `Asset id "${HOSTILE}" is not a valid XML name; it is read as "${CLEANED}".`,
+      `Asset-clip id "${HOSTILE}" is not a valid XML name; it is read as "${CLEANED}".`,
+    ]);
+  });
+
+  it('rewrites every character that cannot appear in an id', () => {
+    for (const [hostile, cleaned] of [
+      ['a&amp;b', 'a_amp_b'],
+      ['a b', 'a_b'],
+      ['a:b', 'a_b'],
+      ['a&quot;b', 'a_quot_b'],
+    ] as const) {
+      const plan = parseFcpxml(doc(hostile, hostile));
+      expect(plan.assets.map((asset) => asset.ref), hostile).toEqual([cleaned]);
+      expect(plan.clips, hostile).toHaveLength(1);
+      expect(plan.unsupported, hostile).toEqual([
+        `Asset id "${hostile}" is not a valid XML name; it is read as "${cleaned}".`,
+        `Asset-clip id "${hostile}" is not a valid XML name; it is read as "${cleaned}".`,
+      ]);
+    }
+  });
+
+  it('leaves every id a real document uses byte-identical, with no note', () => {
+    // Apple's DTD says `id ID #REQUIRED`, but Final Cut, Resolve and this repo's
+    // own writer all emit NUMERIC resource ids, which a strict NCName would
+    // reject. Being stricter than the format's own convention would rewrite every
+    // legitimate document, so the leading character is deliberately unconstrained.
+    for (const id of ['2', 'r1', 'nest1', 'ts1', 'palmier-asset-1', 'a.b_c-9']) {
+      const plan = parseFcpxml(doc(id, id));
+      expect(plan.assets.map((asset) => asset.ref), id).toEqual([id]);
+      expect(plan.unsupported, id).toEqual([]);
+    }
+  });
+
+  it('leaves the absent-id fallback exactly as it was', () => {
+    // An asset with no id at all is still skipped, and the pre-existing
+    // "unknown resource" note is still the only one, unchanged.
+    const noId = parseFcpxml([
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      '<asset name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s" duration="10s" hasVideo="1"/>',
+      '</resources><library><event name="E"><project name="E"><spine>',
+      '<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s"/>',
+      '</spine></project></event></library></fcpxml>',
+    ].join(''));
+    expect(noId.assets).toEqual([]);
+    expect(noId.clips).toEqual([]);
+    expect(noId.unsupported).toEqual(['Asset-clip "Take 1" references unknown resource 2.']);
+  });
+
+  it('rewrites a hostile <media> id and the carrier that references it', () => {
+    const compound = [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      '<asset id="2" name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s" duration="10s" hasVideo="1"/>',
+      `<media id="${HOSTILE}" name="Nest"><sequence format="r1" duration="1s" tcStart="0s">`,
+      '<spine><gap name="Timeline" offset="0s" start="0s" duration="1s">',
+      '<asset-clip ref="2" name="Inner" lane="1" offset="0s" start="0s" duration="1s"/>',
+      '</gap></spine></sequence></media>',
+      '</resources><library><event name="E"><project name="E"><spine>',
+      `<ref-clip ref="${HOSTILE}" name="Nest" lane="1" offset="0s" start="0s" duration="1s"/>`,
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+    const plan = parseFcpxml(compound);
+    // Both sides normalized identically, so the carrier still resolves.
+    expect(plan.sequences?.map((sequence) => sequence.ref)).toEqual([CLEANED]);
+    expect(plan.clips).toHaveLength(1);
+    expect(plan.sequences?.[0]?.name).toBe('Nest');
+    expect(plan.unsupported).toEqual([
+      `Sequence resource id "${HOSTILE}" is not a valid XML name; it is read as "${CLEANED}".`,
+      `Ref-clip id "${HOSTILE}" is not a valid XML name; it is read as "${CLEANED}".`,
+    ]);
+  });
+
+  it('exercises the whole path: a hostile id in, well-formed XML out', () => {
+    // The round trip the sink fix exists for. The imported clip's compound
+    // reference is now clean, so re-exporting cannot produce a malformed document
+    // even before escaping — and escaping means it cannot after either.
+    const compound = [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      '<asset id="2" name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s" duration="10s" hasVideo="1"/>',
+      `<media id="${HOSTILE}" name="Nest"><sequence format="r1" duration="1s" tcStart="0s">`,
+      '<spine><gap name="Timeline" offset="0s" start="0s" duration="1s">',
+      '<asset-clip ref="2" name="Inner" lane="1" offset="0s" start="0s" duration="1s"/>',
+      '</gap></spine></sequence></media>',
+      '</resources><library><event name="E"><project name="E"><spine>',
+      `<ref-clip ref="${HOSTILE}" name="Nest" lane="1" offset="0s" start="0s" duration="1s"/>`,
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+    const plan = parseFcpxml(compound);
+
+    const target = new EditorController();
+    target.addMedia({
+      id: 'imported', path: 'X:/media/clip.mp4', filename: 'clip.mp4', type: 'video',
+      duration: 300, width: 1920, height: 1080, fileSize: 1, addedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const result = applyFcpxmlPlan(target, plan, new Map([['X:/media/clip.mp4', 'imported']]),
+      new Map([['X:/media/clip.mp4', { width: 1920, height: 1080 }]]));
+    expect(result.placedClips).toBe(1);
+
+    const xml = exportFcpxml(target.getProject());
+    expect(xml).not.toContain('a&amp;b');
+    // Every attribute value in the re-exported document is clean.
+    for (const attr of xml.match(/[A-Za-z][\w:.-]*="([^"]*)"/g) ?? []) {
+      const raw = attr.slice(attr.indexOf('"') + 1, -1);
+      expect(raw, attr).not.toMatch(/[<>"']/);
+      expect(raw, attr).not.toMatch(/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9A-Fa-f]+);)/);
+    }
+  });
+});
+
 
 describe('compound FCPXML import safety', () => {
   function document(resources: string, rootRef: string): string {

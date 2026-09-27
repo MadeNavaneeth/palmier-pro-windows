@@ -981,11 +981,16 @@ function parseAssetClipTag(
   assetByRef: ReadonlyMap<string, ImportedAsset>,
   unsupported: string[],
 ): ImportedClip | null {
-  const ref = attr(tag, 'ref');
+  const rawRef = attr(tag, 'ref');
+  const sanitizedRef = sanitizeXmlName(rawRef);
+  const ref = sanitizedRef?.value;
   const asset = ref ? assetByRef.get(ref) : undefined;
   if (!asset) {
     unsupported.push(`Asset-clip "${label}" references unknown resource ${ref ?? '(none)'}.`);
     return null;
+  }
+  if (sanitizedRef?.changed && rawRef !== null) {
+    reportRenamedId('Asset-clip', rawRef, sanitizedRef.value, unsupported);
   }
   const timeMapPresent = hasTimeMapElement(tag);
   const isAudioOnly = asset.hasAudio && !asset.hasVideo;
@@ -1100,6 +1105,58 @@ function sanitizeSequenceName(value: string | null): string {
 }
 
 /**
+ * An XML `id`/`IDREF` is formally an `NCName`, but FCPXML and every producer of
+ * it in practice — Apple's own DTD says `id ID #REQUIRED`, and Final Cut, Resolve
+ * and this repo's own writer all emit numeric resource ids like `id="2"` — use
+ * ids a strict `NCName` would reject. So the leading character is deliberately
+ * NOT constrained, and only the characters that cannot appear in an id at all are
+ * rewritten. Being stricter than the format's own de-facto convention would
+ * rewrite every legitimate document, which is a far worse outcome than the one
+ * this guards against.
+ *
+ * Every conforming document already satisfies what is left, so this is LOSSLESS
+ * for every valid file; the value it changes is one that could not have come from
+ * a conforming producer. It is defence in depth, not the fix: `exporter.ts` escapes
+ * every attribute value at the sink, so a hostile id cannot produce malformed XML
+ * whatever reaches it. This stops such a value travelling through the model as a
+ * compound reference in the first place, which is `AGENTS.md`'s "validate inputs"
+ * rule applied where the value enters rather than where it eventually leaves by.
+ *
+ * Returns the cleaned value and whether anything changed, so the caller can REPORT
+ * the change instead of quietly normalising it — a silent rewrite of an id is the
+ * same class of defect as a silent drop, because the document said one thing and
+ * the imported project would contain another with nothing to say so.
+ *
+ * Disallowed characters become '_', which keeps the value's length and position
+ * and makes the rewrite obvious in a diff. The limit this accepts is the same one
+ * the format already has: two ids differing only in disallowed characters collapse
+ * to one and the first match wins, exactly as two linked groups over one asset at
+ * one span are already indistinguishable.
+ */
+function sanitizeXmlName(raw: string | null | undefined): { value: string; changed: boolean } | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  const value = raw.replace(/[^A-Za-z0-9._-]/g, '_');
+  return { value, changed: value !== raw };
+}
+
+/**
+ * The one place an ingested id becomes MODEL state, so the report belongs here
+ * rather than at each of the four read sites: an asset `id` and the `ref` that
+ * points at it must be normalized by the SAME function, or a document whose id
+ * needed cleaning would stop pairing.
+ */
+function reportRenamedId(
+  subject: string,
+  raw: string,
+  cleaned: string,
+  unsupported: string[],
+): void {
+  unsupported.push(
+    `${subject} id "${raw}" is not a valid XML name; it is read as "${cleaned}".`,
+  );
+}
+
+/**
  * Sequence bodies from the exporter live inside one timeline gap. Peel that
  * wrapper once, while leaving ordinary gaps in the spine to retain the legacy
  * "absolute offsets encode spacing" behavior.
@@ -1138,9 +1195,16 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   // ── Assets ──────────────────────────────────────────────────────────────
   const assets: ImportedAsset[] = [];
   for (const tag of extractTagBlock(xml, 'asset')) {
-    const ref = attr(tag, 'id');
+    const rawRef = attr(tag, 'id');
+    const sanitizedRef = sanitizeXmlName(rawRef);
+    // The SAME normalization the clip side applies in parseAssetClipTag, so an
+    // asset id that needed cleaning still pairs with the clips pointing at it.
+    const ref = sanitizedRef?.value;
     const src = attr(tag, 'src');
     if (!ref || !src) continue;
+    if (sanitizedRef.changed && rawRef !== null) {
+      reportRenamedId('Asset', rawRef, ref, unsupported);
+    }
     // A <timecode> child carries the source start offset; rebuild the SMPTE
     // string at the project rate so the asset round-trips through export.
     const timecodeTag = tag.match(/<timecode\b[^>]*/)?.[0] ?? '';
@@ -1182,7 +1246,13 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   const sequenceResources = new Map<string, SequenceResource | null>();
   const resourceIssues = new Map<string, string>();
   for (const mediaTag of extractTagBlock(xml, 'media')) {
-    const ref = sanitizeCompoundTimelineId(attr(mediaTag, 'id'));
+    const rawRef = attr(mediaTag, 'id');
+    const sanitized = sanitizeXmlName(rawRef);
+    if (sanitized === undefined) continue;
+    if (sanitized.changed && rawRef !== null) {
+      reportRenamedId('Sequence resource', rawRef, sanitized.value, unsupported);
+    }
+    const ref = sanitizeCompoundTimelineId(sanitized.value);
     if (ref === undefined) continue;
     if (sequenceResources.has(ref) || resourceIssues.has(ref)) {
       sequenceResources.set(ref, null);
@@ -1233,13 +1303,18 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     fps: number,
     depth: number,
   ): ImportedCompoundClip | null {
-    const ref = sanitizeCompoundTimelineId(attr(tag, 'ref'));
+    const rawRef = attr(tag, 'ref');
+    const sanitizedRef = sanitizeXmlName(rawRef);
+    const ref = sanitizeCompoundTimelineId(sanitizedRef?.value);
     if (ref === undefined) {
       reportSequenceIssue(
         `missing:${label}`,
         `Ref-clip "${label}" has no usable sequence resource reference.`,
       );
       return null;
+    }
+    if (sanitizedRef?.changed && rawRef !== null) {
+      reportRenamedId('Ref-clip', rawRef, sanitizedRef.value, unsupported);
     }
     const sequence = sequenceAtDepth(ref, depth, label);
     if (!sequence) return null;
