@@ -25,6 +25,25 @@ import {
   type SpawnedProcess,
 } from './codex-cli';
 import { CancelledError } from './openai-compatible';
+import path from 'path';
+
+/**
+ * Sandbox roots and probes, built from the platform's own root.
+ *
+ * `resolveCodexWorkingDir` and `runCodexCompletion` are platform-NEUTRAL and
+ * correct: they go through `path.resolve` and `path.relative`, which is the only
+ * right way to do a containment check. A hardcoded `C:\media` is an absolute path
+ * on Windows and a single RELATIVE segment on POSIX, where `path.resolve` prefixes
+ * the cwd — so on Linux the "inside the scope" case was refused and the spawned
+ * `cwd` came back as `/work/C:\media`. The contract under test is the containment
+ * decision, so the fixture is expressed in platform-native absolute paths and the
+ * same four cases are checked on every OS.
+ */
+const MEDIA = path.resolve(path.sep, 'media');
+const DATA = path.resolve(path.sep, 'data');
+/** Outside MEDIA entirely, and a sibling that only shares the name prefix. */
+const SYSTEM = path.resolve(path.sep, 'Windows', 'System32');
+const MEDIA_EVIL = path.resolve(path.sep, 'media-evil');
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -78,25 +97,28 @@ describe('buildCodexArgs', () => {
 
 describe('resolveCodexWorkingDir', () => {
   it('defaults to the first allowed root', () => {
-    expect(resolveCodexWorkingDir(undefined, ['C:\\media', 'C:\\data'])).toEqual({
+    expect(resolveCodexWorkingDir(undefined, [MEDIA, DATA])).toEqual({
       ok: true,
-      dir: 'C:\\media',
+      dir: MEDIA,
     });
   });
 
   it('accepts a requested dir inside the scope', () => {
-    const result = resolveCodexWorkingDir('C:\\media\\takes\\..\\takes2', ['C:\\media']);
+    // The `..` is still there on purpose: the point is that it is resolved and
+    // the RESULT is what gets checked for containment.
+    const result = resolveCodexWorkingDir(path.join(MEDIA, 'takes', '..', 'takes2'), [MEDIA]);
     expect(result.ok).toBe(true);
+    if (result.ok) expect(result.dir).toBe(path.join(MEDIA, 'takes2'));
   });
 
   it('refuses a requested dir outside the scope', () => {
-    const result = resolveCodexWorkingDir('C:\\Windows\\System32', ['C:\\media']);
+    const result = resolveCodexWorkingDir(SYSTEM, [MEDIA]);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/project or media/i);
   });
 
   it('refuses a sibling that only shares a name prefix', () => {
-    const result = resolveCodexWorkingDir('C:\\media-evil', ['C:\\media']);
+    const result = resolveCodexWorkingDir(MEDIA_EVIL, [MEDIA]);
     expect(result.ok).toBe(false);
   });
 
@@ -414,7 +436,7 @@ const BASE_REQUEST = {
   // Every stub run resolves this override via the injected isFile — no test
   // below touches the real PATH unless it says so.
   binaryPath: 'C:\\Tools\\codex.exe',
-  workingDir: 'C:\\media',
+  workingDir: MEDIA,
   system: 'SYS',
   history: '',
   userMessage: 'do it',
@@ -439,7 +461,7 @@ describe('runCodexCompletion (stub process)', () => {
     expect(seen[0]!.args).toContain('gpt-x');
     // No credentials travel with the child: only the working directory.
     expect(Object.keys(seen[0]!.options)).toEqual(['cwd']);
-    expect(seen[0]!.options.cwd).toBe('C:\\media');
+    expect(seen[0]!.options.cwd).toBe(MEDIA);
     const prompt = fake.stdin.written.join('');
     expect(prompt).toContain('SYS');
     expect(prompt).toContain('do it');

@@ -40,6 +40,36 @@ function makeWav(): Buffer {
   return buf;
 }
 
+/**
+ * Whether a binary is on PATH.
+ *
+ * Both describes below reach real media SUBPROCESSES and genuinely need them:
+ * `import_fcpxml` calls `probeMedia`, which shells out to `ffprobe`, and a file
+ * that does not probe is reported OFFLINE with its clip skipped — so no
+ * hand-written fixture can replace them without changing what is under test.
+ * The second describe additionally needs `ffmpeg` to synthesise its A/V asset.
+ *
+ * What is NOT genuine is letting a missing binary surface as a wall of
+ * `spawnSync ffmpeg ENOENT` crashes that read like product failures. These turn
+ * that into ONE stated skip per describe, so a machine without the binary says
+ * why it is not covering the file instead of going red. Both CI platforms ship
+ * FFmpeg, so no coverage is lost there.
+ */
+const hasBinary = (bin: string): boolean => {
+  try {
+    execFileSync(bin, ['-version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+};
+const ffprobeAvailable = hasBinary('ffprobe');
+const ffmpegAvailable = hasBinary('ffmpeg');
+const needsFfprobe = it.skipIf(!ffprobeAvailable);
+// The A/V describe needs BOTH: ffmpeg to synthesise the asset and ffprobe to
+// read it back, since every placement goes through `probeMedia`.
+const needsAvAsset = it.skipIf(!ffmpegAvailable || !ffprobeAvailable);
+
 describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
   let tmpDir: string;
 
@@ -69,7 +99,7 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
     return editor;
   }
 
-  it('round-trips through disk into a fresh editor', async () => {
+  needsFfprobe('round-trips through disk into a fresh editor', async () => {
     const source = sourceProject();
     const xmlPath = path.join(tmpDir, 'out.fcpxml');
     await fs.writeFile(xmlPath, exportFcpxml(source.getProject()), 'utf8');
@@ -91,7 +121,7 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
     expect(imported.durationFrames).toBe(30);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('reports offline assets and skips their clips without failing', async () => {
+  needsFfprobe('reports offline assets and skips their clips without failing', async () => {
     const source = sourceProject();
     let xml = exportFcpxml(source.getProject());
     // Point the resource at a path that does not exist on this machine.
@@ -109,7 +139,7 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
     expect(fresh.getMedia()).toHaveLength(0);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('exports the current timeline to an absolute path', async () => {
+  needsFfprobe('exports the current timeline to an absolute path', async () => {
     const editor = sourceProject();
     const outPath = path.join(tmpDir, 'written.fcpxml');
 
@@ -135,7 +165,7 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
     expect(data.unsupportedTruncated).toBe(false);
   });
 
-  it('surfaces skipped shape clips in the export receipt without changing the XML', async () => {
+  needsFfprobe('surfaces skipped shape clips in the export receipt without changing the XML', async () => {
     const editor = sourceProject();
     const shapeId = editor.addShapeClip({ trackId: 'v1', shapeKind: 'rect', startFrame: 60, durationFrames: 30 });
     expect(shapeId).not.toBe('');
@@ -163,7 +193,7 @@ describe('import_fcpxml / export_fcpxml (#154 phase 2b)', () => {
     expect(written).not.toContain('__shape__');
   });
 
-  it('truncates long export unsupported lists but keeps accurate totals', async () => {
+  needsFfprobe('truncates long export unsupported lists but keeps accurate totals', async () => {
     const editor = new EditorController();
     for (let i = 0; i < 25; i += 1) {
       editor.addShapeClip({ trackId: 'v1', shapeKind: 'rect', startFrame: i * 10, durationFrames: 10 });
@@ -202,7 +232,9 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
   let tmpDir: string;
   let avPath: string;
 
-  /** A 1 s A/V MP4, so ffprobe reports the audio stream a linked twin needs. */
+  /**
+   * A 2 s A/V MP4, so ffprobe reports the audio stream a linked twin needs.
+   */
   function makeAv(file: string): void {
     execFileSync('ffmpeg', [
       '-hide_banner', '-loglevel', 'error', '-y',
@@ -213,6 +245,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
   }
 
   beforeEach(async () => {
+    if (!ffmpegAvailable) return;
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'palmier-fcpxml-fps-'));
     avPath = path.join(tmpDir, 'av.mp4');
     makeAv(avPath);
@@ -226,6 +259,9 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     editor.applyProjectSettings({ fps });
     return editor;
   }
+
+  // Stated once per describe, rather than as twenty identical crashes.
+  const maybe = needsAvAsset;
 
   /**
    * One trimmed clip over the A/V asset, so `addClip` builds its linked twin.
@@ -311,7 +347,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     { frameDuration: '2s', fps: 0.5, label: '0.5 fps' },
     { frameDuration: '100s', fps: 0.01, label: '0.01 fps' },
   ]) {
-    it(`refuses a ${label} document instead of misplacing its clip`, async () => {
+    maybe(`refuses a ${label} document instead of misplacing its clip`, async () => {
       const { result, editor } = await importInto(avSourceProject(30), 30, frameDuration);
 
       expect(result.success).toBe(false);
@@ -325,7 +361,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     }, REAL_PROCESS_TIMEOUT_MS);
   }
 
-  it('puts no Infinity or NaN on a clip for a zero or unparseable rate', async () => {
+  maybe('puts no Infinity or NaN on a clip for a zero or unparseable rate', async () => {
     for (const frameDuration of ['1000s', 'garbage']) {
       const { result, editor } = await importInto(avSourceProject(30), 30, frameDuration);
 
@@ -337,7 +373,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     }
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('keeps a matched rate byte-identical', async () => {
+  maybe('keeps a matched rate byte-identical', async () => {
     const { result, editor } = await importInto(avSourceProject(30), 30);
 
     expect(result.success).toBe(true);
@@ -347,7 +383,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(video(editor)).toMatchObject({ startFrame: 20, durationFrames: 48, inPoint: 30, outPoint: 126, speed: 2 });
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('keeps a slower document rescaled up, and its linked twin beside it', async () => {
+  maybe('keeps a slower document rescaled up, and its linked twin beside it', async () => {
     const { result, editor } = await importInto(avSourceProject(24), 30);
 
     expect(result.success).toBe(true);
@@ -362,14 +398,14 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(v.durationFrames / 30).toBeCloseTo(48 / 24, 6);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('keeps a faster document rescaled down', async () => {
+  maybe('keeps a faster document rescaled down', async () => {
     const { result, editor } = await importInto(avSourceProject(30), 24);
 
     expect(result.success).toBe(true);
     expect(video(editor)).toMatchObject({ startFrame: 16, durationFrames: 38, inPoint: 24, outPoint: 100, speed: 2 });
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('gives the linked twin the group speed and the same window, as the source had it', async () => {
+  maybe('gives the linked twin the group speed and the same window, as the source had it', async () => {
     const source = avSourceProject(30, 2);
     const sourcePair = pairOf(source);
     // setClipSpeed writes speed and the scaled outPoint onto BOTH halves.
@@ -397,7 +433,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(a.outPoint - a.inPoint).toBe(Math.round(a.durationFrames * 2));
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('leaves an unspeeded linked pair alone and adds no undo step', async () => {
+  maybe('leaves an unspeeded linked pair alone and adds no undo step', async () => {
     const { result, editor } = await importInto(avSourceProject(30, 'none'), 30);
 
     expect(result.success).toBe(true);
@@ -417,7 +453,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     ]);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('costs the 2x pair the same undo arity as the unspeeded one', async () => {
+  maybe('costs the 2x pair the same undo arity as the unspeeded one', async () => {
     const sped = await importInto(avSourceProject(30, 2), 30);
     const plain = await importInto(avSourceProject(30, 'none'), 30);
 
@@ -441,7 +477,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
    * order to let the visual element re-derive the pair. The level has to come off
    * that element, and the sibling's unity is not a substitute.
    */
-  it('gives the linked twin its OWN level, not its visual sibling\'s', async () => {
+  maybe('gives the linked twin its OWN level, not its visual sibling\'s', async () => {
     const source = avSourceProject(30, 2, { volume: 0.25 });
     const sourcePair = pairOf(source);
     expect(sourcePair.video).toMatchObject({ volume: 1, muted: false });
@@ -462,7 +498,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(editor.getClips().filter((c) => c.type === 'audio')).toHaveLength(1);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('keeps a muted twin muted through the agent too', async () => {
+  maybe('keeps a muted twin muted through the agent too', async () => {
     const { result, editor } = await importInto(avSourceProject(30, 2, { volume: 0, muted: true }), 30);
 
     expect(result.success).toBe(true);
@@ -473,7 +509,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(v.volume).toBe(1);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('costs a leveled pair the same undo arity as an unleveled one', async () => {
+  maybe('costs a leveled pair the same undo arity as an unleveled one', async () => {
     const leveled = await importInto(avSourceProject(30, 2, { volume: 0.25 }), 30);
     const unleveled = await importInto(avSourceProject(30, 2), 30);
 
@@ -494,7 +530,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
    * from the element written for it — the one the materializer drops — and the
    * sibling's name is not a substitute.
    */
-  it('gives the linked twin its OWN name through the agent too', async () => {
+  maybe('gives the linked twin its OWN name through the agent too', async () => {
     const source = avSourceProject(30, 2, { label: 'Dialogue' });
     const sourcePair = pairOf(source);
     expect(sourcePair.video.label).toBe('av.mp4');
@@ -515,7 +551,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(editor.getClips().filter((c) => c.type === 'audio')).toHaveLength(1);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('costs a renamed pair the same undo arity, and a matching name no step at all', async () => {
+  maybe('costs a renamed pair the same undo arity, and a matching name no step at all', async () => {
     const renamed = await importInto(avSourceProject(30, 2, { label: 'Dialogue' }), 30);
     const matching = await importInto(avSourceProject(30, 2), 30);
 
@@ -534,7 +570,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
    * leaving the twin on `addClip`'s asset filename. The rule now states the name
    * and the patch compares it against the draft, so all four sites behave alike.
    */
-  it('gives the twin the shared name when BOTH halves were renamed to it', async () => {
+  maybe('gives the twin the shared name when BOTH halves were renamed to it', async () => {
     const source = avSourceProject(30, 2);
     const { video: sourceVideo, audio: sourceAudio } = pairOf(source);
     for (const id of [sourceVideo.id, sourceAudio.id]) {
@@ -601,7 +637,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     };
   };
 
-  it('keeps a styled title opacity and geometry instead of resetting them', async () => {
+  maybe('keeps a styled title opacity and geometry instead of resetting them', async () => {
     const source = titleSourceProject(true);
     expect(titleOf(source)).toMatchObject({ opacity: 0.4, rotation: 0.05 });
 
@@ -623,7 +659,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(t.titleSizeRatio).toBeCloseTo(0.08, 2);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('leaves a plain title byte-identical and adds no undo step', async () => {
+  maybe('leaves a plain title byte-identical and adds no undo step', async () => {
     const { result, editor } = await importInto(titleSourceProject(false), 30);
 
     expect(result.success).toBe(true);
@@ -649,7 +685,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(undoArity(editor)).toEqual(['setClipProperties', 'replaceClips', 'addTrack']);
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('costs a title import the same undo arity as before', async () => {
+  maybe('costs a title import the same undo arity as before', async () => {
     const styled = await importInto(titleSourceProject(true), 30);
     const plain = await importInto(titleSourceProject(false), 30);
 
@@ -660,7 +696,7 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     expect(styledArity).toEqual(undoArity(plain.editor));
   }, REAL_PROCESS_TIMEOUT_MS);
 
-  it('agrees with the dialog path on a title, field for field', async () => {
+  maybe('agrees with the dialog path on a title, field for field', async () => {
     const source = titleSourceProject(true);
     const xmlPath = path.join(tmpDir, 'title-agree.fcpxml');
     await fs.writeFile(xmlPath, exportFcpxml(source.getProject()), 'utf8');

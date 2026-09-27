@@ -5,9 +5,23 @@
  * (upstream #59). Encoding itself is injected, so no FFmpeg runs here.
  */
 import { describe, expect, it, vi } from 'vitest';
+import path from 'path';
 import { ToolExecutor } from './executor';
 import { EditorController } from '../../shared/editor/controller';
 import type { ExportEventSink, ExportOptions } from '../media/exporter';
+
+/**
+ * An absolute output path, built from the platform's own root.
+ *
+ * The tool guards `outputPath` with `path.isAbsolute`, which is the correct
+ * platform-native check. A hardcoded `C:\out\reel.mp4` satisfies it on Windows
+ * and is a single RELATIVE segment on POSIX, so on Linux every test here failed
+ * at the guard with "outputPath must be an absolute path." and none of them ever
+ * reached the behaviour they were written to pin. The path is a value the tool
+ * only ever passes through, so building it per platform tests the same contract
+ * everywhere instead of testing the host OS.
+ */
+const OUT = path.resolve(path.sep, 'out', 'reel.mp4');
 
 function harness(runExport?: (
   project: unknown,
@@ -29,13 +43,13 @@ describe('export_project', () => {
     const { executor } = harness(runExport);
 
     const result = await executor.execute('export_project', {
-      outputPath: 'C:\\out\\reel.mp4',
+      outputPath: OUT,
       format: 'mov',
       quality: 'high',
     });
 
     expect(result.success).toBe(true);
-    expect(captured).toMatchObject({ outputPath: 'C:\\out\\reel.mp4', format: 'mov', quality: 'high' });
+    expect(captured).toMatchObject({ outputPath: OUT, format: 'mov', quality: 'high' });
     expect(result.data).toMatchObject({ bytes: 1234, format: 'mov', quality: 'high' });
   });
 
@@ -46,7 +60,7 @@ describe('export_project', () => {
     const { executor } = harness(runExport);
 
     const result = await executor.execute('export_project', {
-      outputPath: 'C:\\out\\reel.mp4',
+      outputPath: OUT,
     });
 
     expect(result.success).toBe(false);
@@ -60,7 +74,7 @@ describe('export_project', () => {
     const { executor } = harness(runExport);
 
     const result = await executor.execute('export_project', {
-      outputPath: 'C:\\out\\reel.mp4',
+      outputPath: OUT,
     });
 
     expect(result.success).toBe(false);
@@ -86,7 +100,7 @@ describe('export_project', () => {
     });
     const { executor } = harness(runExport);
 
-    await executor.execute('export_project', { outputPath: 'C:\\out\\reel.mp4' });
+    await executor.execute('export_project', { outputPath: OUT });
 
     expect(captured).toMatchObject({ format: 'mp4', quality: 'normal' });
   });
@@ -102,7 +116,7 @@ describe('export_project', () => {
     const { executor } = harness(runExport);
 
     const result = await executor.execute('export_project', {
-      outputPath: 'C:\\out\\reel.mp4',
+      outputPath: OUT,
       format: 'mov',
       quality: 'high',
       hdr: 'hlg',
@@ -122,7 +136,7 @@ describe('export_project', () => {
     const { executor } = harness(runExport);
 
     const result = await executor.execute('export_project', {
-      outputPath: 'C:\\out\\reel.mp4',
+      outputPath: OUT,
       hdr: 'sdr',
     });
 
@@ -140,7 +154,7 @@ describe('export_project', () => {
     const { executor } = harness(runExport);
 
     const result = await executor.execute('export_project', {
-      outputPath: 'C:\\out\\reel.mp4',
+      outputPath: OUT,
     });
 
     expect(result.success).toBe(true);
@@ -153,7 +167,7 @@ describe('export_project', () => {
     const { executor } = harness(runExport);
 
     const result = await executor.execute('export_project', {
-      outputPath: 'C:\\out\\reel.mp4',
+      outputPath: OUT,
       hdr: 'blue',
     });
 
@@ -167,7 +181,7 @@ describe('export_project', () => {
     const { executor } = harness(runExport);
 
     const result = await executor.execute('export_project', {
-      outputPath: 'C:\\out\\reel.mp4',
+      outputPath: OUT,
       hdr: 42,
     });
 
