@@ -9,6 +9,12 @@
 
 import { describe, it, expect } from 'vitest';
 import { EditorController } from './controller';
+// Statically, not `await import(...)` inside the test body. The executor's
+// module graph costs 0.7s alone and 6-12s on a loaded runner, and the other 46
+// test files that use ToolExecutor all pay it at collection time, where no test
+// is timed. Loading it inside a test charged that cost to this one test's 5s
+// budget, which is why only the last case here ever timed out.
+import { ToolExecutor } from '../../main/ai/executor';
 
 function controllerWithMedia() {
   const ctrl = new EditorController();
@@ -82,7 +88,6 @@ describe('source-window placement (three-point editing)', () => {
 
   it('agent add_clip accepts source and reports placed ids', async () => {
     const ctrl = controllerWithMedia();
-    const { ToolExecutor } = await import('../../main/ai/executor');
     const executor = new ToolExecutor(ctrl);
     const result = await executor.execute('add_clip', {
       assetId: 'asset-video',
