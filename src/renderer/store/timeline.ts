@@ -302,8 +302,6 @@ export interface TimelineState {
   ) => { assetIds: string[]; clipIds: string[] };
   removeSelectedClips: () => void;
   moveClip: (clipId: string, newStartFrame: Frame, newTrackId?: string) => void;
-  trimClipLeft: (clipId: string, newInPoint: Frame, newDuration: Frame) => void;
-  trimClipRight: (clipId: string, newOutPoint: Frame, newDuration: Frame) => void;
   splitAtPlayhead: () => void;
   rippleDelete: () => void;
   selectGap: (trackId: string, atFrame: Frame) => void;
@@ -1034,20 +1032,6 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     moveClip: (clipId, newStartFrame, newTrackId) => {
       get().controller.moveClip(clipId, Math.max(0, newStartFrame), newTrackId);
-    },
-
-    trimClipLeft: (clipId, newInPoint, newDuration) => {
-      const { controller } = get();
-      const clip = controller.getClips().find((c) => c.id === clipId);
-      if (!clip) return;
-      controller.trimClip(clipId, newInPoint, newInPoint + newDuration);
-    },
-
-    trimClipRight: (clipId, newOutPoint, newDuration) => {
-      const { controller } = get();
-      const clip = controller.getClips().find((c) => c.id === clipId);
-      if (!clip) return;
-      controller.trimClip(clipId, clip.inPoint, newOutPoint);
     },
 
     splitAtPlayhead: () => {
