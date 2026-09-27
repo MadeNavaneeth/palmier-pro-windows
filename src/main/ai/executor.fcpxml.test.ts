@@ -529,6 +529,38 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
   }, REAL_PROCESS_TIMEOUT_MS);
 
   /**
+   * The fourth twin site. BOTH halves renamed to the same custom string used to
+   * read as "the halves agree" and so be mistaken for "the twin is already right",
+   * leaving the twin on `addClip`'s asset filename. The rule now states the name
+   * and the patch compares it against the draft, so all four sites behave alike.
+   */
+  it('gives the twin the shared name when BOTH halves were renamed to it', async () => {
+    const source = avSourceProject(30, 2);
+    const { video: sourceVideo, audio: sourceAudio } = pairOf(source);
+    for (const id of [sourceVideo.id, sourceAudio.id]) {
+      source.applyClipProperties([id], 'Rename both halves', (draft) => {
+        draft.label = 'Take 2';
+        return true;
+      });
+    }
+    // The premise: the file really does give both elements the same name.
+    const xml = exportFcpxml(source.getProject());
+    expect(xml.match(/name="Take 2"/g)).toHaveLength(2);
+
+    const { result, editor } = await importInto(source, 30);
+    expect(result.success).toBe(true);
+    const { video: v, audio: a } = pairOf(editor);
+
+    expect(a.label).toBe('Take 2');
+    // The visual half is untouched by the twin's rename, and the window/speed and
+    // duplication behaviour are the same as every other pair.
+    expect(v.label).toBe('av.mp4');
+    expect(a).toMatchObject({ inPoint: 30, outPoint: 126, speed: 2, linkGroupId: v.linkGroupId });
+    expect(editor.getClips()).toHaveLength(2);
+    expect(undoArity(editor)).toEqual(undoArity((await importInto(avSourceProject(30, 2), 30)).editor));
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  /**
    * A title, in the same style as `avSourceProject` above: on the track, with
    * `styled` deciding whether the adjustment pass writes anything at all.
    */

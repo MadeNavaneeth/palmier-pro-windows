@@ -21,7 +21,11 @@
  * third-party files, narrowed on read. Gaps are implicit —
  * absolute clip offsets already encode spacing. Everything else — grades,
  * blend modes, crop/volume keyframes, effects, groups, non-sequence references —
- * lands in `unsupported` as readable notes so nothing disappears silently.
+ * lands in `unsupported` as readable notes so nothing disappears silently,
+ * including the two spine-element attributes this editor has no field for at
+ * all: a DISABLED `enabled="0"` and an `audioRole` other than the `dialogue`
+ * our writer stamps on every audio element (see
+ * `reportUnrepresentedAttributes` for why the default values are quiet).
  * Shape-ish constructs (generators, shapes, graphics) have no Windows
  * analogue — upstream has no shapes and no FCPXML shape transport — so they
  * are reported and skipped the same way, as is any unknown spine element.
@@ -276,6 +280,46 @@ function hasTimeMapElement(tag: string): boolean {
 
 function reportTimeMap(label: string, reason: string, unsupported: string[]): void {
   unsupported.push(`Asset-clip "${label}" has an unsupported timeMap: ${reason}.`);
+}
+
+/**
+ * Two spine-element attributes this importer never represented, reported here so
+ * a document carrying them cannot lose them without a word.
+ *
+ * `enabled` is the element's OWN on/off state — FCPXML's per-element Enabled
+ * toggle, which our writer derives from the owning track's `visible` rather than
+ * from anything per clip. The model has no per-clip equivalent: `Track.visible`
+ * is the nearest field, and switching a whole track off is not the same
+ * statement as disabling one element inside it, so this is unrepresentable
+ * rather than a missing two-line mapping, and a disabled element imports
+ * enabled. Only a DISABLED element is reported, because `enabled="1"` states
+ * nothing: it is the value our writer puts on every element it emits, so a
+ * per-element note for it would be a note per element on every document we
+ * produce. That is the same rule `transformOf`, `volumeOf` and
+ * `reporting.test.ts`'s "explicitly present but effective default" case already
+ * apply to an identity value written out in full.
+ *
+ * `audioRole` designates which standard audio role a clip carries (dialogue,
+ * narration, music, ambience, effects) for role-based analysis. `Clip` has no
+ * role field at all, so no element can represent it. `dialogue` is the role our
+ * writer puts on every audio element, so reporting it would add one note per
+ * audio element to every round trip and bury every other note in the list; any
+ * other designation is information a third-party document authored and this
+ * editor cannot hold, which is what gets reported.
+ */
+function reportUnrepresentedAttributes(
+  tag: string,
+  element: string,
+  label: string,
+  unsupported: string[],
+): void {
+  if (attr(tag, 'enabled') === '0') {
+    unsupported.push(`${element} "${label}" is disabled (enabled="0"); the disabled state is not imported.`);
+  }
+  const role = attr(tag, 'audioRole');
+  if (role !== null && role !== 'dialogue') {
+    unsupported.push(`${element} "${label}" has audioRole="${role}"; audio roles are not imported.`);
+  }
 }
 
 /**
@@ -642,10 +686,27 @@ function parseAssetClipTag(
   const speed = timeMapPresent && !isAudioOnly
     ? timeMapSpeed(tag, label, unsupported)
     : undefined;
+  if (speed !== undefined && lane < 0) {
+    // A negative lane is an audio lane, and an element there is the exporter's
+    // redundant audio half of a linked A/V group, which both materializers DROP
+    // so the visual element can rebuild the pair (apply.ts `isLinkedAudioHalf`).
+    // The speed parses cleanly and lands in the plan, then goes out with the
+    // element — so say so instead of dropping it silently. Deliberately NOT
+    // honoured: both halves of a group hold ONE source window because
+    // `setClipSpeed` writes the speed and the scaled outPoint onto every linked
+    // partner, so a divergent audio-half retime is a second authority the model
+    // cannot express, and the group already takes its speed from the visual half.
+    reportTimeMap(
+      label,
+      'a linked group takes its speed from its visual element, so an audio-lane timeMap is ignored',
+      unsupported,
+    );
+  }
   const sourceInFrame = speed === undefined
     ? Math.round(startSec * fps)
     : Math.max(0, Math.round(startSec * fps * effectiveSpeed(speed)));
   const base = { lane, startFrame, durationFrames, sourceInFrame };
+  reportUnrepresentedAttributes(tag, 'Asset-clip', label, unsupported);
   if (isAudioOnly) {
     if (timeMapPresent) {
       reportTimeMap(label, 'constant speed is visual-only and is not imported', unsupported);
@@ -698,6 +759,7 @@ function parseTitleTag(
   if (hasTimeMapElement(tag)) {
     reportTimeMap(label, 'constant speed is not imported for titles', unsupported);
   }
+  reportUnrepresentedAttributes(tag, 'Title', label, unsupported);
   const styleRef = attr(tag, 'ref') ?? '';
   const style = stylesById.get(styleRef);
   const text = tag.match(/<text-style[^>]*>([\s\S]*?)<\/text-style>/)?.[1]
@@ -892,6 +954,7 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     if (hasTimeMapElement(tag)) {
       reportTimeMap(label, 'constant speed is not imported for compound clips', unsupported);
     }
+    reportUnrepresentedAttributes(tag, 'Ref-clip', label, unsupported);
 
     const opacity = blendOf(tag);
     const opacityTrack = opacityKeyframesOf(tag, startFrame, fps, label, unsupported);

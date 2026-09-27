@@ -256,6 +256,112 @@ describe('constant speed FCPXML import and apply (#154/#289)', () => {
   });
 });
 
+/**
+ * A USABLE timeMap on the AUDIO half of a linked A/V group.
+ *
+ * The asset carries video, so `isAudioOnly` is false and `timeMapSpeed` parses
+ * the map successfully — the value reaches the plan. But a negative lane is an
+ * audio lane, and the exporter's redundant audio half there is DROPPED by both
+ * materializers (apply.ts `isLinkedAudioHalf`) so the visual element can rebuild
+ * the pair, so the parsed speed went out with the element and no note said so.
+ *
+ * It is still not honoured, deliberately: both halves of a group hold ONE source
+ * window, because `setClipSpeed` writes the speed and the scaled `outPoint` onto
+ * every linked partner. A second element carrying a different retime for the
+ * same picture is a window the model cannot represent and a second authority for
+ * a value the visual half already owns. So the note says the map is ignored and
+ * why — it does not install it.
+ */
+function linkedPairDoc(audioHalfBody: string, visualBody: string): string {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+    '<fcpxml version="1.11"><resources>',
+    '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+    '<asset id="2" name="compound-source.mp4" src="file:///X:/media/compound-source.mp4"'
+    + ' start="0s" duration="10s" hasVideo="1" hasAudio="1" format="r1"/>',
+    '</resources><library><event name="E"><project name="E"><spine>',
+    `<asset-clip ref="2" name="Dialogue" lane="-1" offset="0s" start="0s" duration="1s">`
+    + `${audioHalfBody}</asset-clip>`,
+    `<asset-clip ref="2" name="compound-source.mp4" offset="0s" start="0s" duration="1s">`
+    + `${visualBody}</asset-clip>`,
+    '</spine></project></event></library></fcpxml>',
+  ].join('');
+}
+
+/** A linear 2x map, the one shape `timeMapSpeed` accepts. */
+const LINEAR_2X = '<timeMap frameSampling="floor"><timept time="0s" value="0s" interp="linear"/>'
+  + '<timept time="1s" value="2s" interp="linear"/></timeMap>';
+
+describe('a usable timeMap on a negative-lane element is reported, not honoured', () => {
+  it('names the audio half and says the group takes its speed from the visual element', () => {
+    const plan = parseFcpxml(linkedPairDoc(LINEAR_2X, LINEAR_2X));
+
+    // It DOES parse: the asset has video, so the map is not on an audio-only
+    // element and the recovered speed reaches the plan for both halves.
+    expect(plan.clips.map((clip) => [clip.lane, (clip as { speed?: number }).speed]))
+      .toEqual([[-1, 2], [0, 2]]);
+    // One note, for the audio half alone, and it is the whole of the difference
+    // from the visual element's map, which is honoured and needs no note.
+    expect(plan.unsupported).toEqual([
+      'Asset-clip "Dialogue" has an unsupported timeMap: a linked group takes its speed'
+      + ' from its visual element, so an audio-lane timeMap is ignored.',
+    ]);
+  });
+
+  it('is quiet for a positive lane and for a negative-lane element carrying no map', () => {
+    expect(parseFcpxml(linkedPairDoc('', LINEAR_2X)).unsupported).toEqual([]);
+    expect(parseFcpxml(linkedPairDoc(LINEAR_2X, '')).unsupported).toEqual([
+      'Asset-clip "Dialogue" has an unsupported timeMap: a linked group takes its speed'
+      + ' from its visual element, so an audio-lane timeMap is ignored.',
+    ]);
+  });
+
+  it('reports an UNUSABLE audio-half map once, with the parse reason instead', () => {
+    const malformed = '<timeMap frameSampling="floor"><timept time="0s" value="0s" interp="linear"/>';
+    const plan = parseFcpxml(linkedPairDoc(malformed, LINEAR_2X));
+
+    // Never a second note for the same element: an unusable map fails inside
+    // timeMapSpeed, so there is no recovered speed left for the lane rule to
+    // report a second time.
+    expect(plan.unsupported).toEqual([
+      'Asset-clip "Dialogue" has an unsupported timeMap: could not be parsed as one complete timeMap.',
+    ]);
+    expect(plan.clips.map((clip) => (clip as { speed?: number }).speed)).toEqual([undefined, 2]);
+  });
+
+  it('still gives the twin the VISUAL element\'s speed after the note', () => {
+    // The two halves carry DIFFERENT maps: 2x on the audio half, 4x on the
+    // visual one. The note must not install the audio half's 2x anywhere — the
+    // group, and therefore the twin, takes the visual element's 4x.
+    const fourX = '<timeMap frameSampling="floor"><timept time="0s" value="0s" interp="linear"/>'
+      + '<timept time="1s" value="4s" interp="linear"/></timeMap>';
+    const plan = parseFcpxml(linkedPairDoc(LINEAR_2X, fourX));
+
+    const target = new EditorController();
+    target.addMedia({
+      id: 'imported', path: 'X:/media/compound-source.mp4', filename: 'compound-source.mp4',
+      type: 'video', duration: 300, width: 1920, height: 1080, fileSize: 1,
+      addedAt: '2026-08-26T00:00:00.000Z', audioCodec: 'aac', channels: 2, sampleRate: 48000,
+    });
+    const result = applyFcpxmlPlan(
+      target,
+      plan,
+      new Map([['X:/media/compound-source.mp4', 'imported']]),
+      new Map([['X:/media/compound-source.mp4', { width: 1920, height: 1080 }]]),
+    );
+
+    // The duplication fix: two elements in the file, ONE pair on the timeline.
+    expect(result.placedClips).toBe(1);
+    const clips = target.getClips();
+    expect(clips).toHaveLength(2);
+    expect(clips.filter((clip) => clip.type === 'video')).toHaveLength(1);
+    expect(clips.filter((clip) => clip.type === 'audio')).toHaveLength(1);
+    for (const clip of clips) {
+      expect(clip).toMatchObject({ speed: 4, inPoint: 0, outPoint: 120, durationFrames: 30 });
+    }
+  });
+});
+
 describe('FCPXML speed omission reporting', () => {
   it('reports a non-unit speed when the visual source has no usable duration', () => {
     const editor = new EditorController();

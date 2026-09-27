@@ -195,27 +195,33 @@ export function importedClipPatch(
 }
 
 /**
- * The NAME a linked group's twin carries: its OWN half's when the document names
- * the two halves differently. `label` is declared on both plan types and the
- * exporter writes each half's own `name` into its own element, and the model holds
- * two clips with two names — so there is nothing to arbitrate here, the same way
- * there is nothing to arbitrate the level.
+ * The NAME a linked group's twin carries: its OWN half's, always. `label` is
+ * declared on both plan types and the exporter writes each half's own `name`
+ * into its own element, and the model holds two clips with two names — so there
+ * is nothing to arbitrate here, the same way there is nothing to arbitrate the
+ * level. The rule makes NO judgement about whether that name needs applying;
+ * that is the caller's, and it is a different question.
  *
- * Null when the two halves agree, or when the half carries no name. That is what
- * makes the rename INERT: `addClip` names the rebuilt twin after the asset, and a
- * group whose halves were never renamed independently already has the right name
- * there, so an unrenamed group contributes nothing at all — no twin entry, no
- * `applyClipProperties` call, no history, byte-identical to before.
+ * Null only when there is no half to read or it carries no name.
  *
- * The one miss is a sub-case that was already lost: both halves renamed to the
- * same custom name read as "agree" here, so the flat and root surfaces keep
- * `addClip`'s asset filename for the twin. Nothing regresses; the name simply
- * stays as it was.
+ * Inertness is therefore NOT decided here. Deciding it against the OTHER half's
+ * name conflated two different questions — "is the twin already right?" with "is
+ * the name already correct on the element I can see?" — and the pair where both
+ * halves were renamed to the SAME custom string failed the first while passing
+ * the second: the halves agreed, so this returned null, while the twin `addClip`
+ * had actually built still carried the asset filename. The two callers that can
+ * see the twin settle it against the twin itself. The three that patch an
+ * `addClip`-created twin pass the draft to `linkedTwinPatch`, which COMPARES
+ * rather than assigns — `addClip` names every placed clip after its asset
+ * (EditorController.createPlacedClip), and an unrenamed group's half carries that
+ * same asset filename, so the comparison finds nothing to record and
+ * `applyClipProperties` pushes no command. The nested surface builds its twin
+ * and hands the literal over, so this contributor stands down there instead.
  */
 function linkedTwinLabel(element: ImportedClip, half: ImportedVideoClip | null): string | null {
   // A title has no asset, so it belongs to no group and has no twin.
   if (element.kind === 'title') return null;
-  if (half === null || half.label === '' || half.label === element.label) return null;
+  if (half === null || half.label === '') return null;
   return half.label;
 }
 
@@ -241,9 +247,12 @@ function linkedTwinLabel(element: ImportedClip, half: ImportedVideoClip | null):
  *                 it gave it and pass nothing, which is correct — that is a name
  *                 this patch may have to correct.
  *
- * Null when none of the three contributes, so a group carrying no speed, no
- * `adjust-volume` and no distinct name on its audio element registers nothing and
- * adds no history.
+ * Non-null whenever any of the three contributes, and NOT a claim that the twin
+ * needs changing: the name is compared against the draft below, so a twin
+ * `addClip` already named correctly leaves `applyClipProperties` with nothing to
+ * record and no command is pushed. A group carrying no speed, no `adjust-volume`
+ * and no name on its audio element still returns null, so it registers nothing
+ * and adds no history.
  */
 function linkedTwinPatch(
   element: ImportedClip,
@@ -259,7 +268,10 @@ function linkedTwinPatch(
     speed?.(draft);
     level?.(draft);
     // Compared, not assigned: the rebuilt twin already carries a name, and when it
-    // is already this one `applyClipProperties` must find nothing to record.
+    // is already this one `applyClipProperties` must find nothing to record. This
+    // comparison — against what the twin HOLDS, not against the other half's name
+    // — is what makes an unrenamed group inert, and what lets a group whose halves
+    // were renamed to the same string be corrected rather than mistaken for one.
     if (label !== null && draft.label !== label) draft.label = label;
   };
 }

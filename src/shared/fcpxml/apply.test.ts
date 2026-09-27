@@ -929,3 +929,135 @@ describe('a linked twin keeps its OWN name, not its visual sibling\'s', () => {
     expect(unspeeded.target.getLastCommandDescription()).toBe('replaceClips');
   });
 });
+
+/**
+ * Both halves renamed to the SAME custom name — the sub-case that used to read as
+ * "the halves agree" and so was mistaken for "the twin is already right".
+ *
+ * Those are different questions, and the old rule answered the second by asking
+ * the first. It worked by accident: `addClip` names a placed clip after its asset
+ * (EditorController.createPlacedClip), so an untouched group's audio half already
+ * carries the asset filename the twin was given. It failed the moment the user
+ * renamed BOTH halves, because then the halves agree AND the twin is still on the
+ * asset filename. The rule now states the name and leaves the decision to the
+ * caller, which compares against what the twin actually holds.
+ *
+ * All three of this module's twin sites are covered, each by the mechanism it
+ * really uses — two PATCH an `addClip` twin, one BUILDS it — so a regression in
+ * one cannot be covered for by the other two.
+ */
+describe('both halves renamed to the same custom name', () => {
+  /** One 2x pair whose VISUAL half and TWIN both carry `name`. */
+  function sameNamePair(name: string, startFrame: number, inPoint: number): EditorController {
+    const source = new EditorController();
+    addCompoundSourceMedia(source, 'compound-source', true);
+    const videoId = addCompoundSourceClip(source, { startFrame, durationFrames: 30, inPoint });
+    source.setClipSpeed(videoId, 2);
+    const clips = source.getClips();
+    const twin = twinOf(clips, clips.find((clip) => clip.id === videoId)!);
+    for (const id of [videoId, twin.id]) {
+      source.applyClipProperties([id], 'Rename both halves', (draft) => {
+        draft.label = name;
+        return true;
+      });
+    }
+    return source;
+  }
+
+  it('gives the twin that name on the flat path, the compound root and inside a nest', () => {
+    const NAME = 'Take 2';
+
+    // (1) FLAT — the patched surface through `applyImportedAdjustments`.
+    const flat = sameNamePair(NAME, 0, 15);
+    const flatPair = twinOf(flat.getClips(), flat.getClips().find((c) => c.type === 'video')!);
+    expect(flatPair.label).toBe(NAME);
+    // Both elements really do carry the same name in the file, which is the
+    // premise the old gate got wrong.
+    const flatPlan = parseFcpxml(exportFcpxml(flat.getProject()));
+    expect(flatPlan.clips.map((clip) => (clip.kind === 'title' ? '' : clip.label)))
+      .toEqual([NAME, NAME]);
+
+    const flatTarget = importTarget('imported-compound-source', true);
+    const flatResult = applyFcpxmlPlan(
+      flatTarget, flatPlan, assetMap('imported-compound-source'), sourceDims(),
+    );
+    expect(flatResult.placedClips).toBe(1);
+    const flatClips = flatTarget.getClips();
+    expect(flatClips).toHaveLength(2);
+    const flatVideo = flatClips.find((clip) => clip.type === 'video')!;
+    expect(twinOf(flatClips, flatVideo).label).toBe(NAME);
+    // The visual half still comes back under `addClip`'s asset filename, as it
+    // does for every other document; the name is the twin's own, not inherited.
+    expect(flatVideo.label).toBe('compound-source.mp4');
+    // The level and window fixes are untouched by the rename.
+    expect(twinOf(flatClips, flatVideo)).toMatchObject({
+      speed: 2, inPoint: 15, outPoint: 75, volume: 1,
+    });
+
+    // (2) COMPOUND ROOT and (3) NESTED — a root pair and a nested pair, each
+    // renamed on BOTH halves, in one document. The root half is patched through
+    // `addLinkedTwinPatch`; the nested half is BUILT by the materializer, so the
+    // two really are different mechanisms.
+    const nest = sameNamePair(NAME, 0, 15);
+    const nestedVideoId = addCompoundSourceClip(nest, { startFrame: 200, durationFrames: 30, inPoint: 0 });
+    nest.setClipSpeed(nestedVideoId, 2);
+    const nestedClips = nest.getClips();
+    const nestedTwin = twinOf(nestedClips, nestedClips.find((clip) => clip.id === nestedVideoId)!);
+    for (const id of [nestedVideoId, nestedTwin.id]) {
+      nest.applyClipProperties([id], 'Rename both halves', (draft) => {
+        draft.label = 'Take 3';
+        return true;
+      });
+    }
+    nest.nestClips([nestedVideoId], { name: 'Same Name Nest' });
+
+    const nestPlan = parseFcpxml(exportFcpxml(nest.getProject()));
+    const nestTarget = importTarget('imported-compound-source', true);
+    const nestResult = applyFcpxmlPlan(
+      nestTarget, nestPlan, assetMap('imported-compound-source'), sourceDims(),
+    );
+    // The duplication fix on both compound sites: 2 visual elements, 2 pairs.
+    expect(nestResult.placedClips).toBe(2);
+    const imported = nestTarget.getProject();
+    expect(imported.timeline.clips.filter((clip) => clip.type === 'video')).toHaveLength(1);
+    expect(imported.timeline.clips.filter((clip) => clip.type === 'audio')).toHaveLength(1);
+
+    const rootVideo = imported.timeline.clips.find((clip) => clip.type === 'video')!;
+    const rootTwin = twinOf(imported.timeline.clips, rootVideo);
+    expect(rootTwin.label).toBe(NAME);
+    expect(rootVideo.label).toBe('compound-source.mp4');
+    expect(rootTwin).toMatchObject({ speed: 2, inPoint: 15, outPoint: 75 });
+
+    const carrier = imported.timeline.clips.find((clip) => clip.type === 'compound')!;
+    const nestedTimeline = imported.timelines![carrier.compoundTimelineId!]!;
+    expect(nestedTimeline.clips).toHaveLength(2);
+    const leafVideo = nestedTimeline.clips.find((clip) => clip.type === 'video')!;
+    const leafTwin = twinOf(nestedTimeline.clips, leafVideo);
+    expect(leafTwin.label).toBe('Take 3');
+    // The nested surface BUILDS both halves, so the visual one carries the
+    // document's own name for it too — which is why this site was already right
+    // and the two patched ones were not.
+    expect(leafVideo.label).toBe('Take 3');
+    expect(leafTwin).toMatchObject({ speed: 2, inPoint: 0, outPoint: 60 });
+  });
+
+  it('costs the same-name pair no undo step beyond the differently-renamed one', () => {
+    // The inertness decision moved from "the halves agree" to "the twin already
+    // holds this name", so the arity is what has to prove it is still inert: an
+    // unrenamed group must keep pushing nothing at all.
+    const sameName = importFlatProject(sameNamePair('Take 2', 0, 15));
+    const renamed = importFlatProject(linkedPairWithTwin({ label: 'Dialogue' }).source);
+    const matching = importFlatProject(linkedSourceProject(2));
+    const unspeeded = importFlatProject(linkedSourceProject());
+
+    const renamedArity = undoArity(renamed.target);
+    expect(renamedArity).toEqual([
+      'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
+    ]);
+    expect(undoArity(sameName.target)).toEqual(renamedArity);
+    expect(undoArity(matching.target)).toEqual(renamedArity);
+    // No speed, no level, no rename at all: the last command is still the trim's,
+    // so an ordinary import adds no adjustment command and no history.
+    expect(unspeeded.target.getLastCommandDescription()).toBe('replaceClips');
+  });
+});

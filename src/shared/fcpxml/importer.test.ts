@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Project } from '../types/project';
+import { EditorController } from '../editor/controller';
 import { exportFcpxml } from './exporter';
 import {
   isImportedCompoundClip,
@@ -125,6 +126,164 @@ describe('#154 round trip', () => {
     const parsedGap = parseFcpxml(withGap);
     expect(parsedGap.unsupported).toHaveLength(0);
     expect(parsedGap.clips.every((c) => c.startFrame >= 0)).toBe(true);
+  });
+});
+
+/**
+ * `enabled` and `audioRole` are the two spine-element attributes this editor has
+ * no field for at all, so they are reported rather than dropped without a word.
+ *
+ * Both are calibrated against what the FORMAT and OUR OWN WRITER actually
+ * express, because a per-element note for a value every element carries is a note
+ * per element on every document and would bury every other omission in the list:
+ *
+ * - `enabled` is the element's own on/off state. `enabled="1"` is what the writer
+ *   puts on every element it emits, so it states nothing; only a DISABLED element
+ *   is reported. The model has no per-clip enabled flag either — `Track.visible`
+ *   is the nearest field and switching a whole track off is not the same
+ *   statement as disabling one element — so this is unrepresentable, not a
+ *   missing mapping.
+ * - `audioRole` designates which standard audio role a clip carries.
+ *   `Clip` has no role field. `dialogue` is what the writer puts on EVERY audio
+ *   element, so it is the quiet case; any other designation is information a
+ *   third-party document authored and this editor cannot hold.
+ */
+describe('#154 unrepresentable spine-element attributes', () => {
+  const spine = (attrs: string, body = ''): string => [
+    '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+    '<fcpxml version="1.11"><resources>',
+    '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+    '<asset id="2" name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s" duration="10s"'
+    + ' hasVideo="1" hasAudio="1" format="r1"/>',
+    '<asset id="3" name="music.wav" src="file:///X:/media/music.wav" start="0s" duration="10s" hasAudio="1"/>',
+    '</resources><library><event name="E"><project name="E"><spine>',
+    `<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s"${attrs}>${body}</asset-clip>`,
+    '</spine></project></event></library></fcpxml>',
+  ].join('');
+
+  it('reports a DISABLED element and a non-default audio role, verbatim', () => {
+    expect(parseFcpxml(spine(' enabled="0"')).unsupported).toEqual([
+      'Asset-clip "Take 1" is disabled (enabled="0"); the disabled state is not imported.',
+    ]);
+    expect(parseFcpxml(spine(' audioRole="music"')).unsupported).toEqual([
+      'Asset-clip "Take 1" has audioRole="music"; audio roles are not imported.',
+    ]);
+    // Both on one element, both reported, in the order they are read.
+    expect(parseFcpxml(spine(' enabled="0" audioRole="narration"')).unsupported).toEqual([
+      'Asset-clip "Take 1" is disabled (enabled="0"); the disabled state is not imported.',
+      'Asset-clip "Take 1" has audioRole="narration"; audio roles are not imported.',
+    ]);
+  });
+
+  it('is quiet for the values our own writer puts on every element', () => {
+    // The premise, pinned on the XML itself: these are exactly the values
+    // `renderAsset`/`renderTitle`/`renderCompound` write.
+    expect(parseFcpxml(spine(' enabled="1" audioRole="dialogue"')).unsupported).toEqual([]);
+    // Absent, which is the same two statements.
+    expect(parseFcpxml(spine('')).unsupported).toEqual([]);
+  });
+
+  it('reports the same two attributes on a title and on a ref-clip', () => {
+    const withTitle = [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      '<text-style-def id="ts1"><text-style font="sans-serif" fontSize="50"'
+      + ' fontColor="#FFFFFF" alignment="CENTER"/></text-style-def>',
+      '</resources><library><event name="E"><project name="E"><spine>',
+      '<title ref="ts1" name="Cap" lane="0" offset="0s" start="0s" duration="1s" enabled="0">'
+      + '<text><text-style ref="ts1">Hello</text-style></text></title>',
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+    expect(parseFcpxml(withTitle).unsupported).toEqual([
+      'Title "Cap" is disabled (enabled="0"); the disabled state is not imported.',
+    ]);
+
+    const withCarrier = [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      '<asset id="2" name="clip.mp4" src="file:///X:/media/clip.mp4" start="0s" duration="10s" hasVideo="1"/>',
+      '<media id="nest1" name="Nest"><sequence format="r1" duration="1s" tcStart="0s">',
+      '<spine><gap name="Timeline" offset="0s" start="0s" duration="1s">',
+      '<asset-clip ref="2" name="Inner" lane="1" offset="0s" start="0s" duration="1s"/>',
+      '</gap></spine></sequence></media>',
+      '</resources><library><event name="E"><project name="E"><spine>',
+      '<ref-clip ref="nest1" name="Nest" lane="1" offset="0s" start="0s" duration="1s"'
+      + ' enabled="0" audioRole="sfx"/>',
+      '</spine></project></event></library></fcpxml>',
+    ].join('');
+    // The carrier itself imports, so the two notes describe a clip that DOES
+    // arrive without them.
+    const carrierPlan = parseFcpxml(withCarrier);
+    expect(carrierPlan.sequences?.[0]?.clips).toHaveLength(1);
+    expect(carrierPlan.unsupported).toEqual([
+      'Ref-clip "Nest" is disabled (enabled="0"); the disabled state is not imported.',
+      'Ref-clip "Nest" has audioRole="sfx"; audio roles are not imported.',
+    ]);
+  });
+
+  it('adds nothing to a real exported document, flat or compound', () => {
+    // The calibration, measured rather than asserted: a palmier project round
+    // trips with an EMPTY unsupported list, which is what keeps the amber
+    // "Not imported" box meaningful. The flat writer stamps audioRole="dialogue"
+    // on every audio element and the compound writer stamps enabled="1" on every
+    // element, so an uncalibrated report would fire here and on every user import.
+    const flat = exportFcpxml(fixtureProject());
+    expect(flat).toContain('audioRole="dialogue"');
+    expect(parseFcpxml(flat).unsupported).toEqual([]);
+
+    const editor = new EditorController();
+    editor.addMedia({
+      id: 'v', path: 'C:/media/footage.mp4', filename: 'footage.mp4', type: 'video',
+      duration: 60, width: 1920, height: 1080, fileSize: 1, addedAt: '2026-08-26T00:00:00.000Z',
+      audioCodec: 'aac', channels: 2, sampleRate: 48000,
+    });
+    const leaf = editor.addClip({ assetId: 'v', trackId: 'v1', startFrame: 0, durationFrames: 30 });
+    editor.trimClip(leaf, 15, 45);
+    editor.nestClips([leaf], { name: 'Nest' });
+    const compound = exportFcpxml(editor.getProject());
+    expect(compound).toContain('enabled="1"');
+    expect(parseFcpxml(compound).unsupported).toEqual([]);
+  });
+
+  it('still reports a disabled element in a document our writer produced', () => {
+    // `enabledFor` is the COMPOUND writer's only source of `enabled` — it reads the
+    // owning track's `visible` — and the flat writer omits the attribute
+    // entirely. So a hidden track inside a nest is what puts `enabled="0"` in a
+    // file, and the materializers synthesize fresh visible tracks, so the state
+    // is genuinely lost and the note is the only trace of it.
+    const project = fixtureProject();
+    project.timeline.tracks[2]!.visible = false;
+    const flatXml = exportFcpxml(project);
+    expect(flatXml).not.toContain('enabled="0"');
+
+    const editor = new EditorController();
+    editor.addMedia({
+      id: 'v', path: 'C:/media/footage.mp4', filename: 'footage.mp4', type: 'video',
+      duration: 60, width: 1920, height: 1080, fileSize: 1, addedAt: '2026-08-26T00:00:00.000Z',
+    });
+    const leaf = editor.addClip({ assetId: 'v', trackId: 'v1', startFrame: 0, durationFrames: 30 });
+    editor.trimClip(leaf, 15, 45);
+    editor.nestClips([leaf], { name: 'Nest' });
+    const nested = editor.getProject().timelines!;
+    const nestId = Object.keys(nested)[0]!;
+    nested[nestId]!.tracks[0]!.visible = false;
+    const compound = exportFcpxml(editor.getProject());
+    expect(compound).toContain('enabled="0"');
+
+    const plan = parseFcpxml(compound);
+    // Measured on that real export: the leaf AND the carrier that holds it both
+    // carry `enabled="0"`, so both are named. Two notes for one hidden track, not
+    // one per element in the document — the calibration above is what keeps it
+    // there instead of on every import.
+    expect(plan.unsupported).toEqual([
+      'Asset-clip "footage.mp4" is disabled (enabled="0"); the disabled state is not imported.',
+      'Ref-clip "Nest" is disabled (enabled="0"); the disabled state is not imported.',
+    ]);
+    // The clips themselves still arrive: the note reports the state, it does not skip.
+    expect(plan.sequences?.[0]?.clips).toHaveLength(1);
+    expect(plan.clips).toHaveLength(1);
   });
 });
 
