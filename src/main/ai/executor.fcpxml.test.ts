@@ -230,9 +230,16 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
   /**
    * One trimmed clip over the A/V asset, so `addClip` builds its linked twin.
    * `speed` defaults to 2x, which `setClipSpeed` writes onto BOTH halves;
-   * pass `'none'` for a document that carries no recovered speed.
+   * pass `'none'` for a document that carries no recovered speed. `twinLevel`
+   * writes a level onto the TWIN alone — `applyClipProperties` writes exactly the
+   * ids it is handed and nothing propagates a level across a link, which is what
+   * makes a group whose two halves disagree at the level a reachable state.
    */
-  function avSourceProject(fps: number, speed: number | 'none' = 2): EditorController {
+  function avSourceProject(
+    fps: number,
+    speed: number | 'none' = 2,
+    twinLevel?: { volume?: number; muted?: boolean },
+  ): EditorController {
     const editor = at(fps);
     editor.addMedia({
       id: 'av',
@@ -251,6 +258,14 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     const clipId = editor.addClip({ assetId: 'av', trackId: 'v1', startFrame: 20, durationFrames: 48 });
     editor.trimClip(clipId, 30, 78);
     if (speed !== 'none') editor.setClipSpeed(clipId, speed);
+    if (twinLevel) {
+      const { audio } = pairOf(editor);
+      editor.applyClipProperties([audio.id], 'Twin level', (draft) => {
+        if (twinLevel.volume !== undefined) draft.volume = twinLevel.volume;
+        if (twinLevel.muted !== undefined) draft.muted = twinLevel.muted;
+        return true;
+      });
+    }
     return editor;
   }
 
@@ -416,6 +431,59 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
       'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
     ]);
     expect(spedArity).toEqual(undoArity(plain.editor));
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  /**
+   * The twin's LEVEL is the one thing a linked group does not share: nothing
+   * propagates `volume`/`muted` across a link, so the exporter writes the twin's
+   * `adjust-volume` on the negative-lane element that the materializer drops in
+   * order to let the visual element re-derive the pair. The level has to come off
+   * that element, and the sibling's unity is not a substitute.
+   */
+  it('gives the linked twin its OWN level, not its visual sibling\'s', async () => {
+    const source = avSourceProject(30, 2, { volume: 0.25 });
+    const sourcePair = pairOf(source);
+    expect(sourcePair.video).toMatchObject({ volume: 1, muted: false });
+    expect(sourcePair.audio).toMatchObject({ volume: 0.25, muted: false });
+
+    const { result, editor } = await importInto(source, 30);
+    expect(result.success).toBe(true);
+    const { video: v, audio: a } = pairOf(editor);
+
+    expect(a.volume).toBeCloseTo(0.25, 4);
+    expect(a.muted).toBe(false);
+    expect(v.volume).toBe(1);
+    expect(v.muted).toBe(false);
+    // The level does not disturb the group's one shared window.
+    expect(a).toMatchObject({ inPoint: 30, outPoint: 126, speed: 2, linkGroupId: v.linkGroupId });
+    // And the dropped element placed nothing: still one pair, not two.
+    expect(editor.getClips().filter((c) => c.type === 'video')).toHaveLength(1);
+    expect(editor.getClips().filter((c) => c.type === 'audio')).toHaveLength(1);
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('keeps a muted twin muted through the agent too', async () => {
+    const { result, editor } = await importInto(avSourceProject(30, 2, { volume: 0, muted: true }), 30);
+
+    expect(result.success).toBe(true);
+    const { video: v, audio: a } = pairOf(editor);
+    expect(a.muted).toBe(true);
+    expect(a.volume).toBe(0);
+    expect(v.muted).toBe(false);
+    expect(v.volume).toBe(1);
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('costs a leveled pair the same undo arity as an unleveled one', async () => {
+    const leveled = await importInto(avSourceProject(30, 2, { volume: 0.25 }), 30);
+    const unleveled = await importInto(avSourceProject(30, 2), 30);
+
+    // The level rides the element's ONE batch, so it must not add a step: the
+    // literal command lists are identical, which is what keeps the tool's
+    // "Each placement is a separate undo step." receipt true.
+    const leveledArity = undoArity(leveled.editor);
+    expect(leveledArity).toEqual([
+      'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
+    ]);
+    expect(leveledArity).toEqual(undoArity(unleveled.editor));
   }, REAL_PROCESS_TIMEOUT_MS);
 
   /**

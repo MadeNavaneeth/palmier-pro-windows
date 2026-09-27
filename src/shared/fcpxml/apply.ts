@@ -18,6 +18,7 @@ import type { EditorController } from '../editor/controller';
 import type {
   ImportedClip,
   ImportedSequence,
+  ImportedVideoClip,
   ParsedFcpxml,
 } from './importer';
 import { isImportedCompoundClip } from './importer';
@@ -101,6 +102,25 @@ function importedSpeedPatch(
 }
 
 /**
+ * The level half of an imported adjustment, or null when the plan clip carries
+ * neither field. Split out of `importedClipPatch` for the same reason as
+ * `importedSpeedPatch`, with one extra caller: the audio twin of a linked A/V
+ * group owns its own `volume`/`muted`, and the element that rebuilds the pair is
+ * its VISUAL sibling, which cannot supply them — so the level has to be read off
+ * the exporter's own audio element (see `linkedAudioHalfFor`) rather than
+ * inherited. Null when that element carries no `adjust-volume`, which is the
+ * common case, so an unleveled group registers nothing.
+ */
+function importedLevelPatch(
+  clip: ImportedClipFields,
+): ((draft: Clip) => void) | null {
+  if (clip.volume === undefined && clip.muted === undefined) return null;
+  const volume = clip.volume === undefined ? 1 : Math.min(1, Math.max(0, clip.volume));
+  const muted = clip.muted ?? false;
+  return (draft) => { draft.volume = volume; draft.muted = muted; };
+}
+
+/**
  * One applyClipProperties callback carrying every imported adjustment, or
  * null when the plan clip carries none — so an untouched clip adds no undo
  * history. Shared by both materializers (this module and the agent
@@ -129,11 +149,10 @@ export function importedClipPatch(
       sets.push((draft) => { draft.opacityTrack = bounded; });
     }
   }
-  if (clip.volume !== undefined || clip.muted !== undefined) {
-    const volume = clip.volume === undefined ? 1 : Math.min(1, Math.max(0, clip.volume));
-    const muted = clip.muted ?? false;
-    sets.push((draft) => { draft.volume = volume; draft.muted = muted; });
-  }
+  // Level and speed stay in the same undoable batch as the rest of the
+  // adjustment, and each registers nothing when the element carries no such field.
+  const levelPatch = importedLevelPatch(clip);
+  if (levelPatch) sets.push(levelPatch);
   if (clip.cropTrim) {
     const crop = cropFromTrim(clip.cropTrim, ctx, sanitizeCrop);
     if (crop) sets.push((draft) => { draft.crop = crop; });
@@ -176,18 +195,54 @@ export function importedClipPatch(
 }
 
 /**
- * Land one imported element's adjustments — the clip's own, plus the speed every
- * linked partner shares — as a SINGLE `applyClipProperties` command, or as
- * nothing at all when the element carries neither, so an untouched element adds
- * no undo history.
+ * What the embedded-audio twin of a linked A/V group inherits from the element
+ * that rebuilt it. TWO sources, because a linked group is two elements in the
+ * file: the group's ONE source window (speed and the `outPoint` it implies, which
+ * `setClipSpeed` writes onto every linked partner) from the VISUAL element, and
+ * the level from the twin's OWN dropped element, which is the only place its
+ * `volume`/`muted` still exist once the visual element rebuilds the pair.
+ * Substituting the sibling's level would be no more correct — the twin owns its
+ * own — and would overwrite a differing level with the sibling's every round trip.
+ *
+ * Speed and level ALONE: the twin is an audio clip and must not inherit this
+ * element's transform, opacity or crop.
+ *
+ * Null when neither half contributes, so a group carrying no speed and no
+ * `adjust-volume` on its audio element registers nothing and adds no history.
+ */
+function linkedTwinPatch(
+  element: ImportedClip,
+  half: ImportedClip | null,
+): ((draft: Clip) => void) | null {
+  const speed = importedSpeedPatch(element);
+  const level = half === null ? null : importedLevelPatch(half);
+  if (!speed && !level) return null;
+  return (draft) => {
+    speed?.(draft);
+    level?.(draft);
+  };
+}
+
+/**
+ * Land one imported element's adjustments — the clip's own, plus what its linked
+ * partner shares — as a SINGLE `applyClipProperties` command, or as nothing at
+ * all when the element contributes neither, so an untouched element adds no undo
+ * history.
  *
  * Both halves of a linked A/V group hold one source window, and
  * `setClipSpeed` writes `speed` and the scaled `outPoint` onto every linked
  * partner, so the embedded-audio twin `addClip` just created gets the speed too.
- * Speed ALONE: the twin is an audio clip and must not inherit this element's
- * transform, opacity or crop. Ridden in the same batch, so a flat import still
- * costs one undo step per imported element — the agent tool's own receipt
- * promises exactly that — and an element with no speed adds no twin entry.
+ * The twin's LEVEL is the one thing it does not share: it comes from the linked
+ * audio element itself, located here through the one shared helper so this
+ * surface and the compound materializer cannot disagree on which element that is.
+ * Both ride the same batch, so a flat import still costs one undo step per
+ * imported element — the agent tool's own receipt promises exactly that — and an
+ * element that contributes neither adds no twin entry at all.
+ *
+ * @param siblings The element list `clip` came from (`plan.clips` for a root
+ *                 document, `sequence.clips` for a nested one): the linked
+ *                 audio element is a sibling of its visual element, and there is
+ *                 no other place to find it.
  *
  * Shared by both import surfaces (this module's flat materializer and the agent
  * executor's inline variant) so a twin cannot come out on a different window
@@ -196,18 +251,19 @@ export function importedClipPatch(
 export function applyImportedAdjustments(
   editor: EditorController,
   clipId: string,
-  clip: ImportedClipFields,
+  clip: ImportedClip,
   ctx: PlacementContext,
+  siblings: readonly ImportedClip[],
 ): void {
   const adjustments = new Map<string, (draft: Clip) => boolean>();
   const patch = importedClipPatch(clip, ctx);
   if (patch) adjustments.set(clipId, patch);
-  const twinSpeedPatch = importedSpeedPatch(clip);
-  if (twinSpeedPatch) {
+  const twinPatch = linkedTwinPatch(clip, linkedAudioHalfFor(clip, siblings));
+  if (twinPatch) {
     for (const linkedId of editor.expandLinkedClipIds([clipId])) {
       if (linkedId === clipId || adjustments.has(linkedId)) continue;
       adjustments.set(linkedId, (draft) => {
-        twinSpeedPatch(draft);
+        twinPatch(draft);
         return true;
       });
     }
@@ -442,14 +498,15 @@ export function applyFcpxmlPlan(
     }
     // Imported adjustments (opacity, opacity animation, speed, volume, crop,
     // geometry) ride one undoable batch; a clip carrying none adds no history.
-    // The batch carries the linked twin's share of the speed too.
+    // The batch carries the linked twin's share of the speed and the level off
+    // the dropped audio element too.
     const dims = sourceDimsByPath.get(clip.assetPath);
     applyImportedAdjustments(editor, clipId, clip, {
       canvasWidth,
       canvasHeight,
       sourceWidth: dims?.width,
       sourceHeight: dims?.height,
-    });
+    }, plan.clips);
     placedClips += 1;
   }
 
@@ -470,14 +527,58 @@ export function applyFcpxmlPlan(
  * second visual clip, and the visual element of the same group rebuilds the
  * whole pair.
  */
-function isLinkedAudioHalf(clip: ImportedClip): boolean {
+function isLinkedAudioHalf(clip: ImportedClip): clip is ImportedVideoClip {
   return clip.kind === 'video' && clip.lane < 0;
 }
 
 function isAudioLaneClip(clip: ImportedClip): boolean {
-  return clip.kind === 'audio'
-    || isLinkedAudioHalf(clip)
-    || (isImportedCompoundClip(clip) && clip.lane < 0);
+  // Same three cases as before — an audio element, a media element on a negative
+  // lane, or a compound carrier on one — with the compound carrier tested first
+  // so `isLinkedAudioHalf`'s predicate narrows the rest.
+  if (isImportedCompoundClip(clip)) return clip.lane < 0;
+  return clip.kind === 'audio' || isLinkedAudioHalf(clip);
+}
+
+/**
+ * The exporter's redundant element for the AUDIO half of the linked group this
+ * visual element belongs to, or null when the document carries none.
+ *
+ * FCPXML has no link id (`linkedClipID` is not round-tripped — the exporter
+ * reports that on every export), so the only identity the file preserves is what
+ * the two elements genuinely share: one asset and one timeline span. Both halves
+ * of a group hold the same `startFrame`/`durationFrames`, so the offset and
+ * duration are the key. Deliberately NOT part of it:
+ *
+ * - the source window, which DISAGREES between the halves on a retimed group:
+ *   the visual element's `start` sits on the timeMap's output axis
+ *   (`retimedSourceStart`) while the audio half's sits on the source axis, so a
+ *   2x pair parses as two different `sourceInFrame`s. The span is what pairs them.
+ * - `label`, because each half writes its OWN name and renaming one of the two
+ *   must not break the pairing.
+ *
+ * Two linked groups over the same asset at the same span are therefore
+ * indistinguishable in the file, and the first match wins. That is a real limit
+ * of the format, not a guess, and it is strictly better than reading nothing.
+ *
+ * Read ONLY to take the twin's own level off the element that is about to be
+ * dropped: the element is still never routed, materialized or re-added (see
+ * `isLinkedAudioHalf`'s callers), so this cannot reintroduce the duplication the
+ * drop exists to prevent.
+ */
+function linkedAudioHalfFor(
+  element: ImportedClip,
+  siblings: readonly ImportedClip[],
+): ImportedClip | null {
+  // A title has no asset, so it belongs to no group.
+  if (element.kind === 'title') return null;
+  for (const candidate of siblings) {
+    if (!isLinkedAudioHalf(candidate) || isImportedCompoundClip(candidate)) continue;
+    if (candidate.assetPath !== element.assetPath) continue;
+    if (candidate.startFrame !== element.startFrame) continue;
+    if (candidate.durationFrames !== element.durationFrames) continue;
+    return candidate;
+  }
+  return null;
 }
 
 function importedLane(clip: ImportedClip): number {
@@ -636,14 +737,15 @@ function materializeCompoundFcpxmlPlan(
   };
   // addClip creates the embedded-audio twin itself, and that twin shares the
   // pair's ONE source window — so it needs the same speed the visual clip gets,
-  // exactly as EditorController.setClipSpeed writes it onto a linked group.
-  const addLinkedSpeedPatch = (clipId: string, clip: ImportedClip): void => {
-    const speedPatch = importedSpeedPatch(clip);
-    if (!speedPatch) return;
+  // exactly as EditorController.setClipSpeed writes it onto a linked group — plus
+  // the level the dropped audio element carried, which is the twin's own.
+  const addLinkedTwinPatch = (clipId: string, clip: ImportedClip): void => {
+    const twinPatch = linkedTwinPatch(clip, linkedAudioHalfFor(clip, plan.clips));
+    if (!twinPatch) return;
     for (const linkedId of editor.expandLinkedClipIds([clipId])) {
       if (linkedId === clipId) continue;
       rootPatches.set(linkedId, (draft) => {
-        speedPatch(draft);
+        twinPatch(draft);
       });
     }
   };
@@ -719,7 +821,8 @@ function materializeCompoundFcpxmlPlan(
     }
     // The visual element of a linked A/V group rebuilds the whole pair — the
     // flat path drops this element for the same reason — so materializing it
-    // here would place the group twice.
+    // here would place the group twice. Its level is still read, by
+    // `addLinkedTwinPatch` below, and discarded with it; never turned into a clip.
     if (isLinkedAudioHalf(clip)) continue;
     const trackId = isAudioLaneClip(clip)
       ? audioLaneTrack.get(lane)
@@ -737,7 +840,7 @@ function materializeCompoundFcpxmlPlan(
       editor.trimClip(clipId, sourceIn, sourceIn + durationFrames);
     }
     addAdjustmentPatch(clipId, clip);
-    addLinkedSpeedPatch(clipId, clip);
+    addLinkedTwinPatch(clipId, clip);
     placedClips += 1;
   }
 
@@ -937,7 +1040,9 @@ function materializeCompoundFcpxmlPlan(
       // The visual element of a linked A/V group rebuilds the whole pair, so
       // the audio element the exporter wrote for it is redundant here — the
       // flat path drops it for the same reason. Materializing it would give
-      // every linked group a second video track and a second pair.
+      // every linked group a second video track and a second pair. Its level is
+      // still read, onto the twin `addClip`-equivalent below, and discarded with
+      // the element; it is never turned into a clip.
       if (isLinkedAudioHalf(imported)) continue;
       const trackId = isAudioLaneClip(imported)
         ? audioTracks.get(lane)
@@ -1009,7 +1114,9 @@ function materializeCompoundFcpxmlPlan(
         // the sibling's adjustment pass. Both halves of a link group hold one
         // source window, and a recovered speed scales it on BOTH — leaving the
         // twin unscaled is a state EditorController.setClipSpeed never writes.
-        importedSpeedPatch(imported)?.(twin);
+        // The level is the twin's OWN, read off the dropped audio element; the
+        // sibling's is not a substitute, because the twin owns its own.
+        linkedTwinPatch(imported, linkedAudioHalfFor(imported, sequence.clips))?.(twin);
         clips.push(twin);
       } else {
         clips.push(clip);

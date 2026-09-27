@@ -2117,15 +2117,16 @@ export class ToolExecutor {
             this.editor.trimClip(newClipId, sourceIn, sourceIn + durationFrames);
           }
           // Imported adjustments ride one undoable batch — the linked twin's
-          // share of the speed included, exactly as the dialog path does
-          // (shared/fcpxml/apply.ts). A clip carrying none adds no history.
+          // share of the speed and its own level included, exactly as the dialog
+          // path does (shared/fcpxml/apply.ts). A clip carrying none adds no
+          // history.
           const dims = dimsByPath.get(clip.assetPath);
           applyImportedAdjustments(this.editor, newClipId, clip, {
             canvasWidth: this.editor.getProject().settings.width,
             canvasHeight: this.editor.getProject().settings.height,
             sourceWidth: dims?.width,
             sourceHeight: dims?.height,
-          });
+          }, plan.clips);
           placed += 1;
         }
 
