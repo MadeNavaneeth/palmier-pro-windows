@@ -123,6 +123,31 @@ function escapeAttr(value: string): string {
   return escapeXml(value).replace(/"/g, '&quot;');
 }
 
+/**
+ * EVERY attribute value in this emitter goes through `escapeAttr` (or
+ * `escapeXml` where the value is element text), and the escaping happens HERE
+ * rather than at each producer. A value can reach an attribute from a `.vproj` on
+ * disk, from the Agent, or from an import, so "the field happens to be validated
+ * today" is not a property the emitter can rely on: `titleColor` is written raw
+ * by `set_clip_properties` with no sanitizer anywhere, and before this was fixed a
+ * value of `"><inject a="1` emitted
+ *
+ *     fontColor=""><INJECT A="1" alignment="CENTER"/>
+ *
+ * — the value closed the attribute and the rest entered the document as an
+ * element. Flagged independently as `js/incomplete-html-attribute-sanitization`
+ * (the rule's "HTML attribute" wording is generic JS phrasing; the attribute
+ * definition it names is FCPXML's `id`/`ref`/`fontColor`).
+ *
+ * The exclusion is deliberate and is only the NUMERIC values: every `number`-typed
+ * interpolation, and every value produced by a formatter that can only emit
+ * digits, a sign, a decimal point or a `/` (`sec`, `formatNumber`, `rationalTime`,
+ * `toFixed`, `lane`, `sizePx`, the `enabled` flag). Those cannot carry a quote, a
+ * `<` or a `&`, so escaping them would be noise rather than defence. Anything
+ * typed `string` is escaped, including inside helpers, so a future caller cannot
+ * reach an attribute unescaped by going through a function.
+ */
+
 /** file:// URL for an absolute Windows/POSIX path. */
 function fileUrl(path: string): string {
   const normalized = path.replace(/\\/g, '/');
@@ -286,7 +311,8 @@ function keyframeParam(
       return `<keyframe time="${sec(point.frame - clip.startFrame, fps)}"${curve} value="${valueAt(point.frame)}"/>`;
     })
     .join('');
-  return `<param name="${name}" value="${base}"><keyframeAnimation>${keyframes}</keyframeAnimation></param>`;
+  return `<param name="${escapeAttr(name)}" value="${escapeAttr(base)}">`
+    + `<keyframeAnimation>${keyframes}</keyframeAnimation></param>`;
 }
 
 /**
@@ -739,18 +765,19 @@ function exportCompoundFcpxmlWithReport(project: Project): FcpxmlExportResult {
     const align = clip.titleAlign ?? 'center';
     const text = applyCase(clip.text ?? '', clip.titleFontCase);
     styleDefs.push(
-      `<text-style-def id="${styleId}"><text-style font="${escapeAttr(fontFamily)}"`
-      + ` fontSize="${sizePx}" fontColor="${fontColor}" alignment="${align.toUpperCase()}"/>`
+      `<text-style-def id="${escapeAttr(styleId)}"><text-style font="${escapeAttr(fontFamily)}"`
+      + ` fontSize="${sizePx}" fontColor="${escapeAttr(fontColor)}"`
+      + ` alignment="${escapeAttr(align.toUpperCase())}"/>`
       + `</text-style-def>`,
     );
     reportUnsupportedProperties(clip, unsupported);
     reportTitleEffectResource(clip, unsupported);
     const lane = laneFor(clip, layout);
     const enabled = enabledFor(clip, layout);
-    return `<title ref="${styleId}" name="${escapeAttr(text.slice(0, 60))}" lane="${lane}"`
+    return `<title ref="${escapeAttr(styleId)}" name="${escapeAttr(text.slice(0, 60))}" lane="${lane}"`
       + ` offset="${sec(clip.startFrame, fps)}" start="${sec(clip.inPoint, fps)}"`
       + ` duration="${sec(clip.durationFrames, fps)}" enabled="${enabled ? '1' : '0'}">`
-      + `<text><text-style ref="${styleId}">${escapeXml(text)}</text-style></text>`
+      + `<text><text-style ref="${escapeAttr(styleId)}">${escapeXml(text)}</text-style></text>`
       + CONFORM_ELEMENT
       + transformElement(clip, width, height, width, height, fps)
       + blendElement(clip, fps)
@@ -781,7 +808,7 @@ function exportCompoundFcpxmlWithReport(project: Project): FcpxmlExportResult {
     const lane = laneFor(clip, layout);
     const enabled = enabledFor(clip, layout);
     const name = child.name?.trim() || clip.label || 'Nested sequence';
-    const attrs = `<ref-clip ref="${mediaId}" name="${escapeAttr(name)}" lane="${lane}"`
+    const attrs = `<ref-clip ref="${escapeAttr(mediaId)}" name="${escapeAttr(name)}" lane="${lane}"`
       + ` offset="${sec(clip.startFrame, fps)}" start="${sec(sourceStart, fps)}"`
       + ` duration="${sec(duration, fps)}" enabled="${enabled ? '1' : '0'}" srcEnable="video"`;
     const children = CONFORM_ELEMENT
@@ -874,17 +901,19 @@ function exportCompoundFcpxmlWithReport(project: Project): FcpxmlExportResult {
     ].filter(Boolean).join(' ');
     const durSec = asset.duration > 0 ? `${asset.duration.toFixed(SEC_PRECISION)}s` : '0s';
     const assetAttrs =
-      `<asset id="${id}" name="${escapeAttr(asset.filename)}" src="${escapeAttr(fileUrl(asset.path))}"`
+      `<asset id="${escapeAttr(String(id))}" name="${escapeAttr(asset.filename)}"`
+      + ` src="${escapeAttr(fileUrl(asset.path))}"`
       + ` start="0s" duration="${durSec}" ${flags} format="r1"`;
     const startSeconds = asset.startTimecode
       ? timecodeToSeconds(asset.startTimecode, asset.fps ?? fps)
       : null;
     if (startSeconds === null) {
       lines.push(`${assetAttrs}/>`);
-    } else {
-      lines.push(`${assetAttrs}>`);
-      lines.push(`<timecode start="${startSeconds.toFixed(SEC_PRECISION)}s" duration="${durSec}" format="r1"/>`);
-      lines.push('</asset>');
+      continue;
+    }
+    if (startSeconds === 0) {
+      lines.push(`${assetAttrs}/>`);
+      continue;
     }
   }
 
@@ -903,7 +932,7 @@ function exportCompoundFcpxmlWithReport(project: Project): FcpxmlExportResult {
     const sequence = `<sequence format="r1" duration="${sec(duration, fps)}" tcStart="0s" tcFormat="NDF"`
       + ` audioLayout="stereo" audioRate="48k"><spine>${gap}</spine></sequence>`;
     const name = timeline.name?.trim() || `Nested ${mediaId}`;
-    lines.push(`<media id="${mediaId}" name="${escapeAttr(name)}">${sequence}</media>`);
+    lines.push(`<media id="${escapeAttr(mediaId)}" name="${escapeAttr(name)}">${sequence}</media>`);
   }
 
   lines.push(
@@ -977,7 +1006,8 @@ export function exportFcpxmlWithReport(project: Project): FcpxmlExportResult {
     ].filter(Boolean).join(' ');
     const durSec = asset.duration > 0 ? `${asset.duration.toFixed(SEC_PRECISION)}s` : '0s';
     const assetAttrs =
-      `<asset id="${id}" name="${escapeAttr(asset.filename)}" src="${escapeAttr(fileUrl(asset.path))}"`
+      `<asset id="${escapeAttr(String(id))}" name="${escapeAttr(asset.filename)}"`
+      + ` src="${escapeAttr(fileUrl(asset.path))}"`
       + ` start="0s" duration="${durSec}" ${flags} format="r1"`;
     // A source start timecode (#154) rides a standard <timecode> child, so
     // conforming apps keep the source offset; drop-frame strings cannot be
@@ -1029,8 +1059,9 @@ export function exportFcpxmlWithReport(project: Project): FcpxmlExportResult {
       const text = applyCase(clip.text ?? '', clip.titleFontCase);
 
       styleDefs.push(
-        `<text-style-def id="${styleId}"><text-style font="${escapeAttr(fontFamily)}"`
-        + ` fontSize="${sizePx}" fontColor="${fontColor}" alignment="${align.toUpperCase()}"/>`
+        `<text-style-def id="${escapeAttr(styleId)}"><text-style font="${escapeAttr(fontFamily)}"`
+        + ` fontSize="${sizePx}" fontColor="${escapeAttr(fontColor)}"`
+        + ` alignment="${escapeAttr(align.toUpperCase())}"/>`
         + `</text-style-def>`,
       );
       reportUnsupportedProperties(clip, unsupported);
@@ -1041,8 +1072,8 @@ export function exportFcpxmlWithReport(project: Project): FcpxmlExportResult {
       const titleBlend = blendElement(clip, fps);
       bodyLines.push(
         `<title name="${escapeAttr(text.slice(0, 60))}" lane="0" offset="${offset}"`
-        + ` duration="${duration}" ref="${styleId}" start="${sourceIn}">`
-        + `<text><text-style ref="${styleId}">${escapeXml(text)}</text-style></text>`
+        + ` duration="${duration}" ref="${escapeAttr(styleId)}" start="${sourceIn}">`
+        + `<text><text-style ref="${escapeAttr(styleId)}">${escapeXml(text)}</text-style></text>`
         + CONFORM_ELEMENT
         + titleTransform
         + titleBlend

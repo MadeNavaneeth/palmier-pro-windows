@@ -338,17 +338,494 @@ the nested sequence and `import_fcpxml`, with undo arity unchanged and the
 duplication counts, twin speed, twin level and differently-renamed twin name
 all still asserted.
 
-**Recorded, not fixed:** the same audit found that a static `<adjust-color>`
-(and the rest of the `adjust-*` family) is read for nothing and reported for
-nothing, so the importer's own header claim that grades "land in
-`unsupported`" holds for `<effect-ref>`/`<effect>` only; that `adjust-blend
-mode="..."` is ignored, so a third-party blend mode is a silent drop; and
-that the per-asset `<audioSources>`/`<videoSources>`/`<keywords>`/`<rating>`
-children and the clip-level `<metronome>`/`<rate>`/`<marker>`/`<keyword>`
-children are read for nothing either. All were measured by parsing each
-construct and printing the resulting `unsupported` list, not by reading the
-code. None is a regression, and no disposition changes: PRs #154/#289 stay
-`Partial`.
+**Two of that audit's findings were a different class from the rest, and both
+are now closed — one reported, one REFUSED.** `adjust-blend mode` and
+`adjust-crop mode` are not missing model fields: the first is a **shipped**
+feature (`Clip.blendMode`, twelve W3C modes, live in preview and export)
+arriving unreported, and the second was **actively misread into a wrong
+value**. Both were measured the same way as the rest — parse the construct,
+print `plan.unsupported`, apply it, print the placed clip — and the crop
+finding is worth stating precisely, because the natural guess about what
+`mode` means is wrong. `mode="add"` is not an FCPXML value: Apple's DTD makes
+the attribute `#REQUIRED` and enumerates it `(trim | crop | pan)`, and
+documents the element as holding "an optional adjustment for each crop mode,
+although only one mode is active", i.e. `crop-rect?`, `trim-rect?` and
+`(pan-rect, pan-rect)?` may all be present with one live. So the wrong-crop
+path is not an exotic mode, it is a **valid** `mode="crop"` document carrying
+an inactive `<trim-rect>`: the old regex took the first `trim-rect` in the
+block whatever the mode said, and placed `crop {left 0.169, right 0.056, top
+0.2, bottom 0.05}` on a clip the document says is not cropped that way.
+`cropTrimOf` now applies `trim` and refuses `crop` (a scale-in, not an edge
+trim), `pan` (a Ken Burns start/end pair, and our crop is one static edge
+trim), any value outside the enumeration, and a missing mode — which the DTD
+forbids and the old code silently assumed was `trim`. Each names the value
+found and applies no crop; `trim` still applies its rect unchanged, and the
+crop-keyframe note no longer claims a "base crop kept" for a refused block.
+Blend `mode` is reported, never honoured, because `<!ATTLIST adjust-blend
+mode CDATA #IMPLIED>` is an **open** enumeration — the DTD publishes no value
+list, so honouring it is gated on finding a verified mapping rather than
+assumed, the same stance the exporter already took — and the note says the
+composite is dropped while `amount` still applies as plain opacity.
+
+**The rest of the family is now reported too**, once per document each rather
+than once per element, which is the calibration that makes it safe: our
+writer emits only `adjust-conform`, `adjust-blend@amount`,
+`adjust-transform`, `adjust-crop`, `adjust-volume` and `timeMap`, so a real
+exported document still re-imports with an empty `unsupported` list. The list
+comes from the DTD's `%intrinsic-params-video` / `-audio` / `%timing-params`
+groups: `info-asc-cdl`, `adjust-color`, `adjust-corners`,
+`adjust-stabilization`, `adjust-rollingShutter`, `adjust-loudness`,
+`adjust-noiseReduction`, `adjust-humReduction`, `adjust-EQ`,
+`adjust-matchEQ`, `adjust-panner`, `conform-rate`, `fadeIn`, `fadeOut`.
+Several mirror a feature this editor SHIPS — color grade, EQ, noise
+reduction, fades — which is what made the silence a defect rather than a gap,
+and `conform-rate` is the consequential one, being a retime in the same group
+as `timeMap`, so a document conforming 24p into 30p arrived at normal speed
+with nothing said. `adjust-conform` is deliberately excluded: the writer puts
+it on every visual element, so reporting it would be a note per clip on every
+import. This also **corrects the importer's own header, which claimed grades
+and blend modes "land in `unsupported`" when only `<effect-ref>`/`<effect>`
+did.**
+
+**The remaining unread constructs are now reported too, and one DTD
+correction changed what they are.** The previous note listed them from a 1.4
+DTD read, and the current DTD (Apple publishes it as "DTD for the latest
+Final Cut Pro XML interchange format", version 1.10) settles four of them the
+other way: `asset@audioSources` and `asset@videoSources` are real ATTRIBUTES,
+not the elements that were listed; there is no `asset@hasMarkers` and no
+`asset@matches`; there is no `<keywords>` element; and FCPXML has no
+metronome and no `<rate>` element, so those two earlier withdrawals stand.
+Every name now in `UNREPRESENTED_ELEMENTS` is quoted from that DTD and
+grouped by the group that makes it legal, so coverage can be checked against
+the group rather than the list: the four remaining `%marker_item`s (`marker`,
+`rating`, `keyword`, `analysis-marker` — `chapter-marker` was already in the
+older construct scan, and two notes for one element is worse than one); the
+per-channel and per-role audio components under BOTH generations, since the
+DTD renamed `<audio-source>`/`<audio-aux-source>` (1.4) to
+`<audio-channel-source>`/`<audio-role-source>` (1.10) and a reader must
+report what a document contains, not only the newest name, plus their
+`<mute>` (a time-RANGED output suppression, a different thing from the
+whole-clip `Clip.muted`); the `%intrinsic-params-video` members added after
+the first pass (`adjust-360-transform`, `adjust-reorient`,
+`adjust-orientation`, `adjust-cinematic`, `object-tracker`); the `<asset>`
+children (`media-rep`, `bookmark`, `metadata`); and library organisation
+(`keyword-collection`, `collection-folder`, `smart-collection`,
+`import-options`), which has no timeline content but is still a construct the
+imported project will not have. Element names are matched on an ELEMENT-NAME
+BOUNDARY, so `keyword` cannot also match `keyword-collection`, and
+`filter-video-mask` is deliberately left to the older scan (whose
+`'<filter-video'` needle already covers it) rather than given a second note.
+Attributes are reported only when they state something: a J/L split edit
+(`audioStart`/`audioDuration`, which the model has no field for at all — one
+`inPoint`/`outPoint` pair is the whole clip), a `videoRole` other than the
+`video` default, `useAudioSubroles="1"`, and per ASSET the component and
+colour-management attributes, because which asset is the actionable part.
+`MediaAsset.channels` and `MediaAsset.sampleRate` DO ship, so
+`audioChannels`/`audioRate` are a shipped field not being transported — the
+same class as an unreported `adjust-blend mode`. `srcEnable` is read for
+nothing and is DELIBERATELY not reported: the compound writer puts
+`srcEnable="video"` on every `<ref-clip>` it emits, so a note would fire on
+every palmier round trip. The asset attributes are read per asset rather than
+by a document-wide needle because the compound writer also emits `audioRate`
+on every `<sequence>`, which a bare `audioRate` scan would match. Calibration
+pinned on both export paths: a real document this writer produced, carrying
+every adjust element, attribute and field it CAN emit, still re-imports with
+an empty `unsupported` list. The module header's mechanism list went from
+four to five to say so.
+
+**TWO THINGS REMAIN OPEN here, and NEITHER is a wrong parse any more.** Both
+wrong parses this list used to carry are now closed and measured below. (1)
+`srcEnable` on a FOREIGN producer's clip set to `audio` or `all` — unreported
+by the calibration decision above, which stands because our own writer puts
+`srcEnable="video"` on every `<ref-clip>` it emits. (2) The ANCHORED form of
+`caption`, `sync-clip`, `audio`, `mc-source` and `sync-source`: at spine level
+`reportSpineElement` already names each one, so only a child of a spine element
+this module consumes whole is a gap, and it is recorded rather than given a
+duplicate note. Also left: a clip-level `tcStart`/`tcFormat`/`modDate` (the
+first duplicates a value already transported at asset level, and all three
+would be a note per clip), the `<format>` colour-management attributes, and
+`asset@auxVideoFlags`. **Channel routing is NOT mapped onto `Clip.pan`, and
+`pan` is the wrong concept for it.** `srcCh`/`outCh` is a ROUTING matrix —
+which source channel feeds which output bus, from `L,R,C,LFE,Ls,Rs,X` — while
+`Clip.pan` is a stereo BALANCE of -1 hard left to +1 hard right, and the
+routing elements also carry their own per-channel
+`adjust-volume`/`adjust-EQ`/`adjust-panner`. Mapping a route onto a balance
+would fabricate a value rather than omit one, and a test asserts the absence:
+the placed clip has no `pan` and no new field. No disposition changes: PRs
+#154/#289 stay `Partial`, and none of this is a regression.
+### #154 — attribute escaping at the FCPXML sink
+
+CodeQL flagged the exporter as `js/incomplete-html-attribute-sanitization`
+(medium, 2 alerts) on PR #30. The alerts surfaced there only because CodeQL
+runs on the `pull_request` event in this repo; every earlier push to `main`
+bypassed CI, so the finding was live long before it was first reported. The
+rule is about HTML, but the defect is the same one: an attribute value built by
+interpolation, with the caller responsible for escaping it.
+
+**The reachable injection was NOT one of the six sites the alert pointed at.**
+The named `id`/`ref` values are all internally generated — asset ids are
+numeric, media ids are `nest<N>`, style ids are `ts<N>` — and compound refs are
+regenerated by `assignCompoundReferences` rather than carried over from the
+imported document, so no foreign id could reach them. What was reachable was
+outside the alert's list: `fontColor`. `Clip.titleColor` is set raw by the Agent
+(`main/ai/executor.ts` `add_title` and the style branch) with no sanitizer, and
+the emitter interpolated it unescaped. Measured, with
+`titleColor = '"><inject a="1'`, the pre-fix export was
+
+```xml
+<text-style-def id="ts1"><text-style font="sans-serif" fontSize="97"
+  fontColor=""><INJECT A="1" alignment="CENTER"/></text-style-def>
+```
+
+i.e. a caller-controlled value closed the attribute and opened a new element.
+The importer is a second source of the same value, since it reads
+`text-style@fontColor` straight into the title style, so a hostile document
+could plant it in a project that later exported.
+
+**The fix is at the sink, for every string attribute, not only the six.** All
+100 attribute interpolations in `exporter.ts` were audited by hand. The sinks
+that carry a string now go through `escapeAttr`: the keyframe `param` `name`
+and `value`, and on both title paths `text-style-def@id`, `text-style@ref`,
+`title@ref`, `fontColor` and `alignment`, plus the compound `ref-clip@ref`,
+`<media>@id` and both `asset@id` writers. `alignment` is a union type today and
+so is not injectable, but it is escaped like any other string because a type is
+not a trust boundary. Numeric and formatter outputs (`sec`, `formatNumber`,
+`rationalTime`, `toFixed`, lane, size, the `enabled` flag) are deliberately NOT
+escaped: they cannot contain `"`, `<` or `&`, and escaping them would be noise
+a reader has to verify. `fontFamily` and the clip/text names were already
+escaped where they are assigned and are unchanged. `escapeAttr` itself already
+handled all four characters correctly, so the defect was never in the escaper.
+
+**The mutation check is what makes the split between the two honest.** Reverting
+only `fontColor` fails exactly the two hostile-colour tests. Reverting the other
+seven id/ref escapes as well fails NOTHING — 186/186 still pass — because no test
+can place a hostile value in a generated id, and that is the whole point: those
+escapes are defence against the next refactor that lets an id carry a value, not
+a fix for a hole that is open today. Claiming test coverage for them would be
+false, so they are recorded as latent instead.
+
+**Ingest is now hardened as well, because escaping only fixes OUR writer.** A
+foreign document's ids reach the plan and then the Agent's view of the project.
+`sanitizeXmlName` replaces every character outside `[A-Za-z0-9._-]` with `_` at
+all four id/ref sites (`asset@id`, `asset-clip@ref`, `ref-clip@ref`,
+`media@id`) and reports each rewrite, so an import says what it did instead of
+quietly changing an identifier. Both sides of a pair go through the same
+function, so pairing survives. One deliberate deviation from a strict NCName:
+the LEADING character is left unconstrained, because Apple's DTD says `id ID
+#REQUIRED` but Final Cut, Resolve and this repo's own writer all emit NUMERIC
+resource ids, and a stricter reader would rewrite every legitimate document.
+Measured while writing this: this importer's `attr()` does not XML-decode, so a
+producer that wants `"` in an id writes `&quot;` and the plan receives those six
+literal characters — a raw `"` cannot cross the ingest boundary at all. The
+reachable hostile forms are therefore the escaped ones (`&amp;`, and the space
+and `:` a hand-edited file can carry), which is what the tests use. `unsupported`
+strings are new, not reworded, so no existing assertion was touched; a real
+exported document still imports with an empty `unsupported` list.
+
+No disposition changes: PRs #154/#289 stay `Partial`, and a malformed
+pre-existing document is a parse bug (#154, above), not a security one.
+
+### #154 — TWO WRONG PARSES, both now closed
+
+These were the two items this ledger listed as "wrong parses rather than
+omissions, so no note can express them", pinned as current behaviour rather
+than fixed. They are now fixed, because a wrong value cannot be reported after
+the fact — the note would describe a value that was never applied. Each fix was
+measured before and after, on the documents that reach a user.
+
+**(1) A SELF-CLOSING ASSET WAS ABSORBED INTO A LATER MATCH — data loss, and a
+wrong value besides.** `extractTagBlock` and `adjustBlock` shared one regex,
+`<${name}\b[^>]*(?:/>|>[\s\S]*?</${name}>)`, and `[^>]*` is GREEDY. On
+`<asset ... />` it therefore consumed the terminating `/` before the alternation
+was ever offered the `/>` branch, and `>` matched straight after the swallowed
+`/`. So `/>` could only ever match BY BACKTRACKING, which happened to be true
+exactly when no later `</asset>` existed to satisfy the long form instead: a
+self-closing element followed by a paired one of the same name matched all the
+way to that one's `</asset>`.
+
+Measured, on the two-asset and three-asset orderings, assets / clips / notes:
+
+| ordering | before | after |
+| --- | --- | --- |
+| all self-closing (2) | 2 / 2 / 0 | 2 / 2 / 0 |
+| paired first, self-closing 2nd (2) | 2 / 2 / 0 | 2 / 2 / 0 |
+| self-closing first, paired 2nd (2) | **1 / 1 / 1** | 2 / 2 / 0 |
+| interleaved sc, paired, sc (3) | **2 / 2 / 1** (refs `2,4`) | 3 / 3 / 0 |
+| paired, paired, self-closing (3) | 3 / 3 / 0 | 3 / 3 / 0 |
+| `>` inside a quoted attribute value | **0 / 0 / 1** | 1 / 1 / 0 |
+
+The interleaved row is the one worth reading twice: three assets in, two out,
+and it was the MIDDLE one that vanished while the first and last survived — so
+no ordering argument catches it.
+
+**Reachable from a palmier project, and the loss is a wrong value too.** Our
+writer emits a PAIRED asset exactly when the asset carries
+`MediaAsset.startTimecode`, so which asset is paired is decided by clip order.
+Resource ids are assigned in CLIP order, not `media` order, and the exporter
+visits video before audio — so the timecode asset is emitted first whenever it
+is an audio asset or the first video clip, and that is the ONE ordering the old
+regex handled. A timecode on a LATER video clip is what puts a self-closing asset
+ahead of a paired one. Measured on that real export: the `tc.mp4` asset and its
+clip were both gone, its clip refused with `Asset-clip "Shot" references
+unknown resource 3.`, **and the surviving `plain.mp4` asset was handed
+`tc.mp4`'s `01:00:00:00`** — the swallowed merged block's `id` paired with the
+other asset's `<timecode>` child. So this was a loss AND a fabricated timecode,
+which is why a `timecode` on a project could come back attached to the wrong
+clip.
+
+**The `>` case was checked rather than assumed, and a foreign document CAN carry
+it.** XML forbids only `<` and `&` raw in an attribute value, so `name="A > B"`
+is legal. `[^>]*` stopped at that `>` wherever it was, which left no position at
+which either alternative could match, so the whole element was LOST rather than
+mis-parsed — a different failure from the swallow, with the same cause. Our own
+writer escapes `>` at the sink, so this is foreign-input-only.
+
+**The fix is one shared, attribute-aware scanner** (`tagBlockPattern`), used by
+`extractTagBlock`, `adjustBlock` and the two `timeMapSpeed` block matches that
+were a third and fourth copy of the same regex:
+
+    <${name}\b(?:[^>"']|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?</${name}>)
+
+The attribute area is LAZY and the alternation tries `/>` before `>`, so the
+shortest form that can match wins at each step: a self-closing element is
+exactly its own tag, a paired one still ends at the first `</name>`, and a
+quoted value is consumed whole so a `>` inside it cannot end the tag. The same
+defect was latent in `adjustBlock` on its own account — a self-closing
+`<adjust-blend/>` followed by a KEYFRAMED (hence paired) one matched as a single
+block, applying the second's keyframes to the first's static amount — so one
+scanner also removes a third copy of the bug. The `%asset`/asset-def versus
+spine-asset distinction is untouched: `<asset>` is only read inside `<resources>`
+and spine refs are resolved through the asset map, and every caller of the
+extractor (spine, gap, format, event, asset, media, sequence, project) is a
+fixed-name single match whose paired or self-closing form is unaffected.
+
+**(2) A NESTED ADJUSTMENT WAS READ AS THE ELEMENT'S OWN.** `blendOf`,
+`volumeOf`, `cropTrimOf` and `transformOf` each searched the spine element's
+WHOLE tag string, which includes its descendants, so an adjustment inside a
+DIFFERENT element became the parent's. Measured, nested in
+`<audio-channel-source srcCh="1" outCh="L">`:
+
+| nested adjustment | parent's field, before | after |
+| --- | --- | --- |
+| `adjust-volume amount="-6.0206dB"` | `volume 0.4999999950079739` | absent |
+| `adjust-blend amount="0.4"` | `opacity 0.4` | absent |
+| `adjust-crop mode="trim"` | `cropTrim {left 10, top 5, right 0, bottom 0}` | absent |
+| `adjust-transform scale="0.5 0.5"` | `transform {10,10,0.5,0.5,0}` | absent |
+| anchored `<ref-clip>…adjust-volume -20dB` | `volume 0.1`, **no note** | absent, **reported** |
+
+All four DIRECT-child cases are unchanged, which is the point of scoping rather
+than ignoring — those four readers are how the majority of an imported clip's
+look is transported, and the test asserts each still reads.
+
+The fix is a new `directChildBlocks`, which walks tag tokens with a DEPTH count
+and returns only depth-0 children, so "this element adjusts itself" is
+separated from "something this element contains adjusts itself". `adjustBlock`
+is now `directChildBlocks(tag, name)[0]`, and the three readers that had their
+own inline patterns go through it.
+
+**The anchored case is now REPORTED, which is the disposition.** A per-channel or
+anchored sub-clip's adjustment belongs to that element, so it is not applied —
+and once the four readers were scoped, what remained was a document stating
+something this importer cannot express, which is exactly what `unsupported`
+exists to name. `reportNestedAdjustments` emits one note per (container,
+adjustment) pair, e.g. `Asset-clip "Take 1" has a <adjust-volume> inside
+<ref-clip>; a nested adjustment belongs to the element that contains it, so it
+is not applied to this element.` Reported rather than honoured, for the same
+reason channel ROUTING is not mapped onto `Clip.pan`: applying a sub-element's
+adjustment to the parent fabricates a value rather than omitting one.
+
+**One correction to the earlier note, and it would have been expensive.** The
+obvious reading of the anchored row is that a spine-level `<ref-clip>`'s own
+adjustments are the anchored element's and should be refused. They are not:
+**our own writer puts the parent clip's look on the `ref-clip` carrier**
+(`exporter.ts` `renderCompound` emits `adjust-conform`, crop, transform, blend
+and volume as the carrier's children), so refusing them would have stripped the
+look from every compound clip on import. The anchored case is a `ref-clip`
+NESTED INSIDE a clip. `ref-clip` is in `NESTED_ADJUST_CONTAINERS` for that
+reason, and the doc comment says so, because the distinction is invisible in the
+element name.
+
+**Other readers of the same whole-tag-string search, and what was done about
+each.** The audit went past the four named in the original note:
+
+- `reportUnrepresentedAttributes` reads `adjust-blend@mode` via `adjustBlock`, so
+  it is now direct-child scoped for free. A nested blend mode is no longer
+  reported as the clip's own.
+- `opacityKeyframesOf` and `transformKeyframesOf` read `adjust-blend` /
+  `adjust-transform` via `adjustBlock`, so they are scoped too: a nested
+  keyframe animation can no longer become the clip's motion or opacity track.
+- `reportAnimatedElement` and `hasUnclaimedKeyframes` also go through
+  `adjustBlock`. The first is now scoped, which is a fix — a nested keyframed
+  `adjust-volume` no longer reports "this clip animates volume". The second
+  strips the claimed blocks and then asks whether any `<keyframeAnimation` is
+  left ANYWHERE, nested or not, which is the behaviour it wants: an unclaimed
+  keyframe is unclaimed wherever it sits. Left as is, deliberately.
+- `hasTimeMapElement` is a presence test, so nesting cannot change its answer.
+  `timeMapSpeed`'s two block matches were a third and fourth copy of the buggy
+  regex and now use `tagBlockPattern`.
+- `paramsIn` and `keyframesIn` are handed an already-extracted `adjust-*` block
+  and are not affected.
+- `reportUnrepresentedAttributes`'s plain `attr(tag, …)` calls are unaffected:
+  a nested element cannot introduce a same-named attribute on the parent.
+
+**Mutation-checked separately, and the two fix sets do not overlap.** Reverting
+ONLY the scanner fails exactly 3 tests (the ordering table, the `>`-in-a-value
+case, and the real `startTimecode` round trip). Reverting ONLY the direct-child
+scoping and the new report fails exactly 2 (the nested-adjustment table and the
+anchored report). 186/187 pass respectively, so each fix is carried by its own
+tests and neither is standing on the other.
+
+**The module header is corrected.** Its mechanism list went from five to six
+(`reportNestedAdjustments` is the sixth), and it now says plainly that two of
+the mechanisms are the OPPOSITE of reporting — a self-closing element is never
+absorbed into a later match, and an attribute value may legally contain a `>`
+— because a loss is not something a note can describe: the note would have to
+describe an element that was never read.
+
+No disposition changes: PRs #154/#289 stay `Partial`. Neither defect was a
+regression from this branch — both predate it — and no other ledger row moves.
+
+### #154 — TWO PLATFORM DEFECTS, both now closed
+
+Both were found by running the suite on Linux in a `node:24` container while the
+Windows suite was green, which is the only reason either was visible at all. One
+is severe: **FCPXML import silently placed NOTHING for any document with a
+POSIX-rooted `src`, which is every document Final Cut writes.**
+
+**(1) `fileUrlToPath` DESTROYED a POSIX root, so every asset read as offline.**
+The reader was `decoded.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '/')`
+— an unconditional strip of `file:///`. That is right for a drive, where the
+slash after the scheme is punctuation (`file:///C:/x` -> `C:/x`), and wrong for a
+POSIX root, which the scheme's slash IS (`file:///tmp/x` -> `tmp/x`, no longer
+absolute). `existsSync('tmp/x')` then failed, the asset was reported OFFLINE, and
+every clip on it was skipped. Measured on a real import, before:
+
+```
+XML src   = "file:///tmp/diag-9va2co/av.mp4"
+plan path = "tmp/diag-9va2co/av.mp4"      <-- root gone
+result    = placedClips: 0, assetsAdded: 0, offline: ["tmp/diag-9va2co/av.mp4"]
+```
+
+and after: `assetsAdded: 1`, `placedClips: 1`, `offline: []`, the linked A/V twin
+rebuilt and its speed, level and name recovered. Thirteen tests in
+`executor.fcpxml.test.ts` went from failing to passing on the same fixture, and
+`src/shared/fcpxml` stays 189/189 — the fix changes no number that was right.
+
+**This is NOT a Windows-only reader bug, and the upstream source settles it.**
+Upstream's writer is `FCPXMLExporter.swift:761-765`:
+
+```swift
+private func mediaSrc(for resource: MediaResource) -> String {
+    resource.url.absoluteString.map { ch in
+        "'!### #164 — keyboard shortcuts
+()*+,;=".contains(ch) ? String(format: "%%%02X", ch.asciiValue ?? 0) : String(ch)
+    }.joined()
+}
+```
+
+`URL.absoluteString` for a file URL is always `file:///Users/...` on macOS — a
+POSIX root, and never a drive letter. So the producer's own output was
+unreadable by this port, and the failure was TOTAL rather than partial: not one
+clip placed, for the macOS-to-Windows direction, which is the direction the
+feature exists to serve. It is a shared-contract violation in this port's reader,
+not a platform quirk. The drive-letter branch is a Windows-port accommodation for
+documents this port writes itself, and is not a shape upstream emits.
+
+Upstream's sub-delimiter encoding (`'!### #164 — keyboard shortcuts
+()*+,;=`) also round-trips, because
+`decodeURIComponent` reverses every one of them; only `!'()*-._~` survive
+unescaped, and those upstream never encodes.
+
+**The fix strips the scheme and ALL of its slashes, then tells the two shapes
+apart**, because only a drive letter carries its own root:
+
+```ts
+const body = decoded.replace(/^file:\/*/i, '');
+if (body.length === 0) return body;
+return /^[A-Za-z]:/.test(body) ? body : '/' + body.replace(/^\/+/, '');
+```
+
+Stripping the scheme uniformly also collapses three spellings of one path that
+the old half-handled, and a value with NO scheme now passes through untouched
+instead of gaining a slash — both of which the first, narrower version of this fix
+got wrong (`file:/C:/x` -> `/file:/C:/x`, and a bare `C:/x` -> `/C:/x`). Every form
+is pinned through `parseFcpxml`, so the value asserted is the one the placement
+path hands to `existsSync`:
+
+| `src` | reads as | note |
+| --- | --- | --- |
+| `file:///C:/x` | `C:/x` | drive, three slashes |
+| `file://C:/x` | `C:/x` | drive, two slashes — was `/C:/x` |
+| `file:/C:/x` | `C:/x` | drive, one slash — was `file:/C:/x` |
+| `file:///tmp/x` | `/tmp/x` | POSIX root — was `tmp/x` |
+| `file:///Users/me/Movies/x.mov` | `/Users/me/Movies/x.mov` | the Final Cut shape |
+| `file://tmp/x`, `file:/tmp/x` | `/tmp/x` | POSIX, fewer slashes |
+| `file:///tmp/my%20media/x.mp4` | `/tmp/my media/x.mp4` | encoded space, POSIX |
+| `file:///C:/my%20media/x.mp4` | `C:/my media/x.mp4` | encoded space, drive |
+| `file:///tmp/a%23b.mp4` | `/tmp/a#b.mp4` | encoded hash, POSIX |
+| `file:///%ZZ` | `/%ZZ` | malformed escape: `decodeURIComponent` throws, raw kept |
+| `C:/x` | `C:/x` | no scheme — passes through |
+| `/tmp/x` | `/tmp/x` | no scheme — passes through |
+| `file://server/share/x.mp4` | `/server/share/x.mp4` | **UNC, not recovered** |
+
+**The UNC case is stated rather than glossed, and it is a WRITER limitation too.**
+A UNC path has neither a drive nor a POSIX root, so the reader yields a rooted path
+on the current drive, which is not the `\\server\share` named. Measuring the round
+trip settles that this is not fixable here alone: `exporter.ts`'s `fileUrl`
+collapses the leading `\\` of `\\server\share\x.mp4` for the same reason, so a UNC
+path does not survive OUR OWN export either. Every other shape round-trips
+exactly — drive, POSIX, macOS-shaped, encoded space, encoded hash, encoded `%`
+all measure `round-trips=YES`. Fixing UNC is a writer change plus a product
+decision about network media, so it is recorded here and left.
+
+An empty `src` is not a path question at all: the pre-existing `!src` guard drops
+the asset first, which is now pinned, because turning `''` into `'/'` would be
+worse — `existsSync('/')` is true, so the asset would probe as a real one.
+
+**(2) `parseSkillFile` could not read a CRLF file, so a skill was SILENTLY
+DROPPED.** The frontmatter test is `/^([A-Za-z_][A-Za-z0-9_-]*):(.*)$/`, and `.`
+does not match `\r`, so on a CRLF file every line failed as `malformed
+frontmatter on line 2`. Measured: `"name: podcast-cleanup"` matches;
+`"name: podcast-cleanup\r"` does not. `discoverSkills` then refused the skill as
+unreadable and it vanished with no error the user could act on.
+
+**The trigger is `core.autocrlf=true`, which is this repo's own configuration.**
+Every blob in HEAD is LF; a Windows checkout delivers CRLF. The three shipped
+`SKILL.md` files happened to be LF in the working tree that was tested — the only
+LF files in an otherwise CRLF tree — so the suite passed locally for the wrong
+reason and failed on the Windows runner, which checks out fresh. Measured with the
+files converted to CRLF: 4 failed / 21 passed, reason `malformed frontmatter on
+line 2`; with the fix, 30/30. This is not a test defect: on a product that ships
+only on Windows, a user's CRLF `SKILL.md` lost the skill.
+
+The fix is `raw.split(/\r?\n/)`, at the one place the lines are produced, which
+also means the body handed onward carries no stray `CR` — pinned, because
+`extractSkillTools` is exported and takes the body directly. Measured across the
+repo for the same defect: `skills.ts` held the only FRONTMATTER parser, and of 21
+newline `split(` sites in `src/` and `scripts/`, every other one is either
+`\r`-tolerant downstream or reads a format whose own parser trims — `vtt-parse.ts`
+and `srt.ts` both parse CRLF input correctly today, measured. `skills.ts:302`
+(`extractSkillTools`) was left alone for the same measured reason: it trims each
+line before its regexes, and passes a CRLF body unchanged.
+
+A CR-only file is NOT accommodated — nothing writes that any more — but the
+refusal is pinned so the reason stays the specific `opening frontmatter` one
+instead of a misleading `malformed frontmatter`. A UTF-8 BOM is tolerated with
+either line ending, since `String.prototype.trim` removes U+FEFF and an
+editor-written file can carry one.
+
+**Both fixes are mutation-checked alone, with no overlap.** Reverting only
+`fileUrlToPath` fails 9 of the new `file:` cases and leaves the skills suite green;
+reverting only `parseSkillFile` fails 3 of the new line-ending cases and leaves
+all 189 fcpxml tests green.
+
+**Disposition: no upstream analogue for either, and here is why.** Upstream is
+EXPORT-only — there is no FCPXML reader in it to compare against, so the `src`
+contract had no second implementation holding us to it, which is exactly how a
+one-sided mistake survives. Upstream #154 is keyframed transform transport, the
+export direction. No disposition changes: PRs #154/#289 stay `Partial`, and
+neither defect is a regression from this branch — the `src` bug predates the whole
+FCPXML surface.
 
 ### #164 — keyboard shortcuts
 

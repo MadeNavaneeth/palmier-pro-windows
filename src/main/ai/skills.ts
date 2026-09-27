@@ -83,7 +83,14 @@ export type SkillParseResult = { ok: true; skill: Skill } | { ok: false; reason:
  * refusal, never a skill with a missing description or an empty body.
  */
 export function parseSkillFile(raw: string, dirName: string): SkillParseResult {
-  const lines = raw.split('\n');
+  // CRLF-tolerant, and it has to be. A Windows checkout of this repo (and every
+  // Windows user, since this product ships only there) delivers the LF blobs as
+  // CRLF, and the frontmatter test below uses `.`, which does not match `\r` — so
+  // a CRLF `SKILL.md` failed every line as `malformed frontmatter` and the skill
+  // was SILENTLY dropped. Splitting on the optional CR removes the cause at the
+  // one place the lines are produced, which also means the body handed onward
+  // carries no stray CR.
+  const lines = raw.split(/\r?\n/);
   if (lines[0]?.trim() !== '---') {
     return { ok: false, reason: 'missing opening frontmatter fence (expected "---" on line 1)' };
   }

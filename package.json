@@ -2,7 +2,10 @@
   "name": "palmier-pro-windows",
   "version": "0.1.0",
   "description": "Early-stage Windows rebuild of Palmier Pro: an AI-native video editor built with Electron, React, Rust/wgpu, FFmpeg, and MCP.",
-  "author": "Palmier Pro Windows Contributors",
+  "author": {
+    "name": "Palmier Pro Windows Contributors",
+    "email": "151734681+MadeNavaneeth@users.noreply.github.com"
+  },
   "license": "GPL-3.0-or-later",
   "engines": {
     "node": ">=22.12.0"
@@ -131,7 +134,9 @@
       "category": "Video",
       "mimeTypes": ["video/*", "audio/*"],
       "desktop": {
-        "Name": "Palmier Pro"
+        "entry": {
+          "Name": "Palmier Pro"
+        }
       }
     },
     "publish": {

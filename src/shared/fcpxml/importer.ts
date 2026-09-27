@@ -9,26 +9,64 @@
  * <video> elements and connected visual elements (lane attr), compound
  * <ref-clip> carriers with recursively validated <media>/<sequence> resources,
  * titles with inline text-style refs; upstream <adjust-conform type="fit"/> is accepted
- * and ignored because it is a consumer fit hint with no local clip field,
+ * and ignored because it is a consumer fit hint with no local clip field (and
+ * because this writer puts it on every visual element, so reporting it would be
+ * a note per clip on every import),
  * decimal ("1.5s") and rational ("45/30s") times, opacity (`adjust-blend`,
  * including nested amount keyframes), constant visual retiming
  * (`<timeMap>` with two linear `<timept>` children), static geometry
  * (`adjust-transform` attributes) and keyframed
  * position/scale/rotation (`<param>`/`<keyframeAnimation>` children, mapped
- * to the motion tracks), crop (`adjust-crop` trim-rect) and volume
+ * to the motion tracks), crop (`adjust-crop` **in `trim` mode only** — see
+ * `cropTrimOf` for why every other mode is refused rather than read) and volume
  * (title keyframes remain explicitly reported rather than partially applied)
  * (`adjust-volume`) as the exporter writes them — plus the same elements from
  * third-party files, narrowed on read. Gaps are implicit —
- * absolute clip offsets already encode spacing. Everything else — grades,
- * blend modes, crop/volume keyframes, effects, groups, non-sequence references —
- * lands in `unsupported` as readable notes so nothing disappears silently,
- * including the two spine-element attributes this editor has no field for at
- * all: a DISABLED `enabled="0"` and an `audioRole` other than the `dialogue`
- * our writer stamps on every audio element (see
- * `reportUnrepresentedAttributes` for why the default values are quiet).
- * Shape-ish constructs (generators, shapes, graphics) have no Windows
- * analogue — upstream has no shapes and no FCPXML shape transport — so they
- * are reported and skipped the same way, as is any unknown spine element.
+ * absolute clip offsets already encode spacing. Everything else lands in
+ * `unsupported` as readable notes so nothing disappears silently, by six
+ * mechanisms:
+ *
+ * 1. `UNREPRESENTED_ELEMENTS` — every element this importer reads for nothing,
+ *    reported ONCE PER DOCUMENT each, every name quoted from Apple's published
+ *    FCPXML DTD and grouped by the DTD group that makes it legal: the four
+ *    remaining `%marker_item`s; the per-channel and per-role audio components
+ *    under both the 1.4 and the 1.10 names plus their `<mute>`; the
+ *    `%intrinsic-params-video` members added after the first pass (360
+ *    re-projection, reorient, orientation, cinematic, `object-tracker`); the
+ *    `<asset>` children; and library organisation. Several mirror a feature this
+ *    editor SHIPS — color grade, EQ, noise reduction, fades, and
+ *    `MediaAsset.channels`/`sampleRate` below — which is what made their silence
+ *    a defect rather than a gap.
+ * 2. `adjust-crop` in any mode but `trim` is REFUSED, not read (see
+ *    `cropTrimOf`).
+ * 3. `adjust-blend mode` is reported while its `amount` still applies as plain
+ *    opacity, because the DTD's `mode` is an open `CDATA` with no published value
+ *    list to map and a wrong composite is worse than a plain one.
+ * 4. Spine-element attributes are reported only when they state something: a
+ *    DISABLED `enabled="0"`, an `audioRole` other than the `dialogue` our writer
+ *    stamps on every audio element, a `videoRole` other than the `video` default,
+ *    a J/L split edit, `useAudioSubroles="1"`, and the `<asset>` component and
+ *    colour-management attributes (one note per asset, since which asset is the
+ *    actionable part).
+ * 5. The construct scan below, for the effects, filters, notes and shape-ish
+ *    elements.
+ * 6. An `adjust-*` NESTED inside another element is refused rather than read: it
+ *    belongs to the containing element, not to this one (see
+ *    `reportNestedAdjustments`). The four readers that transport a clip's look are
+ *    scoped to the element's DIRECT children, so a per-channel or anchored
+ *    sub-clip's adjustment can no longer be applied to the parent as if it were
+ *    the parent's own.
+ *
+ * Two mechanisms here are the OPPOSITE of reporting, and matter as much: a
+ * self-closing element is never absorbed into a later match of the same name, and
+ * an attribute value may legally contain a `>` inside its quotes. Both live in
+ * `tagBlockPattern`, and both used to lose elements silently rather than
+ * mis-report them — a loss no note could describe, because the note would have had
+ * to describe an element that was never read.
+ *
+ * Shape-ish constructs (generators, shapes, graphics) have no Windows analogue —
+ * upstream has no shapes and no FCPXML shape transport — so they are reported and
+ * skipped the same way, as is any unknown spine element.
  */
 
 import { secondsToTimecode } from '../media/timecode';
@@ -194,12 +232,44 @@ function numAttr(tag: string, name: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * A FCPXML `src` attribute back to a filesystem path.
+ *
+ * `file:` is only a wrapper; the two things that matter are a Windows drive and
+ * a POSIX root, and the old form conflated them. It stripped `file:///` with an
+ * UNCONDITIONAL replace, which is right for a drive (`file:///C:/x` -> `C:/x`,
+ * where the slash after the scheme is punctuation) and wrong for a POSIX root
+ * (`file:///tmp/x` -> `tmp/x`, which is no longer absolute at all). On a
+ * POSIX-rooted document every asset then failed `existsSync`, so every clip was
+ * reported offline and nothing was placed — and because Final Cut writes
+ * `file:///Users/...`, that is the macOS-authored case, on Windows, which is the
+ * primary real-world input to this feature.
+ *
+ * So the scheme and ALL of its slashes come off first, which also collapses
+ * `file:///C:/x`, `file://C:/x` and `file:/C:/x` to the one path they all name;
+ * a value carrying no scheme passes through that step untouched instead of
+ * gaining a slash. Then the two shapes are told apart, because only a drive
+ * letter carries its own root:
+ *
+ *   - `C:/x`   -> `C:/x`   drive letter; the root is the letter
+ *   - `tmp/x`  -> `/tmp/x`  POSIX absolute; the root was the scheme's slash
+ *
+ * A UNC `file://server/share/x` has no drive and no POSIX root, so it yields
+ * `/server/share/x` — a rooted path on the current drive, NOT the `\\server\share`
+ * it names. That is the one form this does not recover, and it is a limitation of
+ * the WRITER too: `exporter.ts`'s `fileUrl` collapses a leading `\\` for the same
+ * reason, so a UNC path does not survive our own round trip either. See
+ * `docs/UPSTREAM_ISSUES.md`; fixing it is a writer change and a product decision
+ * about network media, not a reader fix.
+ */
 function fileUrlToPath(src: string): string {
   let decoded = src;
   try {
     decoded = decodeURIComponent(src);
   } catch { /* keep raw */ }
-  return decoded.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '/');
+  const body = decoded.replace(/^file:\/*/i, '');
+  if (body.length === 0) return body;
+  return /^[A-Za-z]:/.test(body) ? body : '/' + body.replace(/^\/+/, '');
 }
 
 /** "sx sy" pair, e.g. adjust-transform scale/position. */
@@ -223,7 +293,7 @@ function parseDbAmount(value: string | null): number | null {
 
 /** Linear 0-1 opacity from <adjust-blend>; undefined when absent/unusable. */
 function blendOf(tag: string): number | undefined {
-  const match = tag.match(/<adjust-blend\b[^>]*amount="([^"]*)"/);
+  const match = adjustBlock(tag, 'adjust-blend')?.match(/<adjust-blend\b[^>]*amount="([^"]*)"/);
   if (!match) return undefined;
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return undefined;
@@ -231,7 +301,7 @@ function blendOf(tag: string): number | undefined {
 }
 
 function transformOf(tag: string): ImportedVideoClip['transform'] {
-  const match = tag.match(/<adjust-transform\b[^>]*>/);
+  const match = adjustBlock(tag, 'adjust-transform')?.match(/<adjust-transform\b[^>]*>/);
   if (!match) return undefined;
   const scale = parsePair(attr(match[0], 'scale')) ?? [1, 1];
   const rotation = numAttr(match[0], 'rotation') ?? 0;
@@ -248,10 +318,65 @@ function transformOf(tag: string): ImportedVideoClip['transform'] {
   };
 }
 
-function cropTrimOf(tag: string): ImportedVideoClip['cropTrim'] {
-  const match = tag.match(/<adjust-crop\b[^>]*>[\s\S]*?<trim-rect\b[^>]*>/);
-  if (!match) return undefined;
-  const rect = match[0].slice(match[0].indexOf('<trim-rect'));
+/**
+ * The whole of one clip's `<adjust-crop>`, and the only mode this importer reads.
+ *
+ * `adjust-crop@mode` is **#REQUIRED** in Apple's FCPXML DTD and its value set is
+ * exactly `(trim | crop | pan)`:
+ *
+ *     <!-- This element contains an optional adjustment for each crop mode,
+ *          although only one mode is active. -->
+ *     <!ELEMENT adjust-crop (crop-rect?, trim-rect?, (pan-rect, pan-rect)?)>
+ *     <!ATTLIST adjust-crop mode (trim | crop | pan) #REQUIRED>
+ *
+ * The mode selects WHICH child rect is the live adjustment, and the three mean
+ * different things. `trim-rect` "specifies trim values as a percentage of
+ * original frame height" — the edges trimmed OFF, i.e. the region kept — which is
+ * what `cropFromTrim` inverts, and it is the only mode whose rect is a set of
+ * edge amounts. `crop-rect` is the scale-in ("Crop" in FCP's Cropping panel), not
+ * an edge trim. `pan-rect` is a start/end pair driving a Ken Burns move, and the
+ * DTD notes its attributes cannot be keyframed.
+ *
+ * So `trim` is applied and nothing else is. That is not only a missing-feature
+ * boundary: because the DTD lets a document carry `crop-rect?`, `trim-rect?` AND
+ * `(pan-rect, pan-rect)?` together with only ONE active, a `mode="crop"`
+ * document can legitimately carry an inactive `<trim-rect>` beside its live
+ * `<crop-rect>`. Reading that as the crop would apply a rect the document itself
+ * says is switched off — a wrong crop, with nothing to distinguish it from a
+ * right one. Refusing every other mode (and a missing one, which the DTD does
+ * not permit at all) turns that silent wrong value into a visible omission, which
+ * is the same stance the exporter takes on `adjust-blend@mode`: a wrong composite
+ * is worse than a plain one.
+ *
+ * The crop keyframe report lives here rather than at the call site because its
+ * truth now depends on the mode: "base crop kept" would be a lie about a block
+ * that was refused outright.
+ */
+function cropTrimOf(
+  tag: string,
+  element: string,
+  label: string,
+  unsupported: string[],
+): ImportedVideoClip['cropTrim'] {
+  const block = adjustBlock(tag, 'adjust-crop');
+  if (!block) return undefined;
+  const mode = attr(block, 'mode');
+  if (mode !== 'trim') {
+    unsupported.push(
+      `${element} "${label}" has adjust-crop mode="${mode ?? '(none)'}";`
+      + ' only mode="trim" is imported, so no crop is applied from it.',
+    );
+    return undefined;
+  }
+  // In trim mode the keyframe note is true whether or not a non-identity base
+  // was read: an absent base IS identity, and identity is what is kept.
+  if (block.includes('<keyframeAnimation')) {
+    unsupported.push(
+      `${element} "${label}" animates crop; crop keyframes are not transported (base crop kept).`,
+    );
+  }
+  const rect = block.match(/<trim-rect\b[^>]*>/)?.[0];
+  if (!rect) return undefined;
   const read = (name: string): number => numAttr(rect, name) ?? 0;
   const trim = { left: read('left'), top: read('top'), right: read('right'), bottom: read('bottom') };
   if (!(trim.left > 0 || trim.right > 0 || trim.top > 0 || trim.bottom > 0)) return undefined;
@@ -264,7 +389,7 @@ function cropTrimOf(tag: string): ImportedVideoClip['cropTrim'] {
  * inaudible either way. Unity gain carries nothing, keeping plans clean.
  */
 function volumeOf(tag: string): { volume: number; muted: boolean } | undefined {
-  const match = tag.match(/<adjust-volume\b[^>]*amount="([^"]*)"/);
+  const match = adjustBlock(tag, 'adjust-volume')?.match(/<adjust-volume\b[^>]*amount="([^"]*)"/);
   if (!match) return undefined;
   const db = parseDbAmount(match[1]);
   if (db === null) return undefined;
@@ -306,6 +431,17 @@ function reportTimeMap(label: string, reason: string, unsupported: string[]): vo
  * audio element to every round trip and bury every other note in the list; any
  * other designation is information a third-party document authored and this
  * editor cannot hold, which is what gets reported.
+ *
+ * `adjust-blend@mode` is the one of the three that is NOT a missing model field:
+ * `Clip.blendMode` ships twelve W3C modes end to end, so a document naming a
+ * composite is a SHIPPED feature arriving unreported rather than a format feature
+ * we lack. It is still not honoured, and the reason is upstream's, not ours —
+ * `<!ATTLIST adjust-blend mode CDATA #IMPLIED>`, an OPEN enumeration, so the
+ * DTD publishes no value list to map from, and the exporter emits no `mode`
+ * because "a wrong composite in Resolve is worse than a plain one". Honouring it
+ * is therefore gated on finding a verified value mapping, not assumed, and until
+ * then the note says so while `amount` keeps applying as the plain opacity it
+ * always was.
  */
 function reportUnrepresentedAttributes(
   tag: string,
@@ -320,6 +456,221 @@ function reportUnrepresentedAttributes(
   if (role !== null && role !== 'dialogue') {
     unsupported.push(`${element} "${label}" has audioRole="${role}"; audio roles are not imported.`);
   }
+  const blend = adjustBlock(tag, 'adjust-blend');
+  const blendMode = blend === null ? null : attr(blend, 'mode');
+  if (blendMode !== null) {
+    unsupported.push(
+      `${element} "${label}" has adjust-blend mode="${blendMode}";`
+      + ' the composite mode is not imported, and the amount still applies.',
+    );
+  }
+  // `audioStart`/`audioDuration` are a J/L split edit: "Use 'audioStart' and
+  // 'audioDuration' to define J/L cuts (i.e., split edits) on composite A/V
+  // clips" (DTD 1.10). The model has ONE `inPoint`/`outPoint` pair per clip, so a
+  // clip whose audio starts away from its picture has no representation at all,
+  // and there is no `Clip` field to add one to without changing what a clip IS.
+  // Reported on either attribute, since a duration with no start is still a
+  // statement about the audio window.
+  const audioStart = attr(tag, 'audioStart');
+  if (audioStart !== null || attr(tag, 'audioDuration') !== null) {
+    unsupported.push(
+      `${element} "${label}" has a J/L split edit (audioStart/audioDuration);`
+      + ' split edits are not imported.',
+    );
+  }
+  // `videoRole` defaults to "video" (DTD 1.10), and our writer emits no value at
+  // all, so only a designation that says something is reported — the same
+  // calibration as `enabled="1"` and `audioRole="dialogue"`.
+  const videoRole = attr(tag, 'videoRole');
+  if (videoRole !== null && videoRole !== 'video') {
+    unsupported.push(`${element} "${label}" has videoRole="${videoRole}"; video roles are not imported.`);
+  }
+  // `useAudioSubroles` defaults to "0"; "1" asks for the carrier's role-based
+  // sub-audio to be used, which this importer has no way to express.
+  if (attr(tag, 'useAudioSubroles') === '1') {
+    unsupported.push(
+      `${element} "${label}" sets useAudioSubroles="1"; role-based sub-audio is not imported.`,
+    );
+  }
+}
+
+/**
+ * `srcEnable` is read for nothing and is DELIBERATELY not reported — the reason,
+ * recorded here because the silence is a decision rather than an oversight.
+ *
+ * `exporter.ts` writes `srcEnable="video"` on every `<ref-clip>` it emits — the
+ * compound carrier's own audio is unused because the nested clips carry it — and
+ * the DTD default is `"all"`, so this is a value our own documents state on every
+ * compound carrier. A note here would be a note per carrier on every palmier
+ * round trip, which is exactly the noise the calibration rule exists to prevent.
+ * A document from another producer setting it to `audio` or `all` is a real
+ * omission and is recorded as open rather than reported here.
+ */
+
+/**
+ * The `<asset>` attributes this importer reads for nothing, one note per asset
+ * that states any of them.
+ *
+ * Per asset rather than per document, because the note is only useful if it says
+ * WHICH asset: a location-sound document states these on its multichannel
+ * recordings and not on its B-roll, and "some asset has four audio sources" is
+ * not actionable where "asset 7 has four audio sources" is. The count is still
+ * bounded by the number of assets that actually declare one, and our writer emits
+ * none of them on an `<asset>`, so a document we produced stays silent.
+ *
+ * Scoped to the asset's own tag on purpose. A document-wide scan for the bare
+ * name `audioRate` would match the compound writer's
+ * `<sequence audioRate="48k">` — which it emits on every nested sequence — and
+ * fire on every palmier round trip.
+ *
+ * Two groups, because they are two different omissions:
+ * - `videoSources`/`audioSources` say how many media components the asset has,
+ *   and `audioChannels`/`audioRate` describe them. This importer places ONE clip
+ *   per asset regardless. `MediaAsset.channels` and `MediaAsset.sampleRate` do
+ *   ship, so those two are a shipped field not being transported — the same class
+ *   as an unreported `adjust-blend mode` — while the component COUNTS have no
+ *   field at all.
+ * - The colour-management overrides. `MediaAsset` has no colour-space,
+ *   projection, stereoscopic or LUT field, so there is nowhere for them to land.
+ */
+function reportUnrepresentedAssetAttributes(
+  tag: string,
+  ref: string,
+  unsupported: string[],
+): void {
+  const components = ['videoSources', 'audioSources', 'audioChannels', 'audioRate']
+    .filter((name) => attr(tag, name) !== null);
+  if (components.length > 0) {
+    unsupported.push(
+      `Asset ${ref} declares ${components.join(', ')}; its media component layout is not imported,`
+      + ' and the asset is placed as one clip.',
+    );
+  }
+  const colour = ['colorSpaceOverride', 'projectionOverride', 'stereoscopicOverride', 'customLUTOverride']
+    .filter((name) => attr(tag, name) !== null);
+  if (colour.length > 0) {
+    unsupported.push(
+      `Asset ${ref} declares ${colour.join(', ')}; colour-management overrides are not imported.`,
+    );
+  }
+}
+
+/**
+ * The elements this importer reads for NOTHING, reported once per document each.
+ *
+ * Every name here is quoted from Apple's published FCPXML DTD, and each is
+ * grouped by the DTD group that makes it legal, so the coverage of each group can
+ * be checked against the group rather than against this list:
+ *
+ * - `%marker_item "(marker | chapter-marker | rating | keyword | analysis-marker)"`.
+ *   `chapter-marker` is not repeated here because the older construct scan above
+ *   already reports it, and two notes for one element is worse than one.
+ * - The per-channel and per-role audio components. The DTD renamed these between
+ *   versions — `<audio-source>`/`<audio-aux-source>` in 1.4,
+ *   `<audio-channel-source>`/`<audio-role-source>` in 1.10 — and this module
+ *   targets 1.11, so all four are listed: a reader must report what a document
+ *   actually contains, not only what the newest revision calls it. `<mute>` is
+ *   legal only inside these, and is a time-RANGED output suppression, which is a
+ *   different thing from `Clip.muted` (a whole-clip flag read from an
+ *   `adjust-volume` floor).
+ * - `%intrinsic-params-video` members added after the ones already listed:
+ *   360 re-projection, reorient, orientation, cinematic, and `object-tracker`.
+ *   `tracking-shape` needs no entry of its own; it is reachable only inside
+ *   `object-tracker`.
+ * - The `<asset>` children. `media-rep` is the one that matters: 1.10 moved
+ *   `src` off `<asset>` and onto `<media-rep>`, and this importer reads
+ *   `asset@src` — see the note in the asset loop for what that does and does not
+ *   break today.
+ * - Library organisation, which has no timeline content at all but is still a
+ *   construct the document had and the imported project will not.
+ *
+ * ONE note per document rather than one per element, which is the calibration
+ * that keeps this safe to add: our writer emits only `adjust-conform`,
+ * `adjust-blend@amount`, `adjust-transform`, `adjust-crop`, `adjust-volume`,
+ * `timeMap` and — on a `<sequence>` — `audioLayout`/`audioRate`, so a document we
+ * produced can never trip any entry here. `adjust-conform` is deliberately absent
+ * for the same reason it is deliberately read and discarded: the writer puts it
+ * on every visual element, so reporting it would be a note per clip on every
+ * import.
+ *
+ * Deliberately NOT here, each for its own reason rather than by oversight:
+ *
+ * - `adjust-blend`, `adjust-transform`, `adjust-crop`, `adjust-volume`,
+ *   `adjust-conform`, `timeMap` — the five we read, plus the conform hint.
+ * - `filter-video`, `filter-audio`, `<effect-ref>`, `<effect `, `<note>`,
+ *   `<chapter-marker>`, `<generator*`, `<shape*`, `<graphic*` — the older
+ *   construct scan above. That scan is a plain substring test, so
+ *   `<filter-video-mask>` is already covered by its `'<filter-video'` needle; it
+ *   is left to that scan rather than given a second note here, and the entry
+ *   boundary below means adding it would double-report.
+ * - `caption`, `sync-clip`, `audio`, `mc-source`, `sync-source` at SPINE level —
+ *   `reportSpineElement` already names each one as an unknown spine element. Only
+ *   their ANCHORED form (a child of a spine element this module consumes whole)
+ *   is a gap, and that is recorded rather than given a duplicate note.
+ * - `match-text` and its siblings — reachable only inside `<smart-collection>`,
+ *   which is listed.
+ * - `audioRole`, `videoRole`, `enabled`, `srcEnable` — attributes, handled where
+ *   the element that carries them is parsed, because each has a value that is an
+ *   effective default rather than an omission.
+ *
+ * Spelled as the DTD spells it, including the internal capitals
+ * (`adjust-EQ`, `adjust-noiseReduction`, `adjust-humReduction`, `fadeIn`), and
+ * matched CASE-INSENSITIVELY (producers are not consistent) but on an element-name
+ * BOUNDARY, so `keyword` cannot also match `keyword-collection`.
+ */
+const UNREPRESENTED_ELEMENTS: readonly string[] = [
+  // %marker_item (chapter-marker is in the older construct scan)
+  'marker',
+  'rating',
+  'keyword',
+  'analysis-marker',
+  // Per-channel / per-role audio components, both DTD generations
+  'audio-channel-source',
+  'audio-role-source',
+  'audio-source',
+  'audio-aux-source',
+  'mute',
+  // %intrinsic-params-video, the members added after the first pass
+  'adjust-360-transform',
+  'adjust-reorient',
+  'adjust-orientation',
+  'adjust-cinematic',
+  'object-tracker',
+  // <asset> children
+  'media-rep',
+  'bookmark',
+  'metadata',
+  // Library organisation
+  'keyword-collection',
+  'collection-folder',
+  'smart-collection',
+  'import-options',
+  // From the first pass: %intrinsic-params-video / -audio / %timing-params
+  'info-asc-cdl',
+  'adjust-color',
+  'adjust-corners',
+  'adjust-stabilization',
+  'adjust-rollingShutter',
+  'adjust-loudness',
+  'adjust-noiseReduction',
+  'adjust-humReduction',
+  'adjust-EQ',
+  'adjust-matchEQ',
+  'adjust-panner',
+  'conform-rate',
+  'fadeIn',
+  'fadeOut',
+];
+
+/**
+ * `<name` on an ELEMENT-NAME boundary in an already-lowercased document, so
+ * `keyword` cannot also match `keyword-collection` and `audio-source` cannot also
+ * match `audio-role-source`. The older construct scan above is a plain substring
+ * test and is deliberately left that way, so this is not a replacement for it —
+ * it is what makes a longer list safe to add.
+ */
+function containsElementName(lowered: string, name: string): boolean {
+  return new RegExp(`<${name.toLowerCase()}(?=[\\s/>])`).test(lowered);
 }
 
 /**
@@ -334,8 +685,12 @@ function timeMapSpeed(
   unsupported: string[],
 ): number | undefined {
   if (!hasTimeMapElement(tag)) return undefined;
+  // Whole-string, because a `timeMap` is meaningless anywhere but on the spine
+  // element itself, so a nested one is not this element's business. It runs
+  // through the SHARED pattern rather than a third copy of the old regex, so the
+  // self-closing precedence and quoted-value handling it now has apply here too.
   const openingCount = (tag.match(/<timeMap\b/g) ?? []).length;
-  const blocks = tag.match(/<timeMap\b[^>]*(?:\/>|>[\s\S]*?<\/timeMap>)/g) ?? [];
+  const blocks = tag.match(tagBlockPattern('timeMap', 'g')) ?? [];
   if (openingCount !== 1 || blocks.length !== 1) {
     reportTimeMap(label, 'could not be parsed as one complete timeMap', unsupported);
     return undefined;
@@ -347,7 +702,7 @@ function timeMapSpeed(
     return undefined;
   }
 
-  const pointTags = block.match(/<timept\b[^>]*(?:\/>|>[\s\S]*?<\/timept>)/g) ?? [];
+  const pointTags = block.match(tagBlockPattern('timept', 'g')) ?? [];
   if (pointTags.length !== 2) {
     reportTimeMap(label, 'a constant speed needs exactly two timept children', unsupported);
     return undefined;
@@ -395,11 +750,69 @@ function timeMapSpeed(
 }
 
 /**
- * One adjust element's block: self-closing or paired. Non-greedy up to the
- * first closing tag — our supported elements never nest themselves.
+ * The `<name>` blocks that are DIRECT children of an element, in document order.
+ *
+ * Depth, not a pattern, is what separates "this element adjusts itself" from
+ * "something this element contains adjusts itself", so this tracks the tag
+ * tokens rather than searching for the name: a direct child is matched only at
+ * depth 0, and its whole subtree is returned with it. Every token is read with
+ * `tagBlockPattern`'s attribute area, so a `>` inside a quoted value does not
+ * desynchronise the depth count.
+ *
+ * The parent's own opening tag is the first token and is skipped rather than
+ * counted, so depth 0 means "immediately inside the parent". An element left
+ * unclosed by a malformed document is returned as the remaining text, which is
+ * what a whole-string search used to do with it.
+ */
+function directChildBlocks(block: string, name: string): string[] {
+  const children: string[] = [];
+  // Capture 1 is a leading '/', 2 the name, 3 the attribute area, 4 a trailing '/'.
+  const token = /<(\/?)([A-Za-z][\w:.-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
+  let match = token.exec(block);
+  if (match === null) return children;
+  let depth = 0;
+  let start = -1;
+  while ((match = token.exec(block)) !== null) {
+    const [text, closing, tagName, , selfClosing] = match;
+    if (closing) {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        children.push(block.slice(start, match.index + text.length));
+        start = -1;
+      }
+    } else if (selfClosing) {
+      if (depth === 0 && tagName === name) children.push(text);
+    } else {
+      if (depth === 0 && tagName === name && start < 0) start = match.index;
+      depth++;
+    }
+  }
+  if (start >= 0) children.push(block.slice(start).trimEnd());
+  return children;
+}
+
+/**
+ * This element's DIRECT `<name>` child block, or null.
+ *
+ * Scoped rather than searched across the element's whole tag string, because a
+ * spine element's own text INCLUDES its descendants. Searching it whole meant an
+ * adjustment nested inside a DIFFERENT element was read as the parent's:
+ * `<audio-channel-source srcCh="1"><adjust-volume amount="-6.0206dB"/></audio-channel-source>`
+ * set the CLIP's volume to 0.5, and an anchored sub-clip's `<adjust-volume
+ * amount="-20dB"/>` set the parent's with nothing reported at all. A per-channel
+ * adjustment is the CHANNEL's and an anchored sub-clip's adjustment is that
+ * sub-clip's; neither is the parent's, so applying either is a wrong value — the
+ * same class as the crop-mode bug, and not something a note can correct
+ * afterwards. Sharing `tagBlockPattern` also gives this the self-closing
+ * precedence `extractTagBlock` now has, which a self-closing `<adjust-blend/>`
+ * followed by a keyframed (hence paired) one previously defeated.
+ *
+ * Only the first match is returned, because the DTD allows at most one of each
+ * of the four elements this importer reads — which is what `blendOf`,
+ * `volumeOf`, `cropTrimOf` and `transformOf` always assumed.
  */
 function adjustBlock(tag: string, name: string): string | null {
-  return tag.match(new RegExp(`<${name}\\b[^>]*(?:/>|>[\\s\\S]*?</${name}>)`))?.[0] ?? null;
+  return directChildBlocks(tag, name)[0] ?? null;
 }
 
 interface AdjustParam {
@@ -619,6 +1032,68 @@ function transformKeyframesOf(
   return parsed ? result : undefined;
 }
 
+/**
+ * Elements the DTD lets a spine element CONTAIN, each of which may carry its own
+ * `adjust-*` children. Quoted from `%spine-element`'s content model and the
+ * audio/video source groups: an ANCHORED sub-clip, a per-channel or per-role
+ * audio source, the visual sources, the filters, and the other sub-elements.
+ *
+ * `ref-clip` is here as the ANCHORED form specifically — a ref-clip nested INSIDE
+ * a clip, which is a different thing from a ref-clip at spine level. A spine-level
+ * carrier is this importer's own parent clip and its adjustments ARE read (our
+ * writer emits the parent clip's look onto the carrier, exporter.ts), whereas an
+ * anchored sub-clip's adjustments belong to that sub-clip.
+ */
+const NESTED_ADJUST_CONTAINERS = [
+  'ref-clip', 'audio-channel-source', 'audio-aux-source', 'audio-role-source', 'audio-source',
+  'video-source', 'source-video', 'source-audio', 'source-ref-clip',
+  'filter-audio', 'filter-video', 'blend', 'transition', 'effect',
+  'sync-clip', 'sync-source', 'caption', 'audio', 'mc-source', 'markers',
+];
+
+/** The four adjust elements this importer reads for a spine element's own look. */
+const OWN_ADJUST_ELEMENTS = ['adjust-blend', 'adjust-transform', 'adjust-crop', 'adjust-volume'];
+
+/**
+ * A nested adjustment is the CONTAINING element's, not the spine element's, so it
+ * is not applied — and it is now said rather than silently dropped, which is what
+ * the pre-fix anchored case failed to do (an anchored sub-clip's
+ * `<adjust-volume amount="-20dB"/>` set the parent's level with `unsupported`
+ * empty).
+ *
+ * Reported rather than honoured, for the same reason the channel ROUTING matrix
+ * is not mapped onto `Clip.pan`: a per-channel or per-anchored-clip adjustment
+ * belongs to a different element with a different meaning, and applying it to the
+ * parent fabricates a value rather than omitting one. Once the four readers were
+ * scoped to direct children the wrong value was gone, and what remained is a
+ * document stating something this importer cannot express — which is exactly the
+ * class `unsupported` exists to name.
+ *
+ * Once per (container, adjustment) pair, and only for a real nesting: our writer
+ * emits all four as DIRECT children of a spine element, so a document it produced
+ * cannot reach this, which is the calibration that keeps the list from becoming a
+ * note per clip.
+ */
+function reportNestedAdjustments(
+  tag: string,
+  element: string,
+  label: string,
+  unsupported: string[],
+): void {
+  for (const container of NESTED_ADJUST_CONTAINERS) {
+    for (const nested of directChildBlocks(tag, container)) {
+      for (const name of OWN_ADJUST_ELEMENTS) {
+        if (directChildBlocks(nested, name).length === 0) continue;
+        unsupported.push(
+          `${element} "${label}" has a <${name}> inside <${container}>;`
+          + ' a nested adjustment belongs to the element that contains it,'
+          + ' so it is not applied to this element.',
+        );
+      }
+    }
+  }
+}
+
 /** Reports a keyframed adjust child we do not transport (the base value still lands). */
 function reportAnimatedElement(
   tag: string,
@@ -639,11 +1114,61 @@ function hasUnclaimedKeyframes(tag: string, claimedElements: string[]): boolean 
   return rest.includes('<keyframeAnimation');
 }
 
+/**
+ * A complete `<name>` block: the whole opening tag, plus the body and closing
+ * tag when the element is not self-closing.
+ *
+ * ONE scanner, shared by every block extractor, because the previous pair of
+ * regexes (`extractTagBlock` and `adjustBlock`, both
+ * `<${name}\b[^>]*(?:/>|>[\s\S]*?</${name}>)`) shared a defect that was
+ * invisible in every supported document and destructive in an ordinary one.
+ *
+ * `[^>]*` is GREEDY, so on `<asset ... />` it consumed the terminating `/`
+ * before the alternation was ever offered the `/>` branch. With no backtracking
+ * needed — `>` matches straight after the swallowed `/` — the long form won, and
+ * the block ran to the NEXT `</asset>`. The `/>` branch could therefore only
+ * ever match by backtracking, which happened to be true exactly when no later
+ * `</asset>` existed. So a self-closing element followed by a paired one of the
+ * same name swallowed everything between them: assets were consumed whole, and
+ * because our writer emits a paired `<asset>` exactly when
+ * `MediaAsset.startTimecode` is set, which asset was paired depended on the
+ * order the user imported their media. The same shape hid in
+ * `adjustBlock`, where a self-closing `<adjust-blend/>` followed by a KEYFRAMED
+ * (hence paired) one matched as a single block and applied the second's
+ * keyframes to the first's static amount.
+ *
+ * The attribute area is LAZY and the alternation is ordered self-closing first,
+ * so the shortest form that can match wins at every step:
+ *
+ *   - `(?:[^>"']|"[^"]*"|'[^']*')*?` expands one quoted VALUE or one plain
+ *     character at a time and stops at the first position where the element can
+ *     close. A quoted value is consumed whole, so a `>` inside it does not end
+ *     the tag: XML forbids only `<` and `&` raw in an attribute value, so
+ *     `name="A > B"` is legal and a foreign document can carry it. The old
+ *     `[^>]*` stopped at that `>`, which left no position either branch could
+ *     satisfy, so the element was lost outright rather than mis-parsed. Our own
+ *     writer escapes `>` at the sink, so this is foreign-input-only. Bare `'` and
+ *     `"` are excluded from the plain branch so a value containing the other
+ *     quote cannot be split by it.
+ *   - LAZY is what makes the `/>` branch reachable. Greedily, the plain branch
+ *     would swallow the `/` of a self-closing tag and `>` would then match
+ *     straight after it — never reaching the `/>` alternative at all.
+ *   - `(?:\/>|>...)` tries `/>` before `>`, so a self-closing element is exactly
+ *     its own tag and never runs on to a later closing tag.
+ *   - `[\s\S]*?` is lazy, so a PAIRED element still ends at the FIRST
+ *     `</name>`. A name that nests inside itself (`<gap>` inside `<gap>`) is not
+ *     counted as depth, which is why the two spine extractors that look for a
+ *     `gap` take the first match explicitly: they want the OUTERMOST one.
+ */
+function tagBlockPattern(name: string, flags: string): RegExp {
+  return new RegExp(
+    `<${name}\\b(?:[^>"']|"[^"]*"|'[^']*')*?(?:\\/>|>[\\s\\S]*?</${name}>)`,
+    flags,
+  );
+}
+
 function extractTagBlock(xml: string, tagName: string): string[] {
-  // Non-greedy up to the closing tag; our supported elements never nest
-  // themselves, and <title>'s inner <text> tags don't collide with its name.
-  const re = new RegExp(`<${tagName}\\b[^>]*(?:/>|>[\\s\\S]*?</${tagName}>)`, 'g');
-  return xml.match(re) ?? [];
+  return xml.match(tagBlockPattern(tagName, 'g')) ?? [];
 }
 
 const TITLE_STYLE_RE = /<text-style-def\b[^>]*id="([^"]*)"[^>]*>([\s\S]*?)<\/text-style-def>/g;
@@ -675,11 +1200,16 @@ function parseAssetClipTag(
   assetByRef: ReadonlyMap<string, ImportedAsset>,
   unsupported: string[],
 ): ImportedClip | null {
-  const ref = attr(tag, 'ref');
+  const rawRef = attr(tag, 'ref');
+  const sanitizedRef = sanitizeXmlName(rawRef);
+  const ref = sanitizedRef?.value;
   const asset = ref ? assetByRef.get(ref) : undefined;
   if (!asset) {
     unsupported.push(`Asset-clip "${label}" references unknown resource ${ref ?? '(none)'}.`);
     return null;
+  }
+  if (sanitizedRef?.changed && rawRef !== null) {
+    reportRenamedId('Asset-clip', rawRef, sanitizedRef.value, unsupported);
   }
   const timeMapPresent = hasTimeMapElement(tag);
   const isAudioOnly = asset.hasAudio && !asset.hasVideo;
@@ -707,6 +1237,7 @@ function parseAssetClipTag(
     : Math.max(0, Math.round(startSec * fps * effectiveSpeed(speed)));
   const base = { lane, startFrame, durationFrames, sourceInFrame };
   reportUnrepresentedAttributes(tag, 'Asset-clip', label, unsupported);
+  reportNestedAdjustments(tag, 'Asset-clip', label, unsupported);
   if (isAudioOnly) {
     if (timeMapPresent) {
       reportTimeMap(label, 'constant speed is visual-only and is not imported', unsupported);
@@ -719,14 +1250,13 @@ function parseAssetClipTag(
 
   const opacity = blendOf(tag);
   const opacityTrack = opacityKeyframesOf(tag, startFrame, fps, label, unsupported);
-  const cropTrim = cropTrimOf(tag);
+  // Owns the whole <adjust-crop> block, including its mode refusal and its
+  // keyframe report: see cropTrimOf for why the note cannot live out here.
+  const cropTrim = cropTrimOf(tag, 'Asset-clip', label, unsupported);
   const transform = transformOf(tag);
   const transformKeyframes = transformKeyframesOf(tag, startFrame, fps, label, unsupported);
   reportAnimatedElement(tag, 'adjust-volume',
     `Asset-clip "${label}" animates volume; keyframed volume is not transported (static level kept).`,
-    unsupported);
-  reportAnimatedElement(tag, 'adjust-crop',
-    `Asset-clip "${label}" animates crop; crop keyframes are not transported (base crop kept).`,
     unsupported);
   const clip: ImportedClip = {
     kind: 'video',
@@ -795,6 +1325,58 @@ function sanitizeSequenceName(value: string | null): string {
 }
 
 /**
+ * An XML `id`/`IDREF` is formally an `NCName`, but FCPXML and every producer of
+ * it in practice — Apple's own DTD says `id ID #REQUIRED`, and Final Cut, Resolve
+ * and this repo's own writer all emit numeric resource ids like `id="2"` — use
+ * ids a strict `NCName` would reject. So the leading character is deliberately
+ * NOT constrained, and only the characters that cannot appear in an id at all are
+ * rewritten. Being stricter than the format's own de-facto convention would
+ * rewrite every legitimate document, which is a far worse outcome than the one
+ * this guards against.
+ *
+ * Every conforming document already satisfies what is left, so this is LOSSLESS
+ * for every valid file; the value it changes is one that could not have come from
+ * a conforming producer. It is defence in depth, not the fix: `exporter.ts` escapes
+ * every attribute value at the sink, so a hostile id cannot produce malformed XML
+ * whatever reaches it. This stops such a value travelling through the model as a
+ * compound reference in the first place, which is `AGENTS.md`'s "validate inputs"
+ * rule applied where the value enters rather than where it eventually leaves by.
+ *
+ * Returns the cleaned value and whether anything changed, so the caller can REPORT
+ * the change instead of quietly normalising it — a silent rewrite of an id is the
+ * same class of defect as a silent drop, because the document said one thing and
+ * the imported project would contain another with nothing to say so.
+ *
+ * Disallowed characters become '_', which keeps the value's length and position
+ * and makes the rewrite obvious in a diff. The limit this accepts is the same one
+ * the format already has: two ids differing only in disallowed characters collapse
+ * to one and the first match wins, exactly as two linked groups over one asset at
+ * one span are already indistinguishable.
+ */
+function sanitizeXmlName(raw: string | null | undefined): { value: string; changed: boolean } | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  const value = raw.replace(/[^A-Za-z0-9._-]/g, '_');
+  return { value, changed: value !== raw };
+}
+
+/**
+ * The one place an ingested id becomes MODEL state, so the report belongs here
+ * rather than at each of the four read sites: an asset `id` and the `ref` that
+ * points at it must be normalized by the SAME function, or a document whose id
+ * needed cleaning would stop pairing.
+ */
+function reportRenamedId(
+  subject: string,
+  raw: string,
+  cleaned: string,
+  unsupported: string[],
+): void {
+  unsupported.push(
+    `${subject} id "${raw}" is not a valid XML name; it is read as "${cleaned}".`,
+  );
+}
+
+/**
  * Sequence bodies from the exporter live inside one timeline gap. Peel that
  * wrapper once, while leaving ordinary gaps in the spine to retain the legacy
  * "absolute offsets encode spacing" behavior.
@@ -833,9 +1415,16 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   // ── Assets ──────────────────────────────────────────────────────────────
   const assets: ImportedAsset[] = [];
   for (const tag of extractTagBlock(xml, 'asset')) {
-    const ref = attr(tag, 'id');
+    const rawRef = attr(tag, 'id');
+    const sanitizedRef = sanitizeXmlName(rawRef);
+    // The SAME normalization the clip side applies in parseAssetClipTag, so an
+    // asset id that needed cleaning still pairs with the clips pointing at it.
+    const ref = sanitizedRef?.value;
     const src = attr(tag, 'src');
     if (!ref || !src) continue;
+    if (sanitizedRef.changed && rawRef !== null) {
+      reportRenamedId('Asset', rawRef, ref, unsupported);
+    }
     // A <timecode> child carries the source start offset; rebuild the SMPTE
     // string at the project rate so the asset round-trips through export.
     const timecodeTag = tag.match(/<timecode\b[^>]*/)?.[0] ?? '';
@@ -845,13 +1434,14 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     const startTimecode = startSeconds !== null && fps
       ? secondsToTimecode(startSeconds, fps) ?? undefined
       : undefined;
+    reportUnrepresentedAssetAttributes(tag, ref, unsupported);
     assets.push({
       ref,
       path: fileUrlToPath(src),
       hasVideo: attr(tag, 'hasVideo') === '1',
       hasAudio: attr(tag, 'hasAudio') === '1',
       durationSec: parseFcpxmlTime(attr(tag, 'duration') ?? '') ?? 0,
-      ...(startTimecode ? { startTimecode } : {}),
+      ...(startTimecode !== undefined ? { startTimecode } : {}),
     });
   }
   const assetByRef = new Map(assets.map((a) => [a.ref, a]));
@@ -876,7 +1466,13 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   const sequenceResources = new Map<string, SequenceResource | null>();
   const resourceIssues = new Map<string, string>();
   for (const mediaTag of extractTagBlock(xml, 'media')) {
-    const ref = sanitizeCompoundTimelineId(attr(mediaTag, 'id'));
+    const rawRef = attr(mediaTag, 'id');
+    const sanitized = sanitizeXmlName(rawRef);
+    if (sanitized === undefined) continue;
+    if (sanitized.changed && rawRef !== null) {
+      reportRenamedId('Sequence resource', rawRef, sanitized.value, unsupported);
+    }
+    const ref = sanitizeCompoundTimelineId(sanitized.value);
     if (ref === undefined) continue;
     if (sequenceResources.has(ref) || resourceIssues.has(ref)) {
       sequenceResources.set(ref, null);
@@ -927,13 +1523,18 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     fps: number,
     depth: number,
   ): ImportedCompoundClip | null {
-    const ref = sanitizeCompoundTimelineId(attr(tag, 'ref'));
+    const rawRef = attr(tag, 'ref');
+    const sanitizedRef = sanitizeXmlName(rawRef);
+    const ref = sanitizeCompoundTimelineId(sanitizedRef?.value);
     if (ref === undefined) {
       reportSequenceIssue(
         `missing:${label}`,
         `Ref-clip "${label}" has no usable sequence resource reference.`,
       );
       return null;
+    }
+    if (sanitizedRef?.changed && rawRef !== null) {
+      reportRenamedId('Ref-clip', rawRef, sanitizedRef.value, unsupported);
     }
     const sequence = sequenceAtDepth(ref, depth, label);
     if (!sequence) return null;
@@ -955,17 +1556,15 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
       reportTimeMap(label, 'constant speed is not imported for compound clips', unsupported);
     }
     reportUnrepresentedAttributes(tag, 'Ref-clip', label, unsupported);
+    reportNestedAdjustments(tag, 'Ref-clip', label, unsupported);
 
     const opacity = blendOf(tag);
     const opacityTrack = opacityKeyframesOf(tag, startFrame, fps, label, unsupported);
-    const cropTrim = cropTrimOf(tag);
+    const cropTrim = cropTrimOf(tag, 'Ref-clip', label, unsupported);
     const transform = transformOf(tag);
     const transformKeyframes = transformKeyframesOf(tag, startFrame, fps, label, unsupported);
     reportAnimatedElement(tag, 'adjust-volume',
       `Ref-clip "${label}" animates volume; keyframed volume is not transported (static level kept).`,
-      unsupported);
-    reportAnimatedElement(tag, 'adjust-crop',
-      `Ref-clip "${label}" animates crop; crop keyframes are not transported (base crop kept).`,
       unsupported);
     if (hasUnclaimedKeyframes(tag, ['adjust-transform', 'adjust-blend', 'adjust-volume', 'adjust-crop'])) {
       unsupported.push(`Ref-clip "${label}" animates a parameter; keyframes are not imported.`);
@@ -1286,6 +1885,18 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
   for (const construct of ['<effect-ref', '<effect ', '<filter-video', '<filter-audio', '<note>', '<chapter-marker', '<generator', '<shape', '<graphic']) {
     if (xml.includes(construct)) {
       unsupported.push(`${construct.replace(/[<>=]/g, '')} elements are skipped.`);
+    }
+  }
+
+  // The elements read for nothing, once per document each. Its own loop because
+  // the match is on an element-name boundary, which the construct list above is
+  // not and deliberately was not made — that list's plain substring test is what
+  // already covers `<filter-video-mask>` via `'<filter-video'`, and narrowing it
+  // would un-report that element rather than tidy it.
+  const loweredXml = xml.toLowerCase();
+  for (const element of UNREPRESENTED_ELEMENTS) {
+    if (containsElementName(loweredXml, element)) {
+      unsupported.push(`${element} elements are skipped.`);
     }
   }
 
