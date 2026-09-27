@@ -610,7 +610,24 @@ export function planFlatten(
   // The full nested content is restored (not just the referenced window), so
   // an outer trim never destroys material on flatten — visible content lands
   // exactly where it rendered.
-  const frameShift = compound.startFrame - compound.inPoint;
+  //
+  // "Where it rendered" is a map, not a displacement, and this compound's own
+  // `speed` is part of it. With the level's timeline → nested map
+  // `t = startFrame + (n - inPoint) / speed`, the placement of nested frame `n`
+  // on this scope is its inverse:
+  //
+  //   n / speed + (startFrame - inPoint / speed)
+  //
+  // which collapses to the old additive `startFrame - inPoint` exactly when
+  // `speed === 1` and is otherwise wrong by `(n - inPoint) * (1 - 1/speed)`.
+  // That error vanishes at `n === inPoint` — the window head — and grows with
+  // every frame past it, so a child sitting at the head still looks right.
+  // Same composed `frameScale`/`frameOffset` pair, and the same
+  // `effectiveSpeed` read, that `expandTimeline` uses for this clip below, so
+  // flatten and render cannot disagree about where a child belongs.
+  const speed = effectiveSpeed(compound.speed);
+  const frameScale = 1 / speed;
+  const frameOffset = compound.startFrame - compound.inPoint / speed;
   const existingIds = new Set(source.clips.map((clip) => clip.id));
   const remapped = new Map<string, string>();
   for (const clip of nested.clips) {
@@ -630,8 +647,15 @@ export function planFlatten(
 
   const restoredClips = nested.clips.map((clip) => {
     const next: Clip = rebaseKeyframeTracks(
-      { ...clip, id: remapped.get(clip.id) ?? clip.id, startFrame: clip.startFrame + frameShift },
-      frameShift,
+      {
+        ...clip,
+        id: remapped.get(clip.id) ?? clip.id,
+        // `renderFrameOf`'s exact rounding, so a restored clip's placement is
+        // the same integer the renderer used for it.
+        startFrame: Math.round(frameScale * clip.startFrame + frameOffset),
+      },
+      frameOffset,
+      frameScale,
     );
     return next;
   });
