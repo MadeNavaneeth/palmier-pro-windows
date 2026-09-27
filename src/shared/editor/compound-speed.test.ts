@@ -1067,3 +1067,189 @@ describe('resolve → flatten round-trips the window it came from', () => {
       .toBeLessThanOrEqual(whole.startFrame + whole.durationFrames);
   });
 });
+
+describe('flatten places a sped-up compound\'s children on the composed map', () => {
+  const SPEEDS = [0.5, 0.75, 1.25, 2, 4];
+  const HEAD = 0; // nested frames past the window start for the child ON the head
+  const AWAY = 40; // a nested frame far enough that the old sum is visibly wrong
+  // The compound's window deliberately does NOT start at nested frame 0. With
+  // `inPoint === 0` the `inPoint / speed` term in the offset multiplies nothing,
+  // so a fixture like that cannot tell the correct offset from the old additive
+  // one -- mutation M4 survives it. A window starting at 24 makes that term
+  // observable, and it is what the `trimClip` route above actually leaves
+  // behind: the compound is built whole, then its window is trimmed inward.
+  const WINDOW_START = 24;
+  const WINDOW_END = 240;
+
+  /**
+   * The only route to a compound carrying `speed` is a legacy save plus one
+   * `trimClip` (the describe above), and the state that leaves is exactly
+   * `speed` set with the window invariant back in force. Child `a` sits ON the
+   * window head, child `b` sits `AWAY` frames past it.
+   */
+  function spedUpNest(speed: number, withKeyframes = false): { project: Project; compoundId: string; head: Frame; away: Frame } {
+    const nested = planNest(windowProject(30, [
+      mediaClip({ id: 'a', startFrame: WINDOW_START, durationFrames: 240, inPoint: 0, outPoint: 240 }),
+    ]), ['a']).project;
+    const compound = nested.timeline.clips[0]!;
+    const leafId = Object.keys(nested.timelines!)[0]!;
+    // Read off the window this helper actually writes below, not the one
+    // `planNest` happened to produce.
+    const head = WINDOW_START + HEAD;
+    const away = WINDOW_START + AWAY;
+    return {
+      compoundId: compound.id,
+      head,
+      away,
+      project: {
+        ...nested,
+        timeline: {
+          ...nested.timeline,
+          clips: nested.timeline.clips.map((clip) => (clip.id === compound.id
+            ? {
+              ...clip,
+              speed,
+              inPoint: WINDOW_START,
+              outPoint: WINDOW_END,
+              durationFrames: WINDOW_END - WINDOW_START,
+            }
+            : clip)),
+        },
+        timelines: {
+          ...nested.timelines!,
+          [leafId]: {
+            ...nested.timelines![leafId]!,
+            clips: [
+              // `a` ON the window head, `b` AWAY past it. The window is
+              // [WINDOW_START, WINDOW_END), so both starts are inside it.
+              ...nested.timelines![leafId]!.clips.map((clip) => (clip.id === 'a'
+                ? { ...clip, startFrame: WINDOW_START }
+                : clip)),
+              mediaClip({
+                id: 'b',
+                startFrame: away,
+                durationFrames: 30,
+                inPoint: 0,
+                outPoint: 30,
+                ...(withKeyframes
+                  ? { motionX: [{ frame: away, value: 0 }, { frame: away + 30, value: 10 }] }
+                  : {}),
+              }),
+            ],
+          },
+        },
+      },
+    };
+  }
+
+  it('agrees with the render path for every speed, on a child past the window head', () => {
+    for (const speed of SPEEDS) {
+      const { project, compoundId, head, away } = spedUpNest(speed);
+      const compound = project.timeline.clips.find((clip) => clip.id === compoundId)!;
+      const rendered = resolveRenderTimeline(project).clips.filter((clip) => clip.id !== compoundId);
+      const flat = planFlatten(project, compoundId).project;
+      expect(rendered.map((clip) => clip.id).sort()).toEqual(['a', 'b']);
+      for (const r of rendered) {
+        const f = flat.timeline.clips.find((clip) => clip.id === r.id);
+        expect(f, `speed ${speed}: ${r.id} missing from the flattened timeline`).toBeDefined();
+        expect(f!.startFrame, `speed ${speed}: ${r.id} landed away from where it rendered`).toBe(r.startFrame);
+      }
+      // The child past the head is the one that discriminates: it must move.
+      const bFlat = flat.timeline.clips.find((clip) => clip.id === 'b')!.startFrame;
+      const composed = Math.round(away / speed + (compound.startFrame - compound.inPoint / speed));
+      const oldSum = away + (compound.startFrame - compound.inPoint);
+      expect(bFlat, `speed ${speed}: child past the head was not rescaled`).toBe(composed);
+      // And it is genuinely not the pre-fix displacement, except where the
+      // window head coincidence makes the two the same integer.
+      if (away !== compound.inPoint) {
+        expect(bFlat, `speed ${speed}: child past the head still on the old sum`).not.toBe(oldSum);
+      }
+      expect(head).toBe(compound.inPoint);
+    }
+  });
+
+  it('the window head is the ONE point where the old additive sum was exact', () => {
+    // This is why the defect read as "right at the start, stretched after": at
+    // `n === inPoint` the sum and the composed map agree to the frame, so a
+    // regression test written only at the head passes on a broken fix. Every
+    // assertion above therefore uses a child PAST the head.
+    for (const speed of SPEEDS) {
+      const { project, compoundId, head } = spedUpNest(speed);
+      const compound = project.timeline.clips.find((clip) => clip.id === compoundId)!;
+      const oldSum = head + (compound.startFrame - compound.inPoint);
+      const flat = planFlatten(project, compoundId).project;
+      const aFlat = flat.timeline.clips.find((clip) => clip.id === 'a')!.startFrame;
+      // The old formula's value, and the composed map's, are the same integer.
+      expect(aFlat, `speed ${speed}: head child moved off the coincidence point`).toBe(oldSum);
+      expect(aFlat).toBe(Math.round(head / speed + (compound.startFrame - compound.inPoint / speed)));
+    }
+  });
+
+  it('speed 1 is untouched: the pair collapses to the old additive sum', () => {
+    const { project, compoundId, away } = spedUpNest(1, true);
+    const compound = project.timeline.clips.find((clip) => clip.id === compoundId)!;
+    const oldSum = compound.startFrame - compound.inPoint;
+    const flat = planFlatten(project, compoundId).project;
+    for (const id of ['a', 'b']) {
+      const f = flat.timeline.clips.find((clip) => clip.id === id)!;
+      const nestedStart = id === 'a' ? compound.inPoint + HEAD : away;
+      expect(f.startFrame, `speed 1: ${id} placement changed`).toBe(nestedStart + oldSum);
+    }
+    // Keyframes keep the pre-fix rebasing exactly: `round(v * 1) + oldSum`, which
+    // at scale 1 is a pure shift. `a` carries none, so it must still have none.
+    expect(flat.timeline.clips.find((clip) => clip.id === 'a')!.motionX).toBeUndefined();
+    expect(flat.timeline.clips.find((clip) => clip.id === 'b')!.motionX?.map((point) => point.frame))
+      .toEqual([away + oldSum, away + 30 + oldSum]);
+  });
+
+  it('rebases keyframes through the same scale, not just the offset', () => {
+    for (const speed of SPEEDS) {
+      const { project, compoundId, away } = spedUpNest(speed, true);
+      const compound = project.timeline.clips.find((clip) => clip.id === compoundId)!;
+      const flat = planFlatten(project, compoundId).project;
+      const f = flat.timeline.clips.find((clip) => clip.id === 'b')!;
+      const offset = compound.startFrame - compound.inPoint / speed;
+      expect(f.motionX?.map((point) => point.frame), `speed ${speed}: keyframes not scaled`)
+        .toEqual([Math.round(away / speed) + offset, Math.round((away + 30) / speed) + offset]);
+    }
+  });
+
+  it('at depth 2 the inner compound lands where the render map puts it', () => {
+    // The error is `(n - inPoint) * (1 - 1/speed)`, so it is largest for the
+    // deepest child furthest from the head: the inner compound below starts 40
+    // frames into the outer nest, under an outer compound running at 2x.
+    const controller = new EditorController(windowProject(30, [
+      mediaClip({ id: 'a', startFrame: 0, durationFrames: 240, inPoint: 0, outPoint: 240 }),
+    ]));
+    const outer = controller.nestClips(['a']);
+    controller.openNestedTimeline(outer.timelineId);
+    const inner = controller.nestClips(['a']);
+    controller.moveClip(inner.compoundClipId, 40);
+    // Back to main: the OUTER compound is the one being sped up, and `getClips`
+    // only ever answers for the open scope.
+    controller.navigateToScope(null);
+    // Legacy state on the outer compound, then the one trim that re-admits it.
+    controller.applyClipProperties([outer.compoundClipId], 'Legacy speed', (draft) => {
+      draft.speed = 2;
+      draft.outPoint = draft.inPoint + Math.round(draft.durationFrames * 2);
+      return true;
+    });
+    expect(() => planFlatten(controller.getProject(), outer.compoundClipId)).toThrow(/invalid nested window/);
+    controller.trimClip(outer.compoundClipId, 0, 100);
+    const project = controller.getProject();
+    const outerClip = project.timeline.clips.find((clip) => clip.id === outer.compoundClipId)!;
+    expect(outerClip.durationFrames).toBe(100);
+    const innerNestedStart = project.timelines![outerClip.compoundTimelineId!]!.clips
+      .find((clip) => clip.id === inner.compoundClipId)!.startFrame;
+    const speed = effectiveSpeed(outerClip.speed);
+    const flat = planFlatten(project, outer.compoundClipId).project;
+    const placed = flat.timeline.clips.find((clip) => clip.id === inner.compoundClipId);
+    expect(placed, 'flatten should have lifted the inner compound into the main timeline').toBeDefined();
+    // The composed map, and the sum the pre-fix code used. They differ by
+    // `(n - inPoint) * (1 - 1/speed)` = 40 * 0.5 = 20 frames here.
+    const composed = Math.round(innerNestedStart / speed + (outerClip.startFrame - outerClip.inPoint / speed));
+    const oldSum = innerNestedStart + (outerClip.startFrame - outerClip.inPoint);
+    expect(placed!.startFrame, 'the depth-2 child landed away from the composed map').toBe(composed);
+    expect(oldSum - placed!.startFrame).toBe(Math.round(innerNestedStart * (1 - 1 / speed)));
+  });
+});
