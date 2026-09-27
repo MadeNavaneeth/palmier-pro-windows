@@ -16,6 +16,7 @@ import { ipcMain, dialog, BrowserWindow } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 import { writeProjectFile, pruneAbandonedWriteTemps } from '../services/project-writer';
+import { loadRecentProjects, recordRecentProject } from '../services/recent-projects';
 import {
   NO_SESSION_ERROR,
   getSessionForSender,
@@ -115,6 +116,9 @@ export function registerProjectHandlers(): void {
     // This handler wrote the file, so the path it landed on is the session's
     // path with no dependence on the renderer reporting it back.
     rememberSessionPath(event?.sender, targetPath);
+    // And it is a project this app has genuinely saved, which is what the
+    // recent list and the launch sweep that depends on it are built from.
+    recordRecentProject(targetPath);
 
     return { success: true, path: targetPath };
   });
@@ -139,6 +143,9 @@ export function registerProjectHandlers(): void {
       // Read the file here, so the session's path is known from this call alone
       // even if the window that asked dies before it can report anything.
       rememberSessionPath(event?.sender, filePath);
+      // A read that succeeded is the strongest evidence available that this is
+      // a project the user works in, so it is recorded for the same reasons.
+      recordRecentProject(filePath);
       return { success: true, data: content, path: filePath };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -168,10 +175,11 @@ export function registerProjectHandlers(): void {
   });
 
   // ─── Recent Projects ─────────────────────────────────────────────────────────
-  ipcMain.handle('project:get-recent', async () => {
-    // TODO: persist recent list via electron-store
-    return [];
-  });
+  // Recorded by the two file-I/O handlers above, not by anything the renderer
+  // reports, and persisted by `recent-projects.ts`. A bare path list because no
+  // consumer exists yet: the preload exposes `getRecent` but no renderer calls
+  // it, so nothing constrains the shape and there is nothing to pre-shape for.
+  ipcMain.handle('project:get-recent', async () => loadRecentProjects());
 }
 
 /** A project document must at minimum parse as a JSON object. */
