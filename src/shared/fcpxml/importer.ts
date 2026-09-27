@@ -232,12 +232,44 @@ function numAttr(tag: string, name: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * A FCPXML `src` attribute back to a filesystem path.
+ *
+ * `file:` is only a wrapper; the two things that matter are a Windows drive and
+ * a POSIX root, and the old form conflated them. It stripped `file:///` with an
+ * UNCONDITIONAL replace, which is right for a drive (`file:///C:/x` -> `C:/x`,
+ * where the slash after the scheme is punctuation) and wrong for a POSIX root
+ * (`file:///tmp/x` -> `tmp/x`, which is no longer absolute at all). On a
+ * POSIX-rooted document every asset then failed `existsSync`, so every clip was
+ * reported offline and nothing was placed — and because Final Cut writes
+ * `file:///Users/...`, that is the macOS-authored case, on Windows, which is the
+ * primary real-world input to this feature.
+ *
+ * So the scheme and ALL of its slashes come off first, which also collapses
+ * `file:///C:/x`, `file://C:/x` and `file:/C:/x` to the one path they all name;
+ * a value carrying no scheme passes through that step untouched instead of
+ * gaining a slash. Then the two shapes are told apart, because only a drive
+ * letter carries its own root:
+ *
+ *   - `C:/x`   -> `C:/x`   drive letter; the root is the letter
+ *   - `tmp/x`  -> `/tmp/x`  POSIX absolute; the root was the scheme's slash
+ *
+ * A UNC `file://server/share/x` has no drive and no POSIX root, so it yields
+ * `/server/share/x` — a rooted path on the current drive, NOT the `\\server\share`
+ * it names. That is the one form this does not recover, and it is a limitation of
+ * the WRITER too: `exporter.ts`'s `fileUrl` collapses a leading `\\` for the same
+ * reason, so a UNC path does not survive our own round trip either. See
+ * `docs/UPSTREAM_ISSUES.md`; fixing it is a writer change and a product decision
+ * about network media, not a reader fix.
+ */
 function fileUrlToPath(src: string): string {
   let decoded = src;
   try {
     decoded = decodeURIComponent(src);
   } catch { /* keep raw */ }
-  return decoded.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '/');
+  const body = decoded.replace(/^file:\/*/i, '');
+  if (body.length === 0) return body;
+  return /^[A-Za-z]:/.test(body) ? body : '/' + body.replace(/^\/+/, '');
 }
 
 /** "sx sy" pair, e.g. adjust-transform scale/position. */

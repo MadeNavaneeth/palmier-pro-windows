@@ -685,6 +685,148 @@ describe an element that was never read.
 No disposition changes: PRs #154/#289 stay `Partial`. Neither defect was a
 regression from this branch — both predate it — and no other ledger row moves.
 
+### #154 — TWO PLATFORM DEFECTS, both now closed
+
+Both were found by running the suite on Linux in a `node:24` container while the
+Windows suite was green, which is the only reason either was visible at all. One
+is severe: **FCPXML import silently placed NOTHING for any document with a
+POSIX-rooted `src`, which is every document Final Cut writes.**
+
+**(1) `fileUrlToPath` DESTROYED a POSIX root, so every asset read as offline.**
+The reader was `decoded.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '/')`
+— an unconditional strip of `file:///`. That is right for a drive, where the
+slash after the scheme is punctuation (`file:///C:/x` -> `C:/x`), and wrong for a
+POSIX root, which the scheme's slash IS (`file:///tmp/x` -> `tmp/x`, no longer
+absolute). `existsSync('tmp/x')` then failed, the asset was reported OFFLINE, and
+every clip on it was skipped. Measured on a real import, before:
+
+```
+XML src   = "file:///tmp/diag-9va2co/av.mp4"
+plan path = "tmp/diag-9va2co/av.mp4"      <-- root gone
+result    = placedClips: 0, assetsAdded: 0, offline: ["tmp/diag-9va2co/av.mp4"]
+```
+
+and after: `assetsAdded: 1`, `placedClips: 1`, `offline: []`, the linked A/V twin
+rebuilt and its speed, level and name recovered. Thirteen tests in
+`executor.fcpxml.test.ts` went from failing to passing on the same fixture, and
+`src/shared/fcpxml` stays 189/189 — the fix changes no number that was right.
+
+**This is NOT a Windows-only reader bug, and the upstream source settles it.**
+Upstream's writer is `FCPXMLExporter.swift:761-765`:
+
+```swift
+private func mediaSrc(for resource: MediaResource) -> String {
+    resource.url.absoluteString.map { ch in
+        "'!### #164 — keyboard shortcuts
+()*+,;=".contains(ch) ? String(format: "%%%02X", ch.asciiValue ?? 0) : String(ch)
+    }.joined()
+}
+```
+
+`URL.absoluteString` for a file URL is always `file:///Users/...` on macOS — a
+POSIX root, and never a drive letter. So the producer's own output was
+unreadable by this port, and the failure was TOTAL rather than partial: not one
+clip placed, for the macOS-to-Windows direction, which is the direction the
+feature exists to serve. It is a shared-contract violation in this port's reader,
+not a platform quirk. The drive-letter branch is a Windows-port accommodation for
+documents this port writes itself, and is not a shape upstream emits.
+
+Upstream's sub-delimiter encoding (`'!### #164 — keyboard shortcuts
+()*+,;=`) also round-trips, because
+`decodeURIComponent` reverses every one of them; only `!'()*-._~` survive
+unescaped, and those upstream never encodes.
+
+**The fix strips the scheme and ALL of its slashes, then tells the two shapes
+apart**, because only a drive letter carries its own root:
+
+```ts
+const body = decoded.replace(/^file:\/*/i, '');
+if (body.length === 0) return body;
+return /^[A-Za-z]:/.test(body) ? body : '/' + body.replace(/^\/+/, '');
+```
+
+Stripping the scheme uniformly also collapses three spellings of one path that
+the old half-handled, and a value with NO scheme now passes through untouched
+instead of gaining a slash — both of which the first, narrower version of this fix
+got wrong (`file:/C:/x` -> `/file:/C:/x`, and a bare `C:/x` -> `/C:/x`). Every form
+is pinned through `parseFcpxml`, so the value asserted is the one the placement
+path hands to `existsSync`:
+
+| `src` | reads as | note |
+| --- | --- | --- |
+| `file:///C:/x` | `C:/x` | drive, three slashes |
+| `file://C:/x` | `C:/x` | drive, two slashes — was `/C:/x` |
+| `file:/C:/x` | `C:/x` | drive, one slash — was `file:/C:/x` |
+| `file:///tmp/x` | `/tmp/x` | POSIX root — was `tmp/x` |
+| `file:///Users/me/Movies/x.mov` | `/Users/me/Movies/x.mov` | the Final Cut shape |
+| `file://tmp/x`, `file:/tmp/x` | `/tmp/x` | POSIX, fewer slashes |
+| `file:///tmp/my%20media/x.mp4` | `/tmp/my media/x.mp4` | encoded space, POSIX |
+| `file:///C:/my%20media/x.mp4` | `C:/my media/x.mp4` | encoded space, drive |
+| `file:///tmp/a%23b.mp4` | `/tmp/a#b.mp4` | encoded hash, POSIX |
+| `file:///%ZZ` | `/%ZZ` | malformed escape: `decodeURIComponent` throws, raw kept |
+| `C:/x` | `C:/x` | no scheme — passes through |
+| `/tmp/x` | `/tmp/x` | no scheme — passes through |
+| `file://server/share/x.mp4` | `/server/share/x.mp4` | **UNC, not recovered** |
+
+**The UNC case is stated rather than glossed, and it is a WRITER limitation too.**
+A UNC path has neither a drive nor a POSIX root, so the reader yields a rooted path
+on the current drive, which is not the `\\server\share` named. Measuring the round
+trip settles that this is not fixable here alone: `exporter.ts`'s `fileUrl`
+collapses the leading `\\` of `\\server\share\x.mp4` for the same reason, so a UNC
+path does not survive OUR OWN export either. Every other shape round-trips
+exactly — drive, POSIX, macOS-shaped, encoded space, encoded hash, encoded `%`
+all measure `round-trips=YES`. Fixing UNC is a writer change plus a product
+decision about network media, so it is recorded here and left.
+
+An empty `src` is not a path question at all: the pre-existing `!src` guard drops
+the asset first, which is now pinned, because turning `''` into `'/'` would be
+worse — `existsSync('/')` is true, so the asset would probe as a real one.
+
+**(2) `parseSkillFile` could not read a CRLF file, so a skill was SILENTLY
+DROPPED.** The frontmatter test is `/^([A-Za-z_][A-Za-z0-9_-]*):(.*)$/`, and `.`
+does not match `\r`, so on a CRLF file every line failed as `malformed
+frontmatter on line 2`. Measured: `"name: podcast-cleanup"` matches;
+`"name: podcast-cleanup\r"` does not. `discoverSkills` then refused the skill as
+unreadable and it vanished with no error the user could act on.
+
+**The trigger is `core.autocrlf=true`, which is this repo's own configuration.**
+Every blob in HEAD is LF; a Windows checkout delivers CRLF. The three shipped
+`SKILL.md` files happened to be LF in the working tree that was tested — the only
+LF files in an otherwise CRLF tree — so the suite passed locally for the wrong
+reason and failed on the Windows runner, which checks out fresh. Measured with the
+files converted to CRLF: 4 failed / 21 passed, reason `malformed frontmatter on
+line 2`; with the fix, 30/30. This is not a test defect: on a product that ships
+only on Windows, a user's CRLF `SKILL.md` lost the skill.
+
+The fix is `raw.split(/\r?\n/)`, at the one place the lines are produced, which
+also means the body handed onward carries no stray `CR` — pinned, because
+`extractSkillTools` is exported and takes the body directly. Measured across the
+repo for the same defect: `skills.ts` held the only FRONTMATTER parser, and of 21
+newline `split(` sites in `src/` and `scripts/`, every other one is either
+`\r`-tolerant downstream or reads a format whose own parser trims — `vtt-parse.ts`
+and `srt.ts` both parse CRLF input correctly today, measured. `skills.ts:302`
+(`extractSkillTools`) was left alone for the same measured reason: it trims each
+line before its regexes, and passes a CRLF body unchanged.
+
+A CR-only file is NOT accommodated — nothing writes that any more — but the
+refusal is pinned so the reason stays the specific `opening frontmatter` one
+instead of a misleading `malformed frontmatter`. A UTF-8 BOM is tolerated with
+either line ending, since `String.prototype.trim` removes U+FEFF and an
+editor-written file can carry one.
+
+**Both fixes are mutation-checked alone, with no overlap.** Reverting only
+`fileUrlToPath` fails 9 of the new `file:` cases and leaves the skills suite green;
+reverting only `parseSkillFile` fails 3 of the new line-ending cases and leaves
+all 189 fcpxml tests green.
+
+**Disposition: no upstream analogue for either, and here is why.** Upstream is
+EXPORT-only — there is no FCPXML reader in it to compare against, so the `src`
+contract had no second implementation holding us to it, which is exactly how a
+one-sided mistake survives. Upstream #154 is keyframed transform transport, the
+export direction. No disposition changes: PRs #154/#289 stay `Partial`, and
+neither defect is a regression from this branch — the `src` bug predates the whole
+FCPXML surface.
+
 ### #164 — keyboard shortcuts
 
 Bindings live in data, not in a switch statement. `shortcutConflicts()` is

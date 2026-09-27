@@ -65,6 +65,59 @@ describe('skill parsing (L7)', () => {
     }
   });
 
+  /**
+   * Line endings are not a detail here. This product ships only on Windows, and
+   * a Windows checkout of this repo (core.autocrlf=true, no .gitattributes)
+   * delivers the LF blobs as CRLF — so the three shipped `SKILL.md` files are
+   * CRLF on a CI runner and LF in a working tree that happened to be written
+   * with LF. The frontmatter test is `/^([A-Za-z_][\w-]*):(.*)$/`, and `.` does
+   * not match `\r`, so a CRLF line failed as `malformed frontmatter` and the
+   * skill was SILENTLY dropped: no skill, and a `discoverSkills` refusal listing
+   * it as unreadable. Both forms are pinned so neither can regress, and the CRLF
+   * case is the one that actually fails in CI.
+   */
+  it.each([
+    ['LF', (s: string) => s],
+    ['CRLF', (s: string) => s.split('\n').join('\r\n')],
+  ])('parses a %s SKILL.md identically', (_label, convert) => {
+    const parsed = parseSkillFile(convert(skillFile('alpha', 'Does alpha.', 'Body text.')), 'alpha');
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.skill).toEqual({ name: 'alpha', description: 'Does alpha.', body: 'Body text.' });
+    }
+  });
+
+  it('tolerates a UTF-8 BOM, with either line ending', () => {
+    // `String.prototype.trim` removes U+FEFF, so the opening fence still matches
+    // once the BOM is on line 1. Pinned because an editor-written file can carry
+    // one, and because "the fence is not `---`" would otherwise be the symptom.
+    for (const raw of [
+      '\uFEFF' + skillFile('alpha', 'Does alpha.', 'Body text.'),
+      '\uFEFF' + skillFile('alpha', 'Does alpha.', 'Body text.').split('\n').join('\r\n'),
+    ]) {
+      const parsed = parseSkillFile(raw, 'alpha');
+      expect(parsed.ok).toBe(true);
+      if (parsed.ok) expect(parsed.skill.name).toBe('alpha');
+    }
+  });
+
+  it('still refuses a CR-only file, and says why', () => {
+    // CR-only line endings predate OS X 9 and nothing writes them, so this is NOT
+    // accommodated — but the refusal is pinned so the reason stays the specific
+    // "no opening fence" one rather than a misleading "malformed frontmatter".
+    const parsed = parseSkillFile(skillFile('alpha', 'Does alpha.', 'Body.').split('\n').join('\r'), 'alpha');
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.reason).toMatch(/opening frontmatter/);
+  });
+
+  it('leaves no stray CR in the body it hands onward', () => {
+    // `extractSkillTools` is exported and takes the body directly, so the CR has to
+    // be gone at the split rather than trimmed away at each use.
+    const parsed = parseSkillFile(skillFile('alpha', 'Does alpha.', 'Line one.\nLine two.').split('\n').join('\r\n'), 'alpha');
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.skill.body).toBe('Line one.\nLine two.');
+  });
+
   it.each([
     ['missing opening fence', 'name: alpha\ndescription: x\n---\n\nBody.', 'alpha', /opening frontmatter/],
     ['missing closing fence', '---\nname: alpha\ndescription: x\n\nBody.', 'alpha', /closing frontmatter/],

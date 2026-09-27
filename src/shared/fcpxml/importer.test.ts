@@ -818,6 +818,132 @@ describe('#154 two parse defects closed', () => {
     )).toBe(true);
   });
 });
+describe('a `file:` src keeps the root it names (#154)', () => {
+  /**
+   * Read through `parseFcpxml` rather than a private helper, because the value
+   * that matters is the one the placement path later hands to `existsSync` and
+   * `probeMedia`. A root that goes missing here is not a cosmetic difference: the
+   * asset is reported OFFLINE and every clip on it is skipped.
+   */
+  function pathOf(src: string): string {
+    const plan = parseFcpxml([
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      `<asset id="2" name="a.mp4" src="${src}" start="0s" duration="10s" hasVideo="1"/>`,
+      '</resources><library><event name="E"><project name="E"><spine>',
+      '<asset-clip ref="2" name="A" lane="0" offset="0s" start="0s" duration="1s"/>',
+      '</spine></project></event></library></fcpxml>',
+    ].join(''));
+    expect(plan.assets).toHaveLength(1);
+    return plan.assets[0]!.path;
+  }
+
+  it.each([
+    // A drive letter carries its own root, so the slash after the scheme is
+    // punctuation and comes off. All three spellings name the same path.
+    ['file:///C:/x', 'C:/x', 'drive, three slashes'],
+    ['file://C:/x', 'C:/x', 'drive, two slashes'],
+    ['file:/C:/x', 'C:/x', 'drive, one slash'],
+    ['file:///D:/Media/clip.mp4', 'D:/Media/clip.mp4', 'drive, deeper path'],
+    // A POSIX root is the scheme's slash, so it has to go back on. This is the
+    // form Final Cut writes (`file:///Users/...`) and the one the old reader
+    // turned into a relative path, so nothing placed.
+    ['file:///tmp/x', '/tmp/x', 'POSIX root'],
+    ['file:///Users/me/Movies/x.mov', '/Users/me/Movies/x.mov', 'macOS-shaped path'],
+    ['file://tmp/x', '/tmp/x', 'POSIX, two slashes'],
+    ['file:/tmp/x', '/tmp/x', 'POSIX, one slash'],
+    // Percent-encoding is decoded first, so an escaped space is a real space and
+    // the root decision is made on the decoded value.
+    ['file:///tmp/my%20media/x.mp4', '/tmp/my media/x.mp4', 'encoded space, POSIX'],
+    ['file:///C:/my%20media/x.mp4', 'C:/my media/x.mp4', 'encoded space, drive'],
+    // A `#` is a fragment delimiter in a URL, so a literal one is escaped by the
+    // writer and must come back as itself rather than truncating the path.
+    ['file:///tmp/a%23b.mp4', '/tmp/a#b.mp4', 'encoded hash, POSIX'],
+    ['file:///C:/a%23b.mp4', 'C:/a#b.mp4', 'encoded hash, drive'],
+    // A `%` that is not a valid escape makes decodeURIComponent throw; the raw
+    // value is kept rather than the asset being dropped, and the root still holds.
+    ['file:///%ZZ', '/%ZZ', 'malformed percent escape'],
+    // No scheme at all: already a path, so it must pass through untouched. This
+    // is the regression a narrower fix would have introduced, since a leading
+    // slash added to a bare `C:/x` is a different, wrong path.
+    ['C:/x', 'C:/x', 'bare drive path, no scheme'],
+    ['/tmp/x', '/tmp/x', 'bare POSIX path, no scheme'],
+    // UNC has neither a drive nor a POSIX root. Stated, not glossed: this yields a
+    // rooted path on the CURRENT drive, which is not the `\\server\share` named.
+    // The writer has the same limitation (it collapses a leading `\\`), so a UNC
+    // path does not survive our own round trip either. See the ledger entry.
+    ['file://server/share/x.mp4', '/server/share/x.mp4', 'UNC, documented limitation'],
+  ])('reads %s as %s (%s)', (src, expected) => {
+    expect(pathOf(src as string)).toBe(expected as string);
+  });
+
+  it('skips an asset with an empty src rather than reading it as the filesystem root', () => {
+    // The pre-existing `!src` guard drops the asset before any path work, which is
+    // the right answer and is asserted here so it stays: turning `''` into `'/'`
+    // would be far worse, since `existsSync('/')` is true and the asset would
+    // probe as a real one.
+    const plan = parseFcpxml([
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      '<asset id="2" name="a.mp4" src="" start="0s" duration="10s" hasVideo="1"/>',
+      '</resources><library><event name="E"><project name="E"><spine>',
+      '<asset-clip ref="2" name="A" lane="0" offset="0s" start="0s" duration="1s"/>',
+      '</spine></project></event></library></fcpxml>',
+    ].join(''));
+    expect(plan.assets).toEqual([]);
+    expect(plan.clips).toEqual([]);
+    expect(plan.unsupported).toEqual(['Asset-clip "A" references unknown resource 2.']);
+  });
+
+  it('round-trips a POSIX path through our own writer', () => {
+    // exporter.ts's `fileUrl` collapses the leading slash, so `file:///tmp/x.mp4`
+    // is what a POSIX path looks like on the wire. Before the fix the reader
+    // handed back `tmp/x.mp4`, which failed `existsSync` and reported the asset
+    // offline.
+    const p = baseProject();
+    p.media.push({
+      id: 'posix', path: '/tmp/palmier/clip.mp4', filename: 'clip.mp4', type: 'video',
+      duration: 60, fileSize: 1, addedAt: '', width: 1920, height: 1080,
+    } as never);
+    p.timeline.clips.push({
+      id: 'c1', assetId: 'posix', trackId: 'v1', type: 'video', label: 'Shot',
+      startFrame: 0, durationFrames: 90, inPoint: 0, outPoint: 90,
+      x: 0, y: 0, width: 1920, height: 1080, rotation: 0, scaleX: 1, scaleY: 1,
+      opacity: 1, anchorX: 0, anchorY: 0, volume: 1, muted: false,
+    } as never);
+
+    const xml = exportFcpxml(p);
+    expect(xml).toContain('src="file:///tmp/palmier/clip.mp4"');
+    const plan = parseFcpxml(xml);
+    expect(plan.assets[0]!.path).toBe('/tmp/palmier/clip.mp4');
+    expect(plan.clips).toHaveLength(1);
+  });
+
+  it('round-trips a Windows drive path through our own writer, unchanged', () => {
+    // The other half of the contract: the fix must not disturb the shape that
+    // already worked, which is every document this product has ever written.
+    const p = baseProject();
+    p.media.push({
+      id: 'win', path: 'C:\\media\\clip.mp4', filename: 'clip.mp4', type: 'video',
+      duration: 60, fileSize: 1, addedAt: '', width: 1920, height: 1080,
+    } as never);
+    p.timeline.clips.push({
+      id: 'c1', assetId: 'win', trackId: 'v1', type: 'video', label: 'Shot',
+      startFrame: 0, durationFrames: 90, inPoint: 0, outPoint: 90,
+      x: 0, y: 0, width: 1920, height: 1080, rotation: 0, scaleX: 1, scaleY: 1,
+      opacity: 1, anchorX: 0, anchorY: 0, volume: 1, muted: false,
+    } as never);
+
+    const xml = exportFcpxml(p);
+    expect(xml).toContain('src="file:///C:/media/clip.mp4"');
+    const plan = parseFcpxml(xml);
+    expect(plan.assets[0]!.path).toBe('C:/media/clip.mp4');
+    expect(plan.clips).toHaveLength(1);
+  });
+});
+
 /**
  * A hostile id is neutralised at INGEST, and the rewrite is REPORTED.
  *
