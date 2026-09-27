@@ -23,22 +23,37 @@
  * (`adjust-volume`) as the exporter writes them — plus the same elements from
  * third-party files, narrowed on read. Gaps are implicit —
  * absolute clip offsets already encode spacing. Everything else lands in
- * `unsupported` as readable notes so nothing disappears silently, by four
- * mechanisms: the adjustment elements this importer reads for NOTHING are
- * reported once per document each (`UNREPRESENTED_ADJUSTMENTS`: grades,
- * corners, stabilization, rolling shutter, loudness, noise reduction, hum
- * reduction, EQ, panning, `conform-rate`, and `fadeIn`/`fadeOut` — several of
- * which mirror a feature this editor SHIPS, which is why their silence was a
- * defect and not a gap); an `adjust-crop` in any mode but `trim` is refused; an
- * `adjust-blend mode` is reported while its `amount` still applies as plain
- * opacity, because the DTD's `mode` is an open `CDATA` with no published value
- * list to map and a wrong composite is worse than a plain one; and the two
- * spine-element attributes this editor has no field for at all are reported when
- * they state something (a DISABLED `enabled="0"`, an `audioRole` other than the
- * `dialogue` our writer stamps on every audio element). Shape-ish constructs
- * (generators, shapes, graphics) have no Windows analogue — upstream has no
- * shapes and no FCPXML shape transport — so they are reported and skipped the
- * same way, as is any unknown spine element.
+ * `unsupported` as readable notes so nothing disappears silently, by five
+ * mechanisms:
+ *
+ * 1. `UNREPRESENTED_ELEMENTS` — every element this importer reads for nothing,
+ *    reported ONCE PER DOCUMENT each, every name quoted from Apple's published
+ *    FCPXML DTD and grouped by the DTD group that makes it legal: the four
+ *    remaining `%marker_item`s; the per-channel and per-role audio components
+ *    under both the 1.4 and the 1.10 names plus their `<mute>`; the
+ *    `%intrinsic-params-video` members added after the first pass (360
+ *    re-projection, reorient, orientation, cinematic, `object-tracker`); the
+ *    `<asset>` children; and library organisation. Several mirror a feature this
+ *    editor SHIPS — color grade, EQ, noise reduction, fades, and
+ *    `MediaAsset.channels`/`sampleRate` below — which is what made their silence
+ *    a defect rather than a gap.
+ * 2. `adjust-crop` in any mode but `trim` is REFUSED, not read (see
+ *    `cropTrimOf`).
+ * 3. `adjust-blend mode` is reported while its `amount` still applies as plain
+ *    opacity, because the DTD's `mode` is an open `CDATA` with no published value
+ *    list to map and a wrong composite is worse than a plain one.
+ * 4. Spine-element attributes are reported only when they state something: a
+ *    DISABLED `enabled="0"`, an `audioRole` other than the `dialogue` our writer
+ *    stamps on every audio element, a `videoRole` other than the `video` default,
+ *    a J/L split edit, `useAudioSubroles="1"`, and the `<asset>` component and
+ *    colour-management attributes (one note per asset, since which asset is the
+ *    actionable part).
+ * 5. The construct scan below, for the effects, filters, notes and shape-ish
+ *    elements.
+ *
+ * Shape-ish constructs (generators, shapes, graphics) have no Windows analogue —
+ * upstream has no shapes and no FCPXML shape transport — so they are reported and
+ * skipped the same way, as is any unknown spine element.
  */
 
 import { secondsToTimecode } from '../media/timecode';
@@ -404,36 +419,188 @@ function reportUnrepresentedAttributes(
       + ' the composite mode is not imported, and the amount still applies.',
     );
   }
+  // `audioStart`/`audioDuration` are a J/L split edit: "Use 'audioStart' and
+  // 'audioDuration' to define J/L cuts (i.e., split edits) on composite A/V
+  // clips" (DTD 1.10). The model has ONE `inPoint`/`outPoint` pair per clip, so a
+  // clip whose audio starts away from its picture has no representation at all,
+  // and there is no `Clip` field to add one to without changing what a clip IS.
+  // Reported on either attribute, since a duration with no start is still a
+  // statement about the audio window.
+  const audioStart = attr(tag, 'audioStart');
+  if (audioStart !== null || attr(tag, 'audioDuration') !== null) {
+    unsupported.push(
+      `${element} "${label}" has a J/L split edit (audioStart/audioDuration);`
+      + ' split edits are not imported.',
+    );
+  }
+  // `videoRole` defaults to "video" (DTD 1.10), and our writer emits no value at
+  // all, so only a designation that says something is reported — the same
+  // calibration as `enabled="1"` and `audioRole="dialogue"`.
+  const videoRole = attr(tag, 'videoRole');
+  if (videoRole !== null && videoRole !== 'video') {
+    unsupported.push(`${element} "${label}" has videoRole="${videoRole}"; video roles are not imported.`);
+  }
+  // `useAudioSubroles` defaults to "0"; "1" asks for the carrier's role-based
+  // sub-audio to be used, which this importer has no way to express.
+  if (attr(tag, 'useAudioSubroles') === '1') {
+    unsupported.push(
+      `${element} "${label}" sets useAudioSubroles="1"; role-based sub-audio is not imported.`,
+    );
+  }
 }
 
 /**
- * The adjustment elements this importer reads for NOTHING, reported once per
- * document each.
+ * `srcEnable` is read for nothing and is DELIBERATELY not reported — the reason,
+ * recorded here because the silence is a decision rather than an oversight.
  *
- * Taken from the `%intrinsic-params-video`, `%intrinsic-params-audio` and
- * `%timing-params` groups of Apple's FCPXML DTD, minus the five this module does
- * read (`adjust-conform`, `adjust-blend@amount`, `adjust-transform`,
- * `adjust-crop` in trim mode, `adjust-volume`) and `timeMap`. `conform-rate` is
- * the consequential one: it is a retime, in the same `%timing-params` group as
- * `timeMap`, so a document conforming 24p into a 30p sequence was arriving at
- * normal speed with nothing said. `fadeIn`/`fadeOut` are `param` children, and
- * `Clip.fadeInFrames`/`fadeOutFrames` ship, so an animated fade was the same
- * class of silent drop as an unreported blend mode.
+ * `exporter.ts` writes `srcEnable="video"` on every `<ref-clip>` it emits — the
+ * compound carrier's own audio is unused because the nested clips carry it — and
+ * the DTD default is `"all"`, so this is a value our own documents state on every
+ * compound carrier. A note here would be a note per carrier on every palmier
+ * round trip, which is exactly the noise the calibration rule exists to prevent.
+ * A document from another producer setting it to `audio` or `all` is a real
+ * omission and is recorded as open rather than reported here.
+ */
+
+/**
+ * The `<asset>` attributes this importer reads for nothing, one note per asset
+ * that states any of them.
+ *
+ * Per asset rather than per document, because the note is only useful if it says
+ * WHICH asset: a location-sound document states these on its multichannel
+ * recordings and not on its B-roll, and "some asset has four audio sources" is
+ * not actionable where "asset 7 has four audio sources" is. The count is still
+ * bounded by the number of assets that actually declare one, and our writer emits
+ * none of them on an `<asset>`, so a document we produced stays silent.
+ *
+ * Scoped to the asset's own tag on purpose. A document-wide scan for the bare
+ * name `audioRate` would match the compound writer's
+ * `<sequence audioRate="48k">` — which it emits on every nested sequence — and
+ * fire on every palmier round trip.
+ *
+ * Two groups, because they are two different omissions:
+ * - `videoSources`/`audioSources` say how many media components the asset has,
+ *   and `audioChannels`/`audioRate` describe them. This importer places ONE clip
+ *   per asset regardless. `MediaAsset.channels` and `MediaAsset.sampleRate` do
+ *   ship, so those two are a shipped field not being transported — the same class
+ *   as an unreported `adjust-blend mode` — while the component COUNTS have no
+ *   field at all.
+ * - The colour-management overrides. `MediaAsset` has no colour-space,
+ *   projection, stereoscopic or LUT field, so there is nowhere for them to land.
+ */
+function reportUnrepresentedAssetAttributes(
+  tag: string,
+  ref: string,
+  unsupported: string[],
+): void {
+  const components = ['videoSources', 'audioSources', 'audioChannels', 'audioRate']
+    .filter((name) => attr(tag, name) !== null);
+  if (components.length > 0) {
+    unsupported.push(
+      `Asset ${ref} declares ${components.join(', ')}; its media component layout is not imported,`
+      + ' and the asset is placed as one clip.',
+    );
+  }
+  const colour = ['colorSpaceOverride', 'projectionOverride', 'stereoscopicOverride', 'customLUTOverride']
+    .filter((name) => attr(tag, name) !== null);
+  if (colour.length > 0) {
+    unsupported.push(
+      `Asset ${ref} declares ${colour.join(', ')}; colour-management overrides are not imported.`,
+    );
+  }
+}
+
+/**
+ * The elements this importer reads for NOTHING, reported once per document each.
+ *
+ * Every name here is quoted from Apple's published FCPXML DTD, and each is
+ * grouped by the DTD group that makes it legal, so the coverage of each group can
+ * be checked against the group rather than against this list:
+ *
+ * - `%marker_item "(marker | chapter-marker | rating | keyword | analysis-marker)"`.
+ *   `chapter-marker` is not repeated here because the older construct scan above
+ *   already reports it, and two notes for one element is worse than one.
+ * - The per-channel and per-role audio components. The DTD renamed these between
+ *   versions — `<audio-source>`/`<audio-aux-source>` in 1.4,
+ *   `<audio-channel-source>`/`<audio-role-source>` in 1.10 — and this module
+ *   targets 1.11, so all four are listed: a reader must report what a document
+ *   actually contains, not only what the newest revision calls it. `<mute>` is
+ *   legal only inside these, and is a time-RANGED output suppression, which is a
+ *   different thing from `Clip.muted` (a whole-clip flag read from an
+ *   `adjust-volume` floor).
+ * - `%intrinsic-params-video` members added after the ones already listed:
+ *   360 re-projection, reorient, orientation, cinematic, and `object-tracker`.
+ *   `tracking-shape` needs no entry of its own; it is reachable only inside
+ *   `object-tracker`.
+ * - The `<asset>` children. `media-rep` is the one that matters: 1.10 moved
+ *   `src` off `<asset>` and onto `<media-rep>`, and this importer reads
+ *   `asset@src` — see the note in the asset loop for what that does and does not
+ *   break today.
+ * - Library organisation, which has no timeline content at all but is still a
+ *   construct the document had and the imported project will not.
  *
  * ONE note per document rather than one per element, which is the calibration
  * that keeps this safe to add: our writer emits only `adjust-conform`,
- * `adjust-blend@amount`, `adjust-transform`, `adjust-crop`, `adjust-volume` and
- * `timeMap`, so a document we produced can never trip any entry here.
- * `adjust-conform` is deliberately absent for the same reason it is deliberately
- * read and discarded: the writer puts it on every visual element, so reporting it
- * would be a note per clip on every import.
+ * `adjust-blend@amount`, `adjust-transform`, `adjust-crop`, `adjust-volume`,
+ * `timeMap` and — on a `<sequence>` — `audioLayout`/`audioRate`, so a document we
+ * produced can never trip any entry here. `adjust-conform` is deliberately absent
+ * for the same reason it is deliberately read and discarded: the writer puts it
+ * on every visual element, so reporting it would be a note per clip on every
+ * import.
+ *
+ * Deliberately NOT here, each for its own reason rather than by oversight:
+ *
+ * - `adjust-blend`, `adjust-transform`, `adjust-crop`, `adjust-volume`,
+ *   `adjust-conform`, `timeMap` — the five we read, plus the conform hint.
+ * - `filter-video`, `filter-audio`, `<effect-ref>`, `<effect `, `<note>`,
+ *   `<chapter-marker>`, `<generator*`, `<shape*`, `<graphic*` — the older
+ *   construct scan above. That scan is a plain substring test, so
+ *   `<filter-video-mask>` is already covered by its `'<filter-video'` needle; it
+ *   is left to that scan rather than given a second note here, and the entry
+ *   boundary below means adding it would double-report.
+ * - `caption`, `sync-clip`, `audio`, `mc-source`, `sync-source` at SPINE level —
+ *   `reportSpineElement` already names each one as an unknown spine element. Only
+ *   their ANCHORED form (a child of a spine element this module consumes whole)
+ *   is a gap, and that is recorded rather than given a duplicate note.
+ * - `match-text` and its siblings — reachable only inside `<smart-collection>`,
+ *   which is listed.
+ * - `audioRole`, `videoRole`, `enabled`, `srcEnable` — attributes, handled where
+ *   the element that carries them is parsed, because each has a value that is an
+ *   effective default rather than an omission.
  *
  * Spelled as the DTD spells it, including the internal capitals
- * (`adjust-EQ`, `adjust-noiseReduction`, `adjust-humReduction`, `fadeIn`),
- * because that is what a reader can look up; the MATCH is case-insensitive,
- * because producers are not consistent about it.
+ * (`adjust-EQ`, `adjust-noiseReduction`, `adjust-humReduction`, `fadeIn`), and
+ * matched CASE-INSENSITIVELY (producers are not consistent) but on an element-name
+ * BOUNDARY, so `keyword` cannot also match `keyword-collection`.
  */
-const UNREPRESENTED_ADJUSTMENTS: readonly string[] = [
+const UNREPRESENTED_ELEMENTS: readonly string[] = [
+  // %marker_item (chapter-marker is in the older construct scan)
+  'marker',
+  'rating',
+  'keyword',
+  'analysis-marker',
+  // Per-channel / per-role audio components, both DTD generations
+  'audio-channel-source',
+  'audio-role-source',
+  'audio-source',
+  'audio-aux-source',
+  'mute',
+  // %intrinsic-params-video, the members added after the first pass
+  'adjust-360-transform',
+  'adjust-reorient',
+  'adjust-orientation',
+  'adjust-cinematic',
+  'object-tracker',
+  // <asset> children
+  'media-rep',
+  'bookmark',
+  'metadata',
+  // Library organisation
+  'keyword-collection',
+  'collection-folder',
+  'smart-collection',
+  'import-options',
+  // From the first pass: %intrinsic-params-video / -audio / %timing-params
   'info-asc-cdl',
   'adjust-color',
   'adjust-corners',
@@ -449,6 +616,17 @@ const UNREPRESENTED_ADJUSTMENTS: readonly string[] = [
   'fadeIn',
   'fadeOut',
 ];
+
+/**
+ * `<name` on an ELEMENT-NAME boundary in an already-lowercased document, so
+ * `keyword` cannot also match `keyword-collection` and `audio-source` cannot also
+ * match `audio-role-source`. The older construct scan above is a plain substring
+ * test and is deliberately left that way, so this is not a replacement for it —
+ * it is what makes a longer list safe to add.
+ */
+function containsElementName(lowered: string, name: string): boolean {
+  return new RegExp(`<${name.toLowerCase()}(?=[\\s/>])`).test(lowered);
+}
 
 /**
  * Read the upstream constant-speed map. The model has one speed scalar, so a
@@ -972,13 +1150,14 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     const startTimecode = startSeconds !== null && fps
       ? secondsToTimecode(startSeconds, fps) ?? undefined
       : undefined;
+    reportUnrepresentedAssetAttributes(tag, ref, unsupported);
     assets.push({
       ref,
       path: fileUrlToPath(src),
       hasVideo: attr(tag, 'hasVideo') === '1',
       hasAudio: attr(tag, 'hasAudio') === '1',
       durationSec: parseFcpxmlTime(attr(tag, 'duration') ?? '') ?? 0,
-      ...(startTimecode ? { startTimecode } : {}),
+      ...(startTimecode !== undefined ? { startTimecode } : {}),
     });
   }
   const assetByRef = new Map(assets.map((a) => [a.ref, a]));
@@ -1413,13 +1592,14 @@ export function parseFcpxml(xml: string): ParsedFcpxml {
     }
   }
 
-  // The adjustment elements read for nothing, once per document each. Its own
-  // loop because the match has to be case-insensitive — the DTD spells several
-  // with internal capitals and producers are not consistent — which the
-  // construct list above is not, and deliberately was not made.
+  // The elements read for nothing, once per document each. Its own loop because
+  // the match is on an element-name boundary, which the construct list above is
+  // not and deliberately was not made — that list's plain substring test is what
+  // already covers `<filter-video-mask>` via `'<filter-video'`, and narrowing it
+  // would un-report that element rather than tidy it.
   const loweredXml = xml.toLowerCase();
-  for (const element of UNREPRESENTED_ADJUSTMENTS) {
-    if (loweredXml.includes(`<${element.toLowerCase()}`)) {
+  for (const element of UNREPRESENTED_ELEMENTS) {
+    if (containsElementName(loweredXml, element)) {
       unsupported.push(`${element} elements are skipped.`);
     }
   }

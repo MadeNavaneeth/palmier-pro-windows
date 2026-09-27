@@ -387,17 +387,95 @@ import. This also **corrects the importer's own header, which claimed grades
 and blend modes "land in `unsupported`" when only `<effect-ref>`/`<effect>`
 did.**
 
-**Still open, listed honestly:** the per-asset
-`<audioSources>`/`<videoSources>`/`<keywords>`/`<rating>` children and
-`asset@hasMarkers`/`matches`; the clip-level `<marker>`/`<keyword>` children;
-and `<mute>`, which the DTD places under `audio-source` rather than under a
-param, so it was left out of the family list deliberately. **Two items from
-the previous note here are withdrawn as factually wrong:** `<metronome>` and
-`<rate>` are not FCPXML elements in any DTD — FCPXML has `conform-rate` and
-an `asset@audioRate` **attribute**, and no metronome at all — so they were
-never constructs for this importer to miss, and naming them understated what
-the family scan had to cover. No disposition changes: PRs #154/#289 stay
-`Partial`, and none of this is a regression.
+**The remaining unread constructs are now reported too, and one DTD
+correction changed what they are.** The previous note listed them from a 1.4
+DTD read, and the current DTD (Apple publishes it as "DTD for the latest
+Final Cut Pro XML interchange format", version 1.10) settles four of them the
+other way: `asset@audioSources` and `asset@videoSources` are real ATTRIBUTES,
+not the elements that were listed; there is no `asset@hasMarkers` and no
+`asset@matches`; there is no `<keywords>` element; and FCPXML has no
+metronome and no `<rate>` element, so those two earlier withdrawals stand.
+Every name now in `UNREPRESENTED_ELEMENTS` is quoted from that DTD and
+grouped by the group that makes it legal, so coverage can be checked against
+the group rather than the list: the four remaining `%marker_item`s (`marker`,
+`rating`, `keyword`, `analysis-marker` — `chapter-marker` was already in the
+older construct scan, and two notes for one element is worse than one); the
+per-channel and per-role audio components under BOTH generations, since the
+DTD renamed `<audio-source>`/`<audio-aux-source>` (1.4) to
+`<audio-channel-source>`/`<audio-role-source>` (1.10) and a reader must
+report what a document contains, not only the newest name, plus their
+`<mute>` (a time-RANGED output suppression, a different thing from the
+whole-clip `Clip.muted`); the `%intrinsic-params-video` members added after
+the first pass (`adjust-360-transform`, `adjust-reorient`,
+`adjust-orientation`, `adjust-cinematic`, `object-tracker`); the `<asset>`
+children (`media-rep`, `bookmark`, `metadata`); and library organisation
+(`keyword-collection`, `collection-folder`, `smart-collection`,
+`import-options`), which has no timeline content but is still a construct the
+imported project will not have. Element names are matched on an ELEMENT-NAME
+BOUNDARY, so `keyword` cannot also match `keyword-collection`, and
+`filter-video-mask` is deliberately left to the older scan (whose
+`'<filter-video'` needle already covers it) rather than given a second note.
+Attributes are reported only when they state something: a J/L split edit
+(`audioStart`/`audioDuration`, which the model has no field for at all — one
+`inPoint`/`outPoint` pair is the whole clip), a `videoRole` other than the
+`video` default, `useAudioSubroles="1"`, and per ASSET the component and
+colour-management attributes, because which asset is the actionable part.
+`MediaAsset.channels` and `MediaAsset.sampleRate` DO ship, so
+`audioChannels`/`audioRate` are a shipped field not being transported — the
+same class as an unreported `adjust-blend mode`. `srcEnable` is read for
+nothing and is DELIBERATELY not reported: the compound writer puts
+`srcEnable="video"` on every `<ref-clip>` it emits, so a note would fire on
+every palmier round trip. The asset attributes are read per asset rather than
+by a document-wide needle because the compound writer also emits `audioRate`
+on every `<sequence>`, which a bare `audioRate` scan would match. Calibration
+pinned on both export paths: a real document this writer produced, carrying
+every adjust element, attribute and field it CAN emit, still re-imports with
+an empty `unsupported` list. The module header's mechanism list went from
+four to five to say so.
+
+**FOUR THINGS REMAIN OPEN, and two of them are wrong parses rather than
+omissions, so no note can express them.** Both were found by the same
+re-audit, both are pinned as current behaviour by tests, and neither is fixed
+here. (1) **An asset can be swallowed whole, taking its clip with it.**
+`extractTagBlock`'s regex is `<asset\b[^>]*(?:/>|>[\s\S]*?</asset>)`, and
+`[^>]*` can swallow the `/` of a self-closing tag, so when a LATER asset is
+paired the long alternative wins from the FIRST self-closing one and the
+match runs to that `</asset>`. Measured: a document whose first asset is
+self-closing and whose second carries a `<timecode>` child yields `assets:
+['2']`, one clip, and `Asset-clip "B" references unknown resource 3.` — and
+our own writer emits a paired asset whenever `MediaAsset.startTimecode` is
+set, so this is reachable from a palmier project, not only a foreign one. It
+is invisible today only because the existing round-trip fixture happens to
+put its timecode asset FIRST. (2) **A NESTED adjustment is read as the
+element's own.** `blendOf`, `volumeOf`, `cropTrimOf` and `transformOf` each
+search the spine element's WHOLE tag string, so an adjustment inside another
+element becomes the parent's: measured, a per-channel `<audio-channel-source
+srcCh="1"><adjust-volume amount="-6.0206dB"/></audio-channel-source>` places
+the clip at `volume 0.5`, `adjust-blend amount="0.4"` at `opacity 0.4`, an
+`adjust-crop` as the clip's crop and an `adjust-transform` as its geometry;
+and an ANCHORED element's adjustment is read too, with no note at all —
+`<ref-clip ref="9" ...><adjust-volume amount="-20dB"/></ref-clip>` places the
+parent at `volume 0.1` and reports nothing. Same class as the crop-mode
+refusal, and the same reason it cannot be reported: the wrong value is
+already applied. The fix is to scope the four readers to the element's DIRECT
+children, which is a parse change and not this pass. (3) `srcEnable` on a
+FOREIGN producer's clip set to `audio` or `all` — unreported by the
+calibration decision above. (4) The ANCHORED form of `caption`, `sync-clip`,
+`audio`, `mc-source` and `sync-source`: at spine level `reportSpineElement`
+already names each one, so only a child of a spine element this module
+consumes whole is a gap, and it is recorded rather than given a duplicate
+note. Also left: a clip-level `tcStart`/`tcFormat`/`modDate` (the first
+duplicates a value already transported at asset level, and all three would be
+a note per clip), the `<format>` colour-management attributes, and
+`asset@auxVideoFlags`. **Channel routing is NOT mapped onto `Clip.pan`, and
+`pan` is the wrong concept for it.** `srcCh`/`outCh` is a ROUTING matrix —
+which source channel feeds which output bus, from `L,R,C,LFE,Ls,Rs,X` — while
+`Clip.pan` is a stereo BALANCE of -1 hard left to +1 hard right, and the
+routing elements also carry their own per-channel
+`adjust-volume`/`adjust-EQ`/`adjust-panner`. Mapping a route onto a balance
+would fabricate a value rather than omit one, and a test asserts the absence:
+the placed clip has no `pan` and no new field. No disposition changes: PRs
+#154/#289 stay `Partial`, and none of this is a regression.
 ### #164 — keyboard shortcuts
 
 Bindings live in data, not in a switch statement. `shortcutConflicts()` is

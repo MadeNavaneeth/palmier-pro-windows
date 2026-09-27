@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import type { Project } from '../types/project';
 import { EditorController } from '../editor/controller';
 import { exportFcpxml } from './exporter';
+import { applyFcpxmlPlan } from './apply';
 import {
   isImportedCompoundClip,
   parseFcpxml,
@@ -286,6 +287,383 @@ describe('#154 unrepresentable spine-element attributes', () => {
     expect(plan.clips).toHaveLength(1);
   });
 });
+
+/**
+ * The remaining constructs this importer reads for nothing.
+ *
+ * Every element name here is quoted from Apple's published FCPXML DTD, and the
+ * list is grouped by the DTD group that makes it legal, so coverage can be checked
+ * against the group rather than against this test. Two rules govern it:
+ *
+ * - ONE note per document per element, not per element occurrence, because our
+ *   writer emits none of them and a per-element note would be a note per clip on
+ *   any real project. The calibration test below is what holds that line.
+ * - An attribute is reported only when its value is not an effective default.
+ *   `enabled="1"`, `audioRole="dialogue"` and `videoRole="video"` state nothing;
+ *   `srcEnable` states something but is not reported at all, because the
+ *   compound writer puts `srcEnable="video"` on every `<ref-clip>` it emits.
+ */
+describe('#154 constructs read for nothing', () => {
+  const CLIP_PATH = 'X:/media/clip.mp4';
+
+  function document(spine: string, asset = '', eventTail = ''): string {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE fcpxml>',
+      '<fcpxml version="1.11"><resources>',
+      '<format id="r1" frameDuration="1/30s" width="1920" height="1080"/>',
+      asset || `<asset id="2" name="clip.mp4" src="file:///${CLIP_PATH}" start="0s"`
+        + ' duration="10s" hasVideo="1" hasAudio="1" format="r1"/>',
+      '</resources><library><event name="E"><project name="E"><spine>',
+      spine,
+      // `eventTail` goes where a collection legally lives: `%event_item` includes
+      // `%collection_item`, so a <keyword-collection> is a sibling of <project>.
+      `</spine></project>${eventTail}</event></library></fcpxml>`,
+    ].join('');
+  }
+
+  const withBody = (body: string, attrs = ''): string =>
+    document(`<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s"${attrs}>${body}</asset-clip>`);
+
+  it('reports every declared element, quoted from the DTD, once per document', () => {
+    const cases: Array<[string, string]> = [
+      // %marker_item "(marker | chapter-marker | rating | keyword | analysis-marker)"
+      ['marker', '<marker start="0s" duration="1s" value="Pick"/>'],
+      ['rating', '<rating start="0s" value="favorite"/>'],
+      ['keyword', '<keyword start="0s" value="interview, a-roll"/>'],
+      ['analysis-marker', '<analysis-marker start="0s"><shot-type value="onePerson"/></analysis-marker>'],
+      // The DTD renamed these between versions; this module targets 1.11, so a
+      // reader must report what a document contains, not only the newest name.
+      ['audio-channel-source', '<audio-channel-source srcCh="1,2" outCh="L,R" role="dialogue"/>'],
+      ['audio-role-source', '<audio-role-source role="dialogue"/>'],
+      ['audio-source', '<audio-source srcCh="1" outCh="L" role="dialogue"/>'],
+      ['audio-aux-source', '<audio-aux-source srcCh="3" outCh="Ls" role="sfx"/>'],
+      // Legal only inside the routing elements, and a time-RANGED suppression,
+      // which is a different thing from Clip.muted.
+      ['mute', '<audio-channel-source srcCh="1"><mute start="0s" duration="1s"/></audio-channel-source>'],
+      // %intrinsic-params-video members added after the first pass
+      ['adjust-360-transform', '<adjust-360-transform coordinates="spherical" latitude="1"/>'],
+      ['adjust-reorient', '<adjust-reorient tilt="5" pan="0" roll="0"/>'],
+      ['adjust-orientation', '<adjust-orientation tilt="5" fieldOfView="45"/>'],
+      ['adjust-cinematic', '<adjust-cinematic aperture="2.8"/>'],
+      ['object-tracker', '<object-tracker><tracking-shape id="t1" name="T"/></object-tracker>'],
+      // Library organisation: no timeline content, still a construct the imported
+      // project will not have. `%event_item` includes `%collection_item`, so these
+      // are siblings of <project> inside <event>, not children of a spine element.
+      ['keyword-collection', '<keyword-collection name="Good takes"/>'],
+      ['collection-folder', '<collection-folder name="B-roll"/>'],
+      ['smart-collection', '<smart-collection name="Long" match="all">'
+        + '<match-media enabled="1" rule="isNot" type="videoOnly"/></smart-collection>'],
+      ['import-options', '<import-options><option key="copyMedia" value="0"/></import-options>'],
+      // <asset> children. media-rep is where 1.10 moved `src`.
+      ['media-rep', `<media-rep kind="original-media" src="file:///${CLIP_PATH}"/>`],
+      ['bookmark', '<bookmark>clipbookmark</bookmark>'],
+      ['metadata', '<metadata><md key="com.apple.FinalCutPro.SmartClip" value="x"/></metadata>'],
+    ];
+
+    for (const [element, body] of cases) {
+      const isLibrary = ['keyword-collection', 'collection-folder', 'smart-collection', 'import-options']
+        .includes(element);
+      const plan = parseFcpxml(document(
+        `<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s">${isLibrary ? '' : body}</asset-clip>`,
+        '',
+        isLibrary ? body : '',
+      ));
+      expect(plan.unsupported, element).toContain(`${element} elements are skipped.`);
+      // The clip still arrives: the note reports, it does not skip the element.
+      expect(plan.clips, element).toHaveLength(1);
+    }
+  });
+
+  it('matches on an element-name boundary, so keyword does not catch keyword-collection', () => {
+    // `keyword` and `keyword-collection` are both on the list, and the older
+    // construct scan is a plain substring test, so a naive scan would report
+    // `keyword` for a document that only declares a keyword collection.
+    const collectionOnly = parseFcpxml(document(
+      '<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s"/>',
+      '',
+      '<keyword-collection name="Good takes"/>',
+    ));
+    expect(collectionOnly.unsupported).toEqual(['keyword-collection elements are skipped.']);
+
+    // And a real marker still reports only itself.
+    const marker = parseFcpxml(withBody('<keyword start="0s" value="a"/>'));
+    expect(marker.unsupported).toEqual(['keyword elements are skipped.']);
+  });
+
+  it('gives filter-video-mask exactly ONE note, from the older construct scan', () => {
+    // That scan is a plain substring test and `'<filter-video'` is a prefix of
+    // `filter-video-mask`, so it is already covered. `filter-video-mask` is
+    // deliberately NOT in UNREPRESENTED_ELEMENTS: adding it would double-report.
+    const plan = parseFcpxml(withBody('<filter-video-mask><mask-shape name="M"/></filter-video-mask>'));
+    expect(plan.unsupported).toEqual(['filter-video elements are skipped.']);
+  });
+
+  it('leaves the spine-level constructs to the spine reporter, with no second note', () => {
+    // caption / sync-clip / audio are %clip_item members, so at spine level
+    // `reportSpineElement` already names each one. Adding them to the scan would
+    // double-report the common case; only their ANCHORED form is a gap.
+    for (const [kind, spine] of [
+      ['caption', '<caption name="CC" ref="2" lane="0" offset="0s" duration="1s"/>'],
+      ['sync-clip', '<sync-clip name="S" ref="2" lane="0" offset="0s" duration="1s"/>'],
+      ['audio', '<audio name="A" ref="2" lane="-1" offset="0s" duration="1s"/>'],
+    ] as const) {
+      const plan = parseFcpxml(document(spine));
+      expect(plan.unsupported, kind).toEqual([
+        `Spine element "<${kind}>" "${kind === 'sync-clip' ? 'S' : kind === 'audio' ? 'A' : 'CC'}" is not imported; it is skipped.`,
+      ]);
+    }
+  });
+
+  it('reports the clip attributes that state something, and is quiet on the defaults', () => {
+    expect(parseFcpxml(withBody('', ' audioStart="0.5s"')).unsupported).toEqual([
+      'Asset-clip "Take 1" has a J/L split edit (audioStart/audioDuration); split edits are not imported.',
+    ]);
+    // A duration with no start is still a statement about the audio window.
+    expect(parseFcpxml(withBody('', ' audioDuration="2s"')).unsupported).toEqual([
+      'Asset-clip "Take 1" has a J/L split edit (audioStart/audioDuration); split edits are not imported.',
+    ]);
+    expect(parseFcpxml(withBody('', ' videoRole="titles"')).unsupported).toEqual([
+      'Asset-clip "Take 1" has videoRole="titles"; video roles are not imported.',
+    ]);
+    expect(parseFcpxml(withBody('', ' useAudioSubroles="1"')).unsupported).toEqual([
+      'Asset-clip "Take 1" sets useAudioSubroles="1"; role-based sub-audio is not imported.',
+    ]);
+    // The documented defaults state nothing.
+    expect(parseFcpxml(withBody('', ' videoRole="video" useAudioSubroles="0"')).unsupported).toEqual([]);
+    // srcEnable is read for nothing and is DELIBERATELY not reported: the compound
+    // writer emits srcEnable="video" on every <ref-clip> it writes, so a note here
+    // would fire on every palmier round trip. A foreign producer's srcEnable is a
+    // real omission and is recorded as open in the ledgers.
+    expect(parseFcpxml(withBody('', ' srcEnable="video" srcEnable="audio"')).unsupported).toEqual([]);
+  });
+
+  it('reports the asset component and colour attributes, per asset', () => {
+    const withAsset = (attrs: string) =>
+      parseFcpxml(document(
+        '<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s"/>',
+        `<asset id="2" name="clip.mp4" src="file:///${CLIP_PATH}" start="0s" duration="10s" hasVideo="1"${attrs}/>`,
+      ));
+    // Per asset, not per document: WHICH asset is the actionable part, and a
+    // location-sound document states these on its recordings and not its B-roll.
+    expect(withAsset(' videoSources="2" audioSources="4" audioChannels="4" audioRate="48000"').unsupported)
+      .toEqual([
+        'Asset 2 declares videoSources, audioSources, audioChannels, audioRate;'
+        + ' its media component layout is not imported, and the asset is placed as one clip.',
+      ]);
+    // MediaAsset.channels and MediaAsset.sampleRate DO ship, so audioChannels and
+    // audioRate are a shipped field not being transported.
+    expect(withAsset(' colorSpaceOverride="Rec. 709 (sRGB)" stereoscopicOverride="mono"').unsupported)
+      .toEqual([
+        'Asset 2 declares colorSpaceOverride, stereoscopicOverride;'
+        + ' colour-management overrides are not imported.',
+      ]);
+    // A plain asset states none of it.
+    expect(withAsset('').unsupported).toEqual([]);
+  });
+
+  it('does NOT report channel routing as pan, because routing is not balance', () => {
+    // `srcCh`/`outCh` is a ROUTING matrix: which source channel feeds which output
+    // bus (L,R,C,LFE,Ls,Rs,X), and the model has no field for it. `Clip.pan` is a
+    // stereo BALANCE, -1 hard left … +1 hard right, which is a different concept:
+    // mapping a route onto it would fabricate a value rather than omit one. The
+    // requirement is the absence of any mapping, so that is what is asserted.
+    const plan = parseFcpxml(withBody(
+      '<audio-channel-source srcCh="1,2" outCh="Ls,Rs" role="dialogue"/>',
+    ));
+    expect(plan.unsupported).toEqual(['audio-channel-source elements are skipped.']);
+
+    const target = new EditorController();
+    target.addMedia({
+      id: 'imported', path: CLIP_PATH, filename: 'clip.mp4', type: 'video', duration: 300,
+      width: 1920, height: 1080, fileSize: 1, addedAt: '2026-01-01T00:00:00.000Z',
+    });
+    applyFcpxmlPlan(target, plan, new Map([[CLIP_PATH, 'imported']]));
+    const placed = target.getClips()[0]!;
+    // No new field, and no `pan` invented from a route.
+    expect(placed.pan).toBeUndefined();
+    expect(placed.volume).toBe(1);
+  });
+
+  it('does NOT report a construct the DTD does not declare', () => {
+    // Withdrawn as phantoms in an earlier pass, after being named from memory
+    // rather than from the DTD. `asset@audioSources` and `asset@videoSources` are
+    // real ATTRIBUTES, not the elements that were listed; there is no
+    // `asset@hasMarkers` and no `asset@matches`; there is no `<keywords>`
+    // element; and FCPXML has no metronome and no `<rate>` element (it has
+    // `conform-rate` and an `asset@audioRate` attribute). Asserted absent so a
+    // phantom cannot creep back into the list.
+    const plan = parseFcpxml(document(
+      '<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s">'
+      + '<metronome duration="1s"/><rate><timept time="0s" value="24s"/></rate>'
+      + '<keywords name="a,b"/><videoSources src="a"/><audioSources src="b"/>'
+      + '</asset-clip>',
+      `<asset id="2" name="clip.mp4" src="file:///${CLIP_PATH}" start="0s" duration="10s"`
+      + ' hasVideo="1" hasMarkers="1" matches="**"/>',
+    ));
+    expect(plan.unsupported).toEqual([]);
+    // audioSources/videoSources on the ASSET are real, though, and are reported.
+    const real = parseFcpxml(document(
+      '<asset-clip ref="2" name="Take 1" lane="0" offset="0s" start="0s" duration="1s"/>',
+      `<asset id="2" name="clip.mp4" src="file:///${CLIP_PATH}" start="0s" duration="10s"`
+      + ' hasVideo="1" videoSources="2" audioSources="2"/>',
+    ));
+    expect(real.unsupported).toEqual([
+      'Asset 2 declares videoSources, audioSources;'
+      + ' its media component layout is not imported, and the asset is placed as one clip.',
+    ]);
+  });
+
+  it('reports nothing new on a real document our writer produced, flat or compound', () => {
+    // The calibration that makes every entry above safe, measured rather than
+    // asserted. A clip carrying every adjust element, attribute and field this
+    // writer CAN emit, on both export paths.
+    const flat = new EditorController();
+    flat.addMedia({
+      id: 'v', path: CLIP_PATH, filename: 'clip.mp4', type: 'video', duration: 300,
+      width: 1920, height: 1080, fileSize: 1, addedAt: '2026-01-01T00:00:00.000Z',
+      audioCodec: 'aac', channels: 2, sampleRate: 48000,
+    });
+    flat.addMedia({
+      id: 'a', path: 'X:/media/music.wav', filename: 'music.wav', type: 'audio',
+      duration: 300, fileSize: 1, addedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const videoId = flat.addClip({ assetId: 'v', trackId: 'v1', startFrame: 0, durationFrames: 60 });
+    flat.addClip({ assetId: 'a', trackId: 'a1', startFrame: 0, durationFrames: 60 });
+    flat.addTitleClip({ trackId: 'v2', text: 'Cap', startFrame: 0, durationFrames: 30 });
+    flat.applyClipProperties([videoId], 'kitchen sink', (draft) => {
+      draft.opacity = 0.4; draft.x = 10; draft.y = 20;
+      draft.width = 800; draft.height = 450; draft.rotation = 5;
+      draft.crop = { left: 0.1, right: 0, top: 0.05, bottom: 0 };
+      draft.volume = 0.5; draft.blendMode = 'multiply'; draft.fadeInFrames = 6;
+      draft.motionX = [{ frame: 0, value: 0 }, { frame: 30, value: 40 }];
+      return true;
+    });
+    flat.setClipSpeed(videoId, 2);
+    const flatXml = exportFcpxml(flat.getProject());
+    // The premise: every construct this writer emits, and none of the new list.
+    expect(flatXml).toContain('audioRole="dialogue"');
+    expect(flatXml).toContain('<adjust-blend amount="0.4"/>');
+    expect(flatXml).toContain('<adjust-crop mode="trim">');
+    expect(flatXml).toContain('<adjust-volume amount="-6.0206dB"/>');
+    expect(flatXml).toContain('<adjust-transform');
+    expect(flatXml).toContain('<adjust-conform type="fit"/>');
+    expect(flatXml).toContain('<timeMap');
+    for (const phantom of ['<marker', '<rating', '<keyword', '<audio-channel-source',
+      '<audio-role-source', '<mute', '<metadata', '<media-rep', '<smart-collection',
+      'audioStart=', 'videoRole=', 'useAudioSubroles=', 'audioSources=', 'colorSpaceOverride=']) {
+      expect(flatXml, phantom).not.toContain(phantom);
+    }
+    expect(parseFcpxml(flatXml).unsupported).toEqual([]);
+
+    // The compound path additionally writes `srcEnable="video"` on every carrier
+    // and `audioRate` on every <sequence> — the two needles that made a
+    // document-wide attribute scan unsafe, which is why the asset attributes are
+    // read per asset instead.
+    const compound = new EditorController();
+    compound.addMedia({
+      id: 'v', path: CLIP_PATH, filename: 'clip.mp4', type: 'video', duration: 300,
+      width: 1920, height: 1080, fileSize: 1, addedAt: '2026-01-01T00:00:00.000Z',
+      audioCodec: 'aac', channels: 2, sampleRate: 48000,
+    });
+    const leaf = compound.addClip({ assetId: 'v', trackId: 'v1', startFrame: 0, durationFrames: 30 });
+    compound.trimClip(leaf, 15, 45);
+    compound.nestClips([leaf], { name: 'Nest' });
+    const compoundXml = exportFcpxml(compound.getProject());
+    expect(compoundXml).toContain('srcEnable="video"');
+    expect(compoundXml).toContain('audioRate="48k"');
+    expect(parseFcpxml(compoundXml).unsupported).toEqual([]);
+  });
+
+  it('pins a PRE-EXISTING parse defect it did not introduce: an asset with a <timecode> child', () => {
+    // Found while re-auditing, isolated to one variable, and NOT part of this
+    // change. `extractTagBlock`'s regex is
+    // `<asset\b[^>]*(?:/>|>[\s\S]*?</asset>)`, and `[^>]*` can swallow the `/` of a
+    // self-closing tag. When a LATER asset is paired, the long alternative wins
+    // from the FIRST self-closing one and the match runs to that `</asset>`, so
+    // every asset before it is consumed as one block and dropped. Our own writer
+    // emits a paired asset whenever `MediaAsset.startTimecode` is set, which is why
+    // this is reachable from a palmier project and not only from a foreign one.
+    //
+    // Pinned as CURRENT behaviour so the defect is on record and a future fix shows
+    // up as this test changing. It is a wrong parse, not an omission, so no note
+    // can express it: the fix is in the extraction, not in reporting.
+    const selfClosing = (id: string, name: string) =>
+      `<asset id="${id}" name="${name}" src="file:///X:/${name}" start="0s" duration="10s" hasVideo="1"/>`;
+    const paired = (id: string, name: string) =>
+      `<asset id="${id}" name="${name}" src="file:///X:/${name}" start="0s" duration="10s" hasVideo="1">`
+      + '<timecode start="3600s" duration="10s" format="r1"/></asset>';
+    const spine = '<asset-clip ref="2" name="A" lane="0" offset="0s" start="0s" duration="1s"/>'
+      + '<asset-clip ref="3" name="B" lane="0" offset="1s" start="0s" duration="1s"/>';
+
+    // All self-closing: every asset is read. This is what our writer emits unless
+    // an asset carries a source timecode.
+    const allSelfClosing = parseFcpxml(document(spine, selfClosing('2', 'a.mp4') + selfClosing('3', 'b.mp4')));
+    expect(allSelfClosing.assets.map((a) => a.ref)).toEqual(['2', '3']);
+    expect(allSelfClosing.clips).toHaveLength(2);
+    expect(allSelfClosing.unsupported).toEqual([]);
+
+    // Paired asset FIRST, self-closing second: also fine, which is why the
+    // existing round-trip test passes — its fixture's timecode asset is first.
+    const pairedFirst = parseFcpxml(document(spine, paired('2', 'a.mp4') + selfClosing('3', 'b.mp4')));
+    expect(pairedFirst.assets.map((a) => a.ref)).toEqual(['2', '3']);
+    expect(pairedFirst.unsupported).toEqual([]);
+
+    // Self-closing asset FIRST, paired SECOND: BROKEN. The match starts at the
+    // first asset and runs to the paired one's `</asset>`, so the first asset is
+    // never seen and its clip is refused with a misleading "unknown resource",
+    // while the paired asset is swallowed whole and never becomes an asset either.
+    const swallowed = parseFcpxml(document(spine, selfClosing('2', 'a.mp4') + paired('3', 'b.mp4')));
+    expect(swallowed.assets.map((a) => a.ref)).toEqual(['2']);
+    expect(swallowed.clips).toHaveLength(1);
+    expect(swallowed.unsupported).toEqual(['Asset-clip "B" references unknown resource 3.']);
+  });
+
+  it('pins a SECOND pre-existing defect: a NESTED adjustment is read as the clip own', () => {
+    // Same class as the crop-mode refusal, and found by the same re-audit.
+    // `blendOf`, `volumeOf`, `cropTrimOf` and `transformOf` each search the spine
+    // element's WHOLE tag string, so an adjustment nested inside another element
+    // is read as the element's own. Measured, one per reader:
+    //
+    //   <audio-channel-source srcCh="1"><adjust-volume amount="-6.0206dB"/></audio-channel-source>
+    //     -> the clip arrives at volume 0.5
+    //   ...adjust-blend amount="0.4"   -> the clip arrives at opacity 0.4
+    //   ...adjust-crop mode="trim"     -> the clip arrives cropped
+    //   ...adjust-transform scale=.5   -> the clip arrives at that geometry
+    //
+    // and an ANCHORED element's adjustments are read too, with no note at all:
+    //
+    //   <ref-clip ref="9" ...><adjust-volume amount="-20dB"/></ref-clip>
+    //     -> the parent clip arrives at volume 0.1, unsupported === []
+    //
+    // A per-channel or per-anchored-clip adjustment is not the parent's, so this
+    // is a wrong value, not an omission — no note can express it, because the
+    // wrong value is already applied. The fix is to scope the four readers to the
+    // element's DIRECT children, which is a parse change and not this pass.
+    // Pinned as current behaviour so the defect is on record.
+    const read = (body: string): Record<string, unknown> => {
+      const plan = parseFcpxml(withBody(body));
+      expect(plan.clips).toHaveLength(1);
+      return plan.clips[0] as unknown as Record<string, unknown>;
+    };
+    const routing = (inner: string) => `<audio-channel-source srcCh="1" outCh="L">${inner}</audio-channel-source>`;
+
+    expect(read(routing('<adjust-volume amount="-6.0206dB"/>')).volume).toBeCloseTo(0.5, 4);
+    expect(read(routing('<adjust-blend amount="0.4"/>')).opacity).toBe(0.4);
+    expect(read(routing('<adjust-crop mode="trim"><trim-rect left="10" top="5" right="0" bottom="0"/></adjust-crop>')).cropTrim)
+      .toEqual({ left: 10, top: 5, right: 0, bottom: 0 });
+    expect(read(routing('<adjust-transform scale="0.5 0.5" position="10 10"/>')).transform)
+      .toEqual({ positionX: 10, positionY: 10, scaleX: 0.5, scaleY: 0.5, rotation: 0 });
+
+    // The anchored case, which is also the one with no note at all.
+    const anchored = parseFcpxml(withBody(
+      '<ref-clip ref="9" name="Anchor" lane="1" offset="0s" duration="1s">'
+      + '<adjust-volume amount="-20dB"/></ref-clip>',
+    ));
+    expect((anchored.clips[0] as unknown as Record<string, unknown>).volume).toBeCloseTo(0.1, 4);
+    expect(anchored.unsupported).toEqual([]);
+  });
+});
+
 
 describe('compound FCPXML import safety', () => {
   function document(resources: string, rootRef: string): string {
