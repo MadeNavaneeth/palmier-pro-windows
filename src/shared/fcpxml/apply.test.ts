@@ -636,24 +636,26 @@ function twinOf(clips: readonly Clip[], video: Clip): Clip {
 }
 
 /**
- * One linked A/V pair at 2x whose TWIN carries `level` and whose visual sibling
- * stays at unity — the state whose `adjust-volume` the dropped element owns. The
- * level is written to the twin alone because `applyClipProperties` writes exactly
- * the ids it is handed, which is the editor behaviour that makes the two halves
+ * One linked A/V pair at 2x whose TWIN owns `twin` (its level and/or its own
+ * name) while its visual sibling stays at unity under the asset filename — the
+ * state whose `adjust-volume` and `name` the dropped element owns. Both are
+ * written to the twin alone because `applyClipProperties` writes exactly the ids
+ * it is handed, which is the editor behaviour that makes the two halves
  * disagreeable in the first place.
  */
-function leveledLinkedPair(
-  level: { volume?: number; muted?: boolean },
+function linkedPairWithTwin(
+  twin: { volume?: number; muted?: boolean; label?: string },
 ): { source: EditorController; videoId: string } {
   const source = new EditorController();
   addCompoundSourceMedia(source, 'compound-source', true);
   const videoId = addCompoundSourceClip(source, { startFrame: 0, durationFrames: 30, inPoint: 15 });
   source.setClipSpeed(videoId, 2);
   const clips = source.getClips();
-  const twin = twinOf(clips, clips.find((clip) => clip.id === videoId)!);
-  source.applyClipProperties([twin.id], 'Twin level', (draft) => {
-    if (level.volume !== undefined) draft.volume = level.volume;
-    if (level.muted !== undefined) draft.muted = level.muted;
+  const audio = twinOf(clips, clips.find((clip) => clip.id === videoId)!);
+  source.applyClipProperties([audio.id], 'Twin own fields', (draft) => {
+    if (twin.volume !== undefined) draft.volume = twin.volume;
+    if (twin.muted !== undefined) draft.muted = twin.muted;
+    if (twin.label !== undefined) draft.label = twin.label;
     return true;
   });
   return { source, videoId };
@@ -671,7 +673,7 @@ function undoArity(editor: EditorController): string[] {
 
 describe('a linked twin keeps its OWN level, not its visual sibling\'s', () => {
   it('reads the level off the dropped audio element and never materializes it (flat)', () => {
-    const { source, videoId } = leveledLinkedPair({ volume: 0.25 });
+    const { source, videoId } = linkedPairWithTwin({ volume: 0.25 });
     const sourceClips = source.getClips();
     const sourceVideo = sourceClips.find((clip) => clip.id === videoId)!;
     const sourceTwin = twinOf(sourceClips, sourceVideo);
@@ -724,7 +726,7 @@ describe('a linked twin keeps its OWN level, not its visual sibling\'s', () => {
   });
 
   it('restores a differing twin level on the compound root and inside a nest', () => {
-    const { source } = leveledLinkedPair({ volume: 0.25 });
+    const { source } = linkedPairWithTwin({ volume: 0.25 });
     // A second group in the SAME document, leveled differently, to be nested: one
     // spine, one nested sequence, and 0.5 is far enough from the root's 0.25 that
     // a crossed pairing could not pass.
@@ -766,7 +768,7 @@ describe('a linked twin keeps its OWN level, not its visual sibling\'s', () => {
   });
 
   it('keeps a muted twin muted rather than unity', () => {
-    const { source } = leveledLinkedPair({ volume: 0, muted: true });
+    const { source } = linkedPairWithTwin({ volume: 0, muted: true });
     const { clips } = importFlatProject(source);
     const video = clips.find((clip) => clip.type === 'video')!;
     const twin = twinOf(clips, video);
@@ -778,7 +780,7 @@ describe('a linked twin keeps its OWN level, not its visual sibling\'s', () => {
   });
 
   it('leaves an unleveled group byte-identical and costs a leveled one no extra step', () => {
-    const leveled = importFlatProject(leveledLinkedPair({ volume: 0.25 }).source);
+    const leveled = importFlatProject(linkedPairWithTwin({ volume: 0.25 }).source);
     const unleveled = importFlatProject(linkedSourceProject(2));
     const unspeeded = importFlatProject(linkedSourceProject());
     for (const clip of unleveled.clips) {
@@ -803,6 +805,126 @@ describe('a linked twin keeps its OWN level, not its visual sibling\'s', () => {
     for (const clip of unspeeded.clips) {
       expect(clip.volume).toBe(1);
       expect(clip.muted).toBe(false);
+    }
+    expect(unspeeded.target.getLastCommandDescription()).toBe('replaceClips');
+  });
+});
+
+/**
+ * The twin's own NAME, which is not a decision either: `label` is declared on
+ * both plan types, the exporter writes each half's own `name` into its own
+ * element, and the model holds two clips with two names. The twin therefore takes
+ * the name from the element written for it, exactly as it now takes its own level.
+ * Both halves normally carry the SAME name, which is the case that has to stay
+ * inert.
+ *
+ * The two mechanisms differ and are both covered: the flat path, the compound
+ * root and the agent PATCH a twin `addClip` created, while the nested
+ * materializer BUILDS the twin and so has to be given the name as a literal.
+ */
+describe('a linked twin keeps its OWN name, not its visual sibling\'s', () => {
+  it('takes the name off the dropped audio element (flat, the patched surface)', () => {
+    const { source, videoId } = linkedPairWithTwin({ label: 'Dialogue' });
+    const sourceClips = source.getClips();
+    const sourceVideo = sourceClips.find((clip) => clip.id === videoId)!;
+    expect(sourceVideo.label).toBe('compound-source.mp4');
+    expect(twinOf(sourceClips, sourceVideo).label).toBe('Dialogue');
+
+    const plan = parseFcpxml(exportFcpxml(source.getProject()));
+    const [half, visual] = plan.clips;
+    expect(half).toMatchObject({ kind: 'video', lane: -1, label: 'Dialogue' });
+    expect(visual).toMatchObject({ lane: 0, label: 'compound-source.mp4' });
+
+    const { target, placedClips, clips } = importFlatProject(source);
+    // The duplication fix: the dropped element still places nothing.
+    expect(placedClips).toBe(1);
+    expect(clips).toHaveLength(2);
+
+    const video = clips.find((clip) => clip.type === 'video')!;
+    const twin = twinOf(clips, video);
+    // The twin's own name, and the rename must not leak onto the visual half.
+    expect(twin.label).toBe('Dialogue');
+    expect(video.label).toBe('compound-source.mp4');
+    // The level and window fixes are untouched by the rename.
+    expect(twin).toMatchObject({ speed: 2, inPoint: 15, outPoint: 75, durationFrames: 30 });
+    expect(twin.volume).toBe(1);
+    // One command for the element, exactly as the unrenamed pair pushes.
+    expect(undoArity(target)).toEqual([
+      'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
+    ]);
+  });
+
+  it('gives the twin its own name at the compound root AND inside a nest', () => {
+    // The root group is renamed, the nested one is not: each half is renamed by
+    // the mechanism its own surface uses, so a shared-code accident in one cannot
+    // make this pass.
+    const { source } = linkedPairWithTwin({ volume: 0.25, label: 'Root Dialogue' });
+    const nestedVideoId = addCompoundSourceClip(source, { startFrame: 200, durationFrames: 30, inPoint: 0 });
+    source.setClipSpeed(nestedVideoId, 2);
+    const clips = source.getClips();
+    const nestedTwin = twinOf(clips, clips.find((clip) => clip.id === nestedVideoId)!);
+    source.applyClipProperties([nestedTwin.id], 'Nested twin own fields', (draft) => {
+      draft.volume = 0.5;
+      draft.label = 'Nested Dialogue';
+      return true;
+    });
+    source.nestClips([nestedVideoId], { name: 'Renamed Nest' });
+
+    const plan = parseFcpxml(exportFcpxml(source.getProject()));
+    const target = importTarget('imported-compound-source', true);
+    const result = applyFcpxmlPlan(target, plan, assetMap('imported-compound-source'), sourceDims());
+
+    // The duplication fix on BOTH compound sites: 2 visual elements, 2 pairs, so
+    // `placedClips: 2` and never 4 — the dropped elements place nothing.
+    expect(result.placedClips).toBe(2);
+    const imported = target.getProject();
+    expect(imported.timeline.clips.filter((clip) => clip.type === 'video')).toHaveLength(1);
+    expect(imported.timeline.clips.filter((clip) => clip.type === 'audio')).toHaveLength(1);
+
+    // Compound ROOT, patched through addLinkedTwinPatch.
+    const rootVideo = imported.timeline.clips.find((clip) => clip.type === 'video')!;
+    const rootTwin = twinOf(imported.timeline.clips, rootVideo);
+    expect(rootTwin.label).toBe('Root Dialogue');
+    expect(rootVideo.label).toBe('compound-source.mp4');
+    // The level fix and the twin speed/outPoint fix still hold beside the rename.
+    expect(rootTwin.volume).toBeCloseTo(0.25, 4);
+    expect(rootVideo.volume).toBe(1);
+    expect(rootTwin).toMatchObject({ speed: 2, inPoint: 15, outPoint: 75 });
+
+    // NESTED sequence, built by the materializer rather than patched.
+    const carrier = imported.timeline.clips.find((clip) => clip.type === 'compound')!;
+    const nestedTimeline = imported.timelines![carrier.compoundTimelineId!]!;
+    expect(nestedTimeline.clips).toHaveLength(2);
+    const leafVideo = nestedTimeline.clips.find((clip) => clip.type === 'video')!;
+    const leafTwin = twinOf(nestedTimeline.clips, leafVideo);
+    expect(leafTwin.label).toBe('Nested Dialogue');
+    expect(leafVideo.label).toBe('compound-source.mp4');
+    expect(leafTwin.volume).toBeCloseTo(0.5, 4);
+    expect(leafTwin).toMatchObject({ speed: 2, inPoint: 0, outPoint: 60 });
+  });
+
+  it('leaves a group whose halves share a name byte-identical, with no extra step', () => {
+    // Nothing diverged: both halves are named after the asset, which is the case
+    // that must not turn into a new command on every import.
+    const matching = importFlatProject(linkedSourceProject(2));
+    const renamed = importFlatProject(linkedPairWithTwin({ label: 'Dialogue' }).source);
+    const unspeeded = importFlatProject(linkedSourceProject());
+
+    for (const clip of matching.clips) {
+      expect(clip.label).toBe('compound-source.mp4');
+    }
+    // The literal command list: the name contributes nothing, so the arity is
+    // exactly what the speed fix left behind. `undoArity` drains the history it
+    // reads, so each editor is walked once.
+    const matchingArity = undoArity(matching.target);
+    expect(matchingArity).toEqual([
+      'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
+    ]);
+    expect(undoArity(renamed.target)).toEqual(matchingArity);
+    // The purest common case — no speed, no level, no rename — still ends on the
+    // trim's, so the twin registers no entry and no history at all.
+    for (const clip of unspeeded.clips) {
+      expect(clip.label).toBe('compound-source.mp4');
     }
     expect(unspeeded.target.getLastCommandDescription()).toBe('replaceClips');
   });

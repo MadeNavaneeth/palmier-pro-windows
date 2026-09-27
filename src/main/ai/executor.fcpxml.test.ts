@@ -230,15 +230,15 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
   /**
    * One trimmed clip over the A/V asset, so `addClip` builds its linked twin.
    * `speed` defaults to 2x, which `setClipSpeed` writes onto BOTH halves;
-   * pass `'none'` for a document that carries no recovered speed. `twinLevel`
-   * writes a level onto the TWIN alone — `applyClipProperties` writes exactly the
-   * ids it is handed and nothing propagates a level across a link, which is what
-   * makes a group whose two halves disagree at the level a reachable state.
+   * pass `'none'` for a document that carries no recovered speed. `twinOwn` writes
+   * a level and/or a name onto the TWIN alone — `applyClipProperties` writes
+   * exactly the ids it is handed and nothing propagates either across a link,
+   * which is what makes a group whose two halves disagree a reachable state.
    */
   function avSourceProject(
     fps: number,
     speed: number | 'none' = 2,
-    twinLevel?: { volume?: number; muted?: boolean },
+    twinOwn?: { volume?: number; muted?: boolean; label?: string },
   ): EditorController {
     const editor = at(fps);
     editor.addMedia({
@@ -258,11 +258,12 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
     const clipId = editor.addClip({ assetId: 'av', trackId: 'v1', startFrame: 20, durationFrames: 48 });
     editor.trimClip(clipId, 30, 78);
     if (speed !== 'none') editor.setClipSpeed(clipId, speed);
-    if (twinLevel) {
+    if (twinOwn) {
       const { audio } = pairOf(editor);
-      editor.applyClipProperties([audio.id], 'Twin level', (draft) => {
-        if (twinLevel.volume !== undefined) draft.volume = twinLevel.volume;
-        if (twinLevel.muted !== undefined) draft.muted = twinLevel.muted;
+      editor.applyClipProperties([audio.id], 'Twin own fields', (draft) => {
+        if (twinOwn.volume !== undefined) draft.volume = twinOwn.volume;
+        if (twinOwn.muted !== undefined) draft.muted = twinOwn.muted;
+        if (twinOwn.label !== undefined) draft.label = twinOwn.label;
         return true;
       });
     }
@@ -484,6 +485,47 @@ describe('import_fcpxml per-clip reconstruction (#154)', () => {
       'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
     ]);
     expect(leveledArity).toEqual(undoArity(unleveled.editor));
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  /**
+   * The twin's NAME, which is not a judgement call either: `label` is declared on
+   * both plan types, the exporter writes each half's own `name` into its own
+   * element, and the model holds two clips with two names. The twin takes the name
+   * from the element written for it — the one the materializer drops — and the
+   * sibling's name is not a substitute.
+   */
+  it('gives the linked twin its OWN name through the agent too', async () => {
+    const source = avSourceProject(30, 2, { label: 'Dialogue' });
+    const sourcePair = pairOf(source);
+    expect(sourcePair.video.label).toBe('av.mp4');
+    expect(sourcePair.audio.label).toBe('Dialogue');
+
+    const { result, editor } = await importInto(source, 30);
+    expect(result.success).toBe(true);
+    const { video: v, audio: a } = pairOf(editor);
+
+    expect(a.label).toBe('Dialogue');
+    // The rename must not leak onto the visual half, and the window and level
+    // fixes are untouched beside it.
+    expect(v.label).toBe('av.mp4');
+    expect(a).toMatchObject({ inPoint: 30, outPoint: 126, speed: 2, linkGroupId: v.linkGroupId });
+    expect(a.volume).toBe(1);
+    // The dropped element placed nothing: still one pair, not two.
+    expect(editor.getClips().filter((c) => c.type === 'video')).toHaveLength(1);
+    expect(editor.getClips().filter((c) => c.type === 'audio')).toHaveLength(1);
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  it('costs a renamed pair the same undo arity, and a matching name no step at all', async () => {
+    const renamed = await importInto(avSourceProject(30, 2, { label: 'Dialogue' }), 30);
+    const matching = await importInto(avSourceProject(30, 2), 30);
+
+    // The literal command list for the renamed pair: one batch, exactly what the
+    // unrenamed pair pushes, so the name adds no undo step of its own.
+    const renamedArity = undoArity(renamed.editor);
+    expect(renamedArity).toEqual([
+      'setClipProperties', 'replaceClips', 'addMediaAndClips', 'addTrack',
+    ]);
+    expect(renamedArity).toEqual(undoArity(matching.editor));
   }, REAL_PROCESS_TIMEOUT_MS);
 
   /**

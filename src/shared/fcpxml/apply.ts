@@ -195,31 +195,72 @@ export function importedClipPatch(
 }
 
 /**
+ * The NAME a linked group's twin carries: its OWN half's when the document names
+ * the two halves differently. `label` is declared on both plan types and the
+ * exporter writes each half's own `name` into its own element, and the model holds
+ * two clips with two names — so there is nothing to arbitrate here, the same way
+ * there is nothing to arbitrate the level.
+ *
+ * Null when the two halves agree, or when the half carries no name. That is what
+ * makes the rename INERT: `addClip` names the rebuilt twin after the asset, and a
+ * group whose halves were never renamed independently already has the right name
+ * there, so an unrenamed group contributes nothing at all — no twin entry, no
+ * `applyClipProperties` call, no history, byte-identical to before.
+ *
+ * The one miss is a sub-case that was already lost: both halves renamed to the
+ * same custom name read as "agree" here, so the flat and root surfaces keep
+ * `addClip`'s asset filename for the twin. Nothing regresses; the name simply
+ * stays as it was.
+ */
+function linkedTwinLabel(element: ImportedClip, half: ImportedVideoClip | null): string | null {
+  // A title has no asset, so it belongs to no group and has no twin.
+  if (element.kind === 'title') return null;
+  if (half === null || half.label === '' || half.label === element.label) return null;
+  return half.label;
+}
+
+/**
  * What the embedded-audio twin of a linked A/V group inherits from the element
  * that rebuilt it. TWO sources, because a linked group is two elements in the
  * file: the group's ONE source window (speed and the `outPoint` it implies, which
  * `setClipSpeed` writes onto every linked partner) from the VISUAL element, and
- * the level from the twin's OWN dropped element, which is the only place its
- * `volume`/`muted` still exist once the visual element rebuilds the pair.
- * Substituting the sibling's level would be no more correct — the twin owns its
- * own — and would overwrite a differing level with the sibling's every round trip.
+ * the twin's OWN `volume`/`muted` and `name` from the element the exporter wrote
+ * for it. Substituting the sibling's would be no more correct for any of the
+ * three — the twin owns its own — and would overwrite a differing value with the
+ * sibling's every round trip.
  *
- * Speed and level ALONE: the twin is an audio clip and must not inherit this
+ * Speed, level and name ALONE: the twin is an audio clip and must not inherit this
  * element's transform, opacity or crop.
  *
- * Null when neither half contributes, so a group carrying no speed and no
- * `adjust-volume` on its audio element registers nothing and adds no history.
+ * @param twinName What a caller that BUILDS its own twin has already written into
+ *                 it. Passing it is how the nested materializer declares its
+ *                 construction literal to be the mechanism for the name there,
+ *                 rather than riding this patch as well: the two then cannot mask
+ *                 each other, and a test on either one is a real test. The three
+ *                 surfaces that patch a twin `addClip` created do not know the name
+ *                 it gave it and pass nothing, which is correct — that is a name
+ *                 this patch may have to correct.
+ *
+ * Null when none of the three contributes, so a group carrying no speed, no
+ * `adjust-volume` and no distinct name on its audio element registers nothing and
+ * adds no history.
  */
 function linkedTwinPatch(
   element: ImportedClip,
-  half: ImportedClip | null,
+  half: ImportedVideoClip | null,
+  twinName?: string,
 ): ((draft: Clip) => void) | null {
   const speed = importedSpeedPatch(element);
   const level = half === null ? null : importedLevelPatch(half);
-  if (!speed && !level) return null;
+  const name = linkedTwinLabel(element, half);
+  const label = name === null || name === twinName ? null : name;
+  if (!speed && !level && label === null) return null;
   return (draft) => {
     speed?.(draft);
     level?.(draft);
+    // Compared, not assigned: the rebuilt twin already carries a name, and when it
+    // is already this one `applyClipProperties` must find nothing to record.
+    if (label !== null && draft.label !== label) draft.label = label;
   };
 }
 
@@ -232,12 +273,12 @@ function linkedTwinPatch(
  * Both halves of a linked A/V group hold one source window, and
  * `setClipSpeed` writes `speed` and the scaled `outPoint` onto every linked
  * partner, so the embedded-audio twin `addClip` just created gets the speed too.
- * The twin's LEVEL is the one thing it does not share: it comes from the linked
- * audio element itself, located here through the one shared helper so this
+ * Its LEVEL and NAME are the two things it does not share: both come from the
+ * linked audio element itself, located here through the one shared helper so this
  * surface and the compound materializer cannot disagree on which element that is.
- * Both ride the same batch, so a flat import still costs one undo step per
+ * All three ride the same batch, so a flat import still costs one undo step per
  * imported element — the agent tool's own receipt promises exactly that — and an
- * element that contributes neither adds no twin entry at all.
+ * element that contributes none of them adds no twin entry at all.
  *
  * @param siblings The element list `clip` came from (`plan.clips` for a root
  *                 document, `sequence.clips` for a nested one): the linked
@@ -560,15 +601,15 @@ function isAudioLaneClip(clip: ImportedClip): boolean {
  * indistinguishable in the file, and the first match wins. That is a real limit
  * of the format, not a guess, and it is strictly better than reading nothing.
  *
- * Read ONLY to take the twin's own level off the element that is about to be
- * dropped: the element is still never routed, materialized or re-added (see
+ * Read ONLY to take the twin's own level and name off the element that is about to
+ * be dropped: the element is still never routed, materialized or re-added (see
  * `isLinkedAudioHalf`'s callers), so this cannot reintroduce the duplication the
  * drop exists to prevent.
  */
 function linkedAudioHalfFor(
   element: ImportedClip,
   siblings: readonly ImportedClip[],
-): ImportedClip | null {
+): ImportedVideoClip | null {
   // A title has no asset, so it belongs to no group.
   if (element.kind === 'title') return null;
   for (const candidate of siblings) {
@@ -1084,6 +1125,13 @@ function materializeCompoundFcpxmlPlan(
       ) {
         const audioTrack = resolveAudioTrack(clip);
         const linkGroupId = nanoid();
+        const half = linkedAudioHalfFor(imported, sequence.clips);
+        // Its OWN half's name, the same rule `linkedTwinLabel` gives the two
+        // patched surfaces, and the ONLY mechanism here: this twin is built here
+        // and not by `addClip`, so it cannot be left to `linkedTwinPatch` alone.
+        // `twinName` is handed to that patch below so its own name contributor
+        // stands down and cannot quietly cover for a wrong literal.
+        const twinName = linkedTwinLabel(imported, half) ?? imported.label;
         clip.linkGroupId = linkGroupId;
         clips.push(clip);
         const twin: Clip = {
@@ -1108,15 +1156,15 @@ function materializeCompoundFcpxmlPlan(
           anchorY: 0,
           volume: 1,
           muted: false,
-          label: imported.label,
+          label: twinName,
         };
         // The twin is built apart from its visual sibling, so it does not ride
         // the sibling's adjustment pass. Both halves of a link group hold one
         // source window, and a recovered speed scales it on BOTH — leaving the
         // twin unscaled is a state EditorController.setClipSpeed never writes.
-        // The level is the twin's OWN, read off the dropped audio element; the
-        // sibling's is not a substitute, because the twin owns its own.
-        linkedTwinPatch(imported, linkedAudioHalfFor(imported, sequence.clips))?.(twin);
+        // Its level is its OWN, read off the dropped audio element; the sibling's
+        // is not a substitute, because the twin owns its own.
+        linkedTwinPatch(imported, half, twinName)?.(twin);
         clips.push(twin);
       } else {
         clips.push(clip);
