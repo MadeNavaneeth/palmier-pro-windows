@@ -83,8 +83,10 @@ export function registerProjectHandlers(): void {
       targetPath = result.filePath;
     }
 
-    // Ensure extension
-    if (!targetPath.endsWith(VPROJ_EXTENSION)) {
+    // Ensure extension. Case-insensitively: a Windows volume folds case, so a
+    // user who chose CUT.VPROJ means the file we would call CUT.vproj, and a
+    // case-sensitive test appended a second one beside it.
+    if (!targetPath.toLowerCase().endsWith(VPROJ_EXTENSION)) {
       targetPath += VPROJ_EXTENSION;
     }
 
