@@ -345,6 +345,27 @@ describe('every transition to a new path', () => {
     reloaded.dispose();
   });
 
+  it('does not append a second extension when the chosen name differs only in case', async () => {
+    const dir = scratchDirs[scratchDirs.length - 1]!;
+    const upper = path.join(dir, 'MixedCase.VPROJ');
+    session();
+    const mirror = mountWindow();
+    await mirror.ready;
+
+    electronState.savePath = upper;
+    await useProjectStore.getState().save();
+    await drainWrites();
+
+    // A Windows volume folds case, so CUT.VPROJ names the file we would call
+    // CUT.vproj. Appending a second extension wrote a separate document beside
+    // the one the user chose and left the original untouched.
+    expect(useProjectStore.getState().filePath?.toLowerCase()).toBe(upper.toLowerCase());
+    const entries = (await fs.readdir(dir)).filter((n) => n.toLowerCase().endsWith('.vproj'));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.toLowerCase()).toBe('mixedcase.vproj');
+    mirror.dispose();
+  });
+
   it('keeps the path through an import, which edits the open project in place', async () => {
     const dir = scratchDirs[scratchDirs.length - 1]!;
     const filePath = await writeVprojFile(dir, 'imported-into.vproj');
