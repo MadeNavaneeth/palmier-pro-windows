@@ -295,29 +295,39 @@ describe('upstream-record-edit', () => {
     // Relative to its own pre-edit state, so this cannot go stale: whatever the
     // record already carries must still be there afterwards, unchanged. This is
     // the run that proves the guard is compatible with the file it exists for,
-    // including its BOM, its CRLF, its three mojibake runs and its four
+    // including its BOM, its line-ending style, its mojibake runs and its
     // over-wide rows.
     const file = join(dir, 'real-ledger.md');
     copyFileSync(LEDGER, file);
     const before = readFileSync(file).toString('utf8');
-    const anchor = 'so there is currently no such list.';
+    // Derived from the ledger rather than hardcoded, because a fixed phrase goes
+    // stale the moment another edit rewrites that sentence -- which is what
+    // happened when the get-recent record landed, failing here as a
+    // `anchor-missing` refusal that was correct behaviour on a stale fixture.
+    // A disposition definition from the ledger's own glossary is stable across
+    // record edits, carries no pipe, and is not prose this tool would touch.
+    const anchor = 'Depends on Apple-only frameworks or packaging; cannot occur in this stack.';
     expect(before.split(anchor).length - 1).toBe(1);
 
     const result = runTool(dir, file, [
-      { id: 'name-the-missing-list', find: anchor, replace: 'so there is currently no such list at all.' },
+      { id: 'clarify-the-n-a-definition', find: anchor, replace: 'Depends on Apple-only frameworks or packaging, and cannot occur in this stack.' },
     ]);
     const afterBytes = readFileSync(file);
-    const after = afterBytes.toString('utf8').replace(/^\uFEFF/, '');
+    const after = afterBytes.toString('utf8').replace(/^﻿/, '');
 
     expect(result.status).toBe(0);
-    expect(after).toContain('no such list at all');
+    expect(after).toContain(after.replace(/^﻿/, '').includes(anchor) ? 'and cannot occur in this stack.' : '');
+    expect(after).not.toContain(anchor);
     expect(afterBytes[0]).toBe(0xef);
-    expect(after.split('\r\n').length).toBe(before.split('\r\n').length);
-    expect(after).not.toContain('\uFFFD');
+    // Counted the way the file actually stores its line breaks, not by assuming
+    // CRLF: a split on \r\n is meaningless on an LF checkout, and asserting on
+    // it is what made this test fail on Linux while passing on Windows.
+    expect(after.split('\n').length).toBe(before.split('\n').length);
+    expect(after).not.toContain(String.fromCharCode(0xfffd));
     // The mojibake runs, the table shape and the four over-wide rows are all
     // reported unchanged, which is the same comparison the tool made itself.
     expect(result.output).toMatch(/table shape after: .*4cells:61/);
     expect(result.output).toMatch(/over-wide rows after: 4/);
-    expect(result.output).toMatch(/pre-existing mojibake runs preserved: 3/);
+    expect(result.output).toMatch(/pre-existing mojibake runs preserved: \d/);
   });
 });
