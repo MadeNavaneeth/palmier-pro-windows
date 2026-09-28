@@ -335,12 +335,24 @@ export function verifyOnDisk(doc, edits) {
     );
   }
   const encoding = encodingConditions(after.raw);
-  if (encoding.bareLf !== 0) {
-    throw new Refusal('bare-lf-introduced', `the written file has ${encoding.bareLf} bare LF line(s)`, encoding);
+  if (encoding.crlf > 0 && encoding.bareLf > 0) {
+    throw new Refusal(
+      'mixed-line-endings',
+      `the written file mixes ${encoding.crlf} CRLF and ${encoding.bareLf} bare LF line(s)`,
+      encoding,
+    );
   }
-  // The CRLF COUNT is not an invariant: an edit that appends a record adds line
+  // Neither COUNT is an invariant: an edit that appends a record adds line
   // breaks, and refusing that would refuse the edit this tool exists to make.
-  // The style is the invariant, and it was checked above.
+  // The STYLE is the invariant, and it was checked above.
+  //
+  // A bare LF is not itself a defect. It is the whole file's newline form on an
+  // LF checkout, which is what every Linux CI runner and every `git show HEAD`
+  // produces for a repo with core.autocrlf=true. Vetoing a nonzero bare-LF
+  // count therefore made this tool refuse every edit on any LF checkout, which
+  // is what the Linux gate caught. MIXING is the defect: a file that has both
+  // forms is the state AGENTS.md calls out, because a reader cannot tell which
+  // form any given line break is.
   for (const edit of edits) {
     const left = countOccurrences(after.text, edit.find);
     if (left !== 0) {
