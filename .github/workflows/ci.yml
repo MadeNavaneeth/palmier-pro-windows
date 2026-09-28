@@ -113,7 +113,12 @@ jobs:
         run: cargo test
 
       - name: Build Linux packages
-        run: npm run dist:linux
+        # `--publish never`: this job only builds and uploads artifacts. The
+        # `build.publish` block in package.json points at a GitHub release, and
+        # electron-builder honours it on a `main` push, so without this the step
+        # fails on every merge with "GitHub Personal Access Token is not set".
+        # There is no tag-triggered release workflow to suppress.
+        run: npm run dist:linux -- --publish never
 
       - name: Upload Linux packages
         uses: actions/upload-artifact@v4
