@@ -29,6 +29,7 @@ import { app, BrowserWindow, Menu, type WebContents } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { registerProjectHandlers } from './ipc/project';
+import { sweepRecentProjectResidue } from './services/recent-projects';
 import { registerMediaHandlers } from './ipc/media';
 import { registerSystemHandlers } from './ipc/system';
 import { registerAutosaveHandlers } from './ipc/autosave';
@@ -360,6 +361,13 @@ export function startApplication(): void {
 
   installApplicationMenu();
   const firstWindow = createMainWindow();
+
+  // Crash residue from a previous run, swept over the folders the recent list
+  // names. Deliberately not awaited and deliberately after the window exists:
+  // it is background fs work over a bounded list, and nothing about the first
+  // window should wait on it. The save handler already prunes the folder it is
+  // about, but a crash means the next save into that folder may never come.
+  void sweepRecentProjectResidue();
 
   if (!isDev) {
     initAutoUpdater(firstWindow);
