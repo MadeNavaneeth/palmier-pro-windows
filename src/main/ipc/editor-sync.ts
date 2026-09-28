@@ -31,11 +31,20 @@
  * one undoable step it always was, and a tagged `playhead` as the view update
  * it is, and the untagged form stays the conservative undoable default for any
  * push that arrives without one.
+ *
+ * A main-side push also carries `filePath`, and only when the session's record
+ * of the file it holds has not been announced to its windows yet — the agent's
+ * `open_project` and `new_project` switch documents, and the project document
+ * cannot carry its own path, so the window's store would otherwise keep naming
+ * the file the agent replaced. It rides this push rather than a channel of its
+ * own so that a window can never be told the path of a document whose project
+ * it did not get: a push this window refuses arrives without the path, exactly
+ * like the project it came with.
  */
 
 import { ipcMain, BrowserWindow } from 'electron';
 import { ToolExecutor } from '../ai/executor';
-import { sessionProjectPathOf } from './project';
+import { sessionProjectPathOf, takeSessionProjectPathAnnouncement } from '../session-project-path';
 import type { EditorController, StateChangeKind } from '../../shared/editor/controller';
 import type { Project } from '../../shared/types/project';
 import {
@@ -199,6 +208,11 @@ export function registerEditorSyncHandlers(
  * the window then adopted that stale snapshot back over its own edit. Reading
  * the project at send time makes the payload what main actually holds when it
  * is sent, so the only thing this window can deliver is current.
+ *
+ * The path is read inside the timer for the same reason, and it is taken from
+ * the session record rather than compared against the last push: the record
+ * knows whether its value has been announced, so a window that chose a path
+ * and reported it is never handed it back as if it were news.
  */
 export function attachSessionEditorPush(session: Session): void {
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -208,7 +222,14 @@ export function attachSessionEditorPush(session: Session): void {
     if (pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(() => {
       pushTimer = null;
-      const metadata = { source: MAIN_SYNC_SOURCE, kind: collapsedKind };
+      // Taken inside the timer, like the project below: a write that lands
+      // inside the 30ms window is a change this push is the first to carry.
+      const filePath = takeSessionProjectPathAnnouncement(session);
+      const metadata = {
+        source: MAIN_SYNC_SOURCE,
+        kind: collapsedKind,
+        ...(filePath === undefined ? {} : { filePath }),
+      };
       collapsedKind = 'playhead';
       const payload = JSON.stringify(session.controller.getProject());
       for (const contents of session.windows.values()) {

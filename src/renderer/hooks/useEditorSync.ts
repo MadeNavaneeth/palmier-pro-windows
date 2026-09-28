@@ -9,7 +9,8 @@
  *                      project
  *   renderer change -> push serialized project to main (debounced)
  *   main push       -> an `edit` tag is one undoable UI step; a `playhead` tag
- *                      is the cursor, adopted as a view update
+ *                      is the cursor, adopted as a view update; a tagged path
+ *                      moves the store onto the document that push belongs to
  *   sibling change  -> setProjectSilent + store refresh (no history, no push)
  *   path change     -> report the store's path to the session, so the session
  *                      still knows the file when this window reloads
@@ -49,10 +50,16 @@ interface RendererSyncMetadata {
  * only moved the cursor, and a snapshot comparison could not tell an agent
  * `set_playhead` from an agent call that changed nothing — two states the
  * undo contract treats differently.
+ *
+ * `filePath` is present only when the session's record of the file it holds has
+ * not been announced to its windows yet — the agent's `open_project` /
+ * `new_project` switching documents. The project itself cannot carry the path,
+ * so without it the window's store keeps naming the file the agent replaced.
  */
 interface MainSyncMetadata {
   source: 'main';
   kind: 'edit' | 'playhead';
+  filePath?: string | null;
 }
 
 interface PendingLocalSync {
@@ -71,9 +78,39 @@ function isRendererSyncMetadata(value: unknown): value is RendererSyncMetadata {
 
 function isMainSyncMetadata(value: unknown): value is MainSyncMetadata {
   if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as { source?: unknown; kind?: unknown };
+  const candidate = value as { source?: unknown; kind?: unknown; filePath?: unknown };
+  // A filePath that is neither a path nor absent is not a tag this window can
+  // act on, so the whole tag is refused and the push falls back to the
+  // conservative untagged default rather than adopting half of it.
+  if (candidate.filePath !== undefined
+    && candidate.filePath !== null
+    && typeof candidate.filePath !== 'string') {
+    return false;
+  }
   return candidate.source === 'main'
     && (candidate.kind === 'edit' || candidate.kind === 'playhead');
+}
+
+/**
+ * Point this window's store at the document the session just switched to.
+ *
+ * The store owns the path and the name together — `save` stamps the name into
+ * the file it writes — so a switch moves both, and it moves both here rather
+ * than in the adoption of the project, because the project arrives first. A
+ * null path is a switch to a document that owns no file, which is what the
+ * agent's `new_project` makes and what the store's own report then confirms.
+ *
+ * Only a window holding a project of its own follows the session: a window that
+ * has none is between a reload and the pull that fills it in, and it pulls the
+ * record itself. Nothing is lost by waiting, and a window that unlinked the
+ * session's document on its way through would take the record with it.
+ */
+function adoptSessionDocument(project: unknown, filePath: string | null): void {
+  const store = useProjectStore.getState();
+  if (!store.isLoaded) return;
+  const name = (project as Project).name || 'Untitled Project';
+  if (store.filePath === filePath && store.name === name) return;
+  useProjectStore.setState({ name, filePath });
 }
 
 function rendererSyncSequenceFromResponse(value: unknown): number | null {
@@ -404,6 +441,16 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
       // This window has just taken another editor's state, so it is back in step
       // and whatever it refused earlier is no longer the live question.
       useProjectStore.getState().clearDroppedSync();
+
+      // The document this state belongs to, when the session says it changed.
+      // Taken with the project, never separately: a window is never left naming
+      // a file whose project it does not hold, and the store's own report below
+      // then hands the path back to the session it came from. `undefined` is
+      // absent — the path did not change — while null is a change: the agent's
+      // `new_project` left the session holding no file at all.
+      if (isMainSyncMetadata(metadata) && metadata.filePath !== undefined) {
+        adoptSessionDocument(project, metadata.filePath);
+      }
 
       if (isMainSyncMetadata(metadata) && metadata.kind === 'playhead') {
         // The agent moved the playhead. That is the cursor and nothing else —
