@@ -17,7 +17,11 @@ import {
   NO_SESSION_ERROR,
   getSessionForSender,
 } from '../sessions';
-import { rememberSessionPath, isSessionFilePath, recordSessionProjectPath } from '../session-project-path';
+import {
+  rememberSessionPath,
+  isSessionFilePath,
+  consumeSessionProjectPathAnnouncement,
+} from '../session-project-path';
 
 const VPROJ_EXTENSION = '.vproj';
 const VPROJ_FILTER = { name: 'Palmier Project', extensions: ['vproj'] };
@@ -123,15 +127,18 @@ export function registerProjectHandlers(): void {
     if (!session) return { success: false, error: NO_SESSION_ERROR };
     // The record and its validation live in `../session-project-path`, because
     // the agent's own document switches record through the same pair.
-    if (filePath === null) {
-      recordSessionProjectPath(session, null);
-      return { success: true, filePath: null };
+    //
+    // A report is a CONSUMPTION, not a write: a window sends one when its own
+    // store changed, which after adopting a pushed path is the only evidence
+    // main has that the path was applied. Recording it here would re-arm the
+    // announcement instead, and it would ride every later push forever. A report
+    // of some OTHER path is that window asserting a change of its own, and is
+    // recorded as one.
+    if (filePath === null || isSessionFilePath(filePath)) {
+      consumeSessionProjectPathAnnouncement(session, filePath);
+      return { success: true, filePath };
     }
-    if (!isSessionFilePath(filePath)) {
-      return { success: false, error: 'Invalid project file path.' };
-    }
-    recordSessionProjectPath(session, filePath);
-    return { success: true, filePath };
+    return { success: false, error: 'Invalid project file path.' };
   });
 
   // ─── Recent Projects ─────────────────────────────────────────────────────────

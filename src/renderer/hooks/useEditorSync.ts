@@ -105,11 +105,22 @@ function isMainSyncMetadata(value: unknown): value is MainSyncMetadata {
  * record itself. Nothing is lost by waiting, and a window that unlinked the
  * session's document on its way through would take the record with it.
  */
-function adoptSessionDocument(project: unknown, filePath: string | null): void {
+function adoptSessionDocument(
+  project: unknown,
+  filePath: string | null,
+  confirmApplied: (filePath: string | null) => void,
+): void {
   const store = useProjectStore.getState();
   if (!store.isLoaded) return;
   const name = (project as Project).name || 'Untitled Project';
-  if (store.filePath === filePath && store.name === name) return;
+  if (store.filePath === filePath && store.name === name) {
+    // Already on this document, so the store does not change and its own
+    // report never fires. This push is still the window APPLYING the path, and
+    // applying it is what spends the announcement — otherwise a path this window
+    // already holds rides every later push for the life of the session.
+    confirmApplied(filePath);
+    return;
+  }
   useProjectStore.setState({ name, filePath });
 }
 
@@ -153,8 +164,16 @@ export interface EditorSyncOptions {
   controller: EditorController;
   /** Pull the session's project and the file it is held in. */
   pullSessionState: () => Promise<SessionProjectState>;
-  /** Send one serialized snapshot to main and resolve its reply. */
-  pushSnapshot: (payload: string) => Promise<unknown>;
+  /**
+   * Send one serialized snapshot to main and resolve its reply.
+   *
+   * The window's own path rides with it. The project document cannot carry its
+   * own path, and the store only REPORTS a path when that path changes, so a push
+   * is the one moment main learns which file the project it is being handed lives
+   * in. Without it, a window whose snapshot won the session back from an agent
+   * switch left main naming the agent's file over the window's project.
+   */
+  pushSnapshot: (payload: string, filePath: string | null) => Promise<unknown>;
   /** Listen for main -> renderer pushes; returns an unsubscribe. */
   onApply: (listener: (payload: unknown, metadata?: unknown) => void) => () => void;
   /** Report the renderer's project path to the session that owns the window. */
@@ -299,7 +318,7 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
    */
   async function pushToMain(json: string, pending: PendingLocalSync): Promise<void> {
     const result = await mirror.push(json, async (payload) => {
-      const response = await pushSnapshot(payload);
+      const response = await pushSnapshot(payload, useProjectStore.getState().filePath);
       if (rendererSyncWasRejected(response)) {
         throw new Error('The main process rejected the renderer editor sync.');
       }
@@ -404,7 +423,17 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
       // else is outstanding. Reordering only decides which of two returns
       // happens — both return, and nothing is applied, marked, or recorded
       // either way, so which push wins is untouched.
-      if (mirror.isEcho(incoming)) return;
+      // An echo returns early, but a path tag on it is not redundant: the payload
+      // is the state this window already had, while the tag says which FILE that
+      // state lives in. A window that already holds that path spends the
+      // announcement on applying the push, and skipping it here left the path
+      // riding every later push for the life of the session.
+      if (mirror.isEcho(incoming)) {
+        if (isMainSyncMetadata(metadata) && metadata.filePath !== undefined) {
+          adoptSessionDocument(project, metadata.filePath, confirmSessionPath);
+        }
+        return;
+      }
 
       // A local write is outstanding, so this inbound state is dropped, and
       // main's reply already told the sender it landed. The local write wins
@@ -449,7 +478,7 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
       // absent — the path did not change — while null is a change: the agent's
       // `new_project` left the session holding no file at all.
       if (isMainSyncMetadata(metadata) && metadata.filePath !== undefined) {
-        adoptSessionDocument(project, metadata.filePath);
+        adoptSessionDocument(project, metadata.filePath, confirmSessionPath);
       }
 
       if (isMainSyncMetadata(metadata) && metadata.kind === 'playhead') {
@@ -510,6 +539,27 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
     return false;
   }
 
+  /**
+   * Tell main this window applied the path a push carried, whether or not that
+   * changed the store.
+   *
+   * The same channel the store's own report uses, and deliberately: main cannot
+   * tell a confirmation from a window choosing a path for itself, and it does not
+   * need to — a report of a value that is not the one pending is a write, and a
+   * report of the pending one spends it. Failures are the same warning the
+   * report already logs, because the cost is identical: main keeps offering a
+   * path this window has already applied.
+   */
+  function confirmSessionPath(filePath: string | null): void {
+    void options.reportSessionPath(filePath).catch((error: unknown) => {
+      console.warn(
+        '[useEditorSync] Could not confirm the project path to the main process; '
+        + 'the next push will carry it again, which is harmless.',
+        error,
+      );
+    });
+  }
+
   //  4. The session remembers the file. The project store owns the path, and
   //     every transition to a new one lands there — an open, a Save As, a New,
   //     a recovery restore — but only two of them reach a main-owned channel, so
@@ -565,7 +615,7 @@ export function useEditorSync() {
   useEffect(() => createEditorSync({
     controller,
     pullSessionState,
-    pushSnapshot: (payload) => window.palmier.editor.syncState(payload),
+    pushSnapshot: (payload, filePath) => window.palmier.editor.syncState(payload, filePath),
     onApply: (listener) => window.palmier.on('editor:apply-from-main', listener),
     reportSessionPath: (filePath) => window.palmier.project.setSessionPath(filePath),
   }).dispose, [controller]);

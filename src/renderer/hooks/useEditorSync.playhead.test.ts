@@ -52,7 +52,7 @@ function mountWindow(session?: { project: Project | null; filePath: string | nul
   const sync = createEditorSync({
     controller: useTimelineStore.getState().controller,
     pullSessionState: async () => session ?? { project: null, filePath: null },
-    pushSnapshot: async (payload) => {
+    pushSnapshot: async (payload, _filePath) => {
       pushes.push(payload);
       return { success: true, sequence: ++sessionSequence };
     },

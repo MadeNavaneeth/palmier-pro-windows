@@ -140,7 +140,8 @@ function mountRendererMirror(window: FakeWindow) {
         filePath: typeof response.filePath === 'string' ? response.filePath : null,
       };
     },
-    pushSnapshot: async (payload) => invoke('editor:sync-from-renderer', window.id, payload),
+    pushSnapshot: async (payload, filePath) =>
+      invoke('editor:sync-from-renderer', window.id, payload, filePath),
     onApply: (listener) => {
       window.onSend = listener;
       return () => {

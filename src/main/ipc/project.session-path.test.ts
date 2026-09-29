@@ -138,7 +138,8 @@ const windowBridge = {
   },
   editor: {
     getState: () => Promise.resolve(invoke('editor:get-state', 1)),
-    syncState: (payload: string) => Promise.resolve(invoke('editor:sync-from-renderer', 1, payload)),
+    syncState: (payload: string, filePath?: string | null) =>
+      Promise.resolve(invoke('editor:sync-from-renderer', 1, payload, filePath)),
   },
 };
 
@@ -157,7 +158,7 @@ function mountWindow() {
         filePath: typeof response.filePath === 'string' ? response.filePath : null,
       };
     },
-    pushSnapshot: (payload) => windowBridge.editor.syncState(payload),
+    pushSnapshot: (payload, filePath) => windowBridge.editor.syncState(payload, filePath),
     onApply: (listener) => {
       target.onSend = listener;
       return () => {
