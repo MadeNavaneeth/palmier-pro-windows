@@ -868,7 +868,7 @@ before the assistant is used.
 ### #89 — fire-and-forget promises
 
 Made a build constraint rather than a one-time sweep. Beyond marking intentional
-detached work, two real defects surfaced:
+detached work, three real defects surfaced:
 
 - `ProjectStore.save()` ignored `result.success`, so a failed write left the
   project dirty while the caller proceeded as though it had been saved. It now
@@ -879,6 +879,23 @@ detached work, two real defects surfaced:
   dedupe check then matched, that snapshot was never retried. The Agent and MCP
   server read that controller, so the visible symptom was tools acting on a stale
   timeline. `StateMirror` now records a snapshot only after the peer confirms it.
+- `export:reveal` answered `{ success: true }` for every path, and the
+  export panel discarded the answer with `void window.palmier.export.reveal(...)`,
+  so a reveal that never happened was indistinguishable from one that did. The
+  panel's error channel also rendered only in the view that holds no reveal button.
+  The cause is not an unawaited rejection, and the first recorded version of this
+  entry was wrong about that: `shell.showItemInFolder` is declared `void` in the
+  pinned Electron 43.4.1 and posts its work to a worker thread with no value
+  crossing back to JavaScript, so there is nothing to await and awaiting the call
+  would resolve `undefined` and report success on every path, preserving the defect
+  it appeared to fix. `openPath` and `openExternal`, which do return an error string,
+  are different functions. The handler now checks the one thing it can know,
+  whether the containing directory resolves, before handing the path to the shell,
+  and the renderer awaits the answer and routes a failure to the panel's existing
+  error channel, which now covers the view that holds the reveal buttons. A
+  shell-side rejection of a directory that resolves fine remains undetectable
+  through this API; closing that needs `shell.openPath` or direct COM interop, both
+  product decisions, neither taken here.
 
 Silent catches that remain are the genuinely ignorable ones — best-effort temp
 file cleanup, audio-context teardown, prefetch misses — and each states why.
