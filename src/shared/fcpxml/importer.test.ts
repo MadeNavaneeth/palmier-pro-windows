@@ -913,6 +913,22 @@ describe('a `file:` src keeps the root it names (#154)', () => {
     // a different file than the media to every NLE reading the document, since
     // the consuming application is frequently not us.
     ['\\\\server\\share\\x.mp4', 'file://server/share/x.mp4', 'UNC, authority kept'],
+    // The UNC branch matches a leading `//` in ANY spelling, not just backslashes,
+    // so a forward-slash `//tmp/x.mp4` moved from `file:///tmp/x.mp4` to
+    // `file://tmp/x.mp4` in the same commit. That is correct for this platform and
+    // is pinned here rather than left implicit: on Windows a leading `//` IS a UNC
+    // authority by definition, so `//tmp/x.mp4` is server `tmp` sharing `x.mp4`,
+    // and emitting it as a host is the correct serialization. A POSIX double-slash
+    // path is not a shape this build can be handed from an import either, because
+    // the reader collapses the scheme and leaves a single leading slash — so the
+    // macOS-authored `//tmp/...` never reaches the writer with two slashes intact.
+    // Pinned because an unpinned shape that CHANGED is exactly how the reader's
+    // unpinned collapse resurfaces later.
+    ['//tmp/x.mp4', 'file://tmp/x.mp4', 'leading double slash, UNC authority'],
+    // A bare `//` has no host segment, so the branch does not match and the root
+    // case still answers `file:///`. Pinned so a widening of the authority pattern
+    // cannot quietly start reading a root as a hostname.
+    ['//', 'file:///', 'bare double slash, still the root'],
   ])('writes %s as %s (%s)', (path, expected) => {
     expect(writtenSrc(path as string)).toBe(expected as string);
   });
