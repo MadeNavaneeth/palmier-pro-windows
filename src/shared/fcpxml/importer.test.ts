@@ -871,11 +871,63 @@ describe('a `file:` src keeps the root it names (#154)', () => {
     ['/tmp/x', '/tmp/x', 'bare POSIX path, no scheme'],
     // UNC has neither a drive nor a POSIX root. Stated, not glossed: this yields a
     // rooted path on the CURRENT drive, which is not the `\\server\share` named.
-    // The writer has the same limitation (it collapses a leading `\\`), so a UNC
-    // path does not survive our own round trip either. See the ledger entry.
+    // The writer now emits the authority (`file://server/share/...`), so this is
+    // a READER limit alone and no longer a round-trip limit. See the ledger entry.
     ['file://server/share/x.mp4', '/server/share/x.mp4', 'UNC, documented limitation'],
   ])('reads %s as %s (%s)', (src, expected) => {
     expect(pathOf(src as string)).toBe(expected as string);
+  });
+
+  /** The exact `src` our own writer puts on a clip's media asset. */
+  function writtenSrc(path: string): string {
+    const p = baseProject();
+    p.media.push({
+      id: 'w', path, filename: 'clip.mp4', type: 'video',
+      duration: 60, fileSize: 1, addedAt: '', width: 1920, height: 1080,
+    } as never);
+    p.timeline.clips.push({
+      id: 'c1', assetId: 'w', trackId: 'v1', type: 'video', label: 'Shot',
+      startFrame: 0, durationFrames: 90, inPoint: 0, outPoint: 90,
+      x: 0, y: 0, width: 1920, height: 1080, rotation: 0, scaleX: 1, scaleY: 1,
+      opacity: 1, anchorX: 0, anchorY: 0, volume: 1, muted: false,
+    } as never);
+    const src = /<asset [^>]*\ssrc="([^"]*)"/.exec(exportFcpxml(p));
+    expect(src).not.toBeNull();
+    return src![1]!;
+  }
+
+  it.each([
+    // The same shapes as the table above, read in the other direction: the exact
+    // bytes the writer puts on the wire. The non-UNC rows are here so that a
+    // UNC fix which moved any other shape fails a test rather than passing
+    // review — every one of them is byte-identical to what shipped.
+    ['C:\\media\\clip.mp4', 'file:///C:/media/clip.mp4', 'drive'],
+    ['/tmp/palmier/clip.mp4', 'file:///tmp/palmier/clip.mp4', 'POSIX root'],
+    ['/Users/me/Movies/x.mov', 'file:///Users/me/Movies/x.mov', 'macOS-shaped'],
+    ['/tmp/my media/x.mp4', 'file:///tmp/my%20media/x.mp4', 'encoded space'],
+    ['/tmp/a#b.mp4', 'file:///tmp/a%23b.mp4', 'encoded hash'],
+    ['/tmp/100%.mp4', 'file:///tmp/100%25.mp4', 'encoded percent'],
+    // A UNC path's two leading separators are a HOST, not a root. Collapsing
+    // them into one `file:///` emitted `file:///server/share/x.mp4`, which is
+    // byte-identical to a POSIX path and — the part that is not cosmetic — names
+    // a different file than the media to every NLE reading the document, since
+    // the consuming application is frequently not us.
+    ['\\\\server\\share\\x.mp4', 'file://server/share/x.mp4', 'UNC, authority kept'],
+  ])('writes %s as %s (%s)', (path, expected) => {
+    expect(writtenSrc(path as string)).toBe(expected as string);
+  });
+
+  it('leaves the reader limit in place for a UNC src the writer now writes correctly', () => {
+    // Pins the READER so this writer fix cannot quietly grow into half of a
+    // coupled fix later. The src below is the correct RFC 8089 serialization, and
+    // the reader still answers `/server/share/x.mp4` — a rooted path on the
+    // current drive, not the `\\server\share` it names. That is the open product
+    // question, whether this application supports network media as a first-class
+    // source, and it is deliberately unchanged: a correct URL on the wire is
+    // right independently of the answer, because the wire is not read by us.
+    const src = writtenSrc('\\\\server\\share\\x.mp4');
+    expect(src).toBe('file://server/share/x.mp4');
+    expect(pathOf(src)).toBe('/server/share/x.mp4');
   });
 
   it('skips an asset with an empty src rather than reading it as the filesystem root', () => {
