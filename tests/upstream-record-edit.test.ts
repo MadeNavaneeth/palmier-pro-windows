@@ -289,6 +289,173 @@ describe('upstream-record-edit', () => {
     expect(readFileSync(file).equals(before)).toBe(true);
   });
 
+  // ── failure mode 3: a lone CR, which git's binary detection skips ───────────
+
+  /**
+   * Git's `convert_is_binary` treats a CR that is not part of a CRLF pair as
+   * proof the file is binary, and a binary file bypasses the clean filter
+   * entirely. So a single lone CR is enough to make `git add` store the working
+   * tree's CRLF verbatim, silently, and for the index to keep those bytes
+   * forever. Eight of them, in `\r\r\n` paragraph breaks, are what this tool
+   * certified as safe in the run that produced the defect.
+   *
+   * The round trip itself is an exact identity even on `\r\r\n` -- `\r\n` -> `\n`
+   * leaves the orphan CR alone, and the write only ever prefixes a CR to an LF,
+   * so `\r\r\n` in means `\r\r\n` out. The tool did not corrupt the file. It
+   * declared a file that would break git's normalisation to be byte-safe, and
+   * re-certified the same 8 bytes on every later run. The fix is the refusal,
+   * not a repair: a silent repair on this file would destroy evidence and hide
+   * the writer that caused it.
+   */
+  function loneCr(text: string): number {
+    return (text.match(/\r(?!\n)/g) ?? []).length;
+  }
+
+  it('refuses a file carrying a lone CR, which git would classify as binary', () => {
+    // The exact shape that reached the record: a paragraph break whose CR was
+    // doubled. Counted as neither CRLF nor bare LF, so it passed as clean CRLF.
+    const file = join(dir, 'lone-cr.md');
+    writeFileSync(file, '\uFEFFone\r\r\ntwo\r\r\nthree\r\n', 'utf8');
+    const before = readFileSync(file);
+    expect(loneCr(before.toString('utf8'))).toBe(2);
+
+    const result = runTool(dir, file, [{ id: 'x', find: 'two', replace: 'TWO' }]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('REFUSED (lone-cr)');
+    expect(result.output).toContain('lone CR');
+    // Not repaired, not normalised: the bytes a human has to look at are intact.
+    expect(readFileSync(file).equals(before)).toBe(true);
+  });
+
+  it('refuses a doubled-CR paragraph break even when every other line is clean', () => {
+    // The mixed-EOL check cannot see this file, which is why it passed: there is
+    // no bare LF in it, so "not mixed" was true and was taken as "safe".
+    const body = FIXTURE_LINES.join('\r\n').replace('\r\n', '\r\r\n');
+    const file = join(dir, 'doubled-paragraph.md');
+    writeFileSync(file, `\uFEFF${body}`, 'utf8');
+    const before = readFileSync(file);
+    expect(loneCr(body)).toBe(1);
+    // Not mixed, by the tool's own measure: every LF is preceded by a CR.
+    expect((body.match(/\n/g) ?? []).length - (body.match(/\r\n/g) ?? []).length).toBe(0);
+
+    const result = runTool(dir, file, [
+      { id: 'x', find: 'reason text here', replace: 'a verified reason' },
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('REFUSED (lone-cr)');
+    expect(readFileSync(file).equals(before)).toBe(true);
+  });
+
+  it('refuses an edit whose replacement would introduce a lone CR', () => {
+    // A clean file is not enough on its own: a plan can manufacture the defect
+    // itself, and the invariant has to hold on the text that would be written,
+    // not only on the bytes that were read.
+    const file = writeFixture(dir, 'ledger.md');
+    const before = readFileSync(file);
+    const result = runTool(dir, file, [
+      { id: 'smuggle-a-cr', find: 'reason text here', replace: 'reason text\r here' },
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('REFUSED (lone-cr)');
+    expect(readFileSync(file).equals(before)).toBe(true);
+  });
+
+  it('cannot manufacture a doubled-CR paragraph break out of a clean file', () => {
+    // The incident, stated as a positive assertion. This is the test that would
+    // have caught it: a benign edit through the guard's own round trip, after
+    // which the written bytes must carry no lone CR and so must not have flipped
+    // the file out of git's normalisation.
+    const file = writeFixture(dir, 'ledger.md');
+    const result = runTool(dir, file, [
+      {
+        id: 'name-the-derivation',
+        find: 'its last two gaps needed a derivation.',
+        replace: 'its last two gaps needed a derivation, not a missing term.',
+      },
+    ]);
+    const after = readFileSync(file).toString('utf8');
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('OK');
+    expect(loneCr(after)).toBe(0);
+    expect(after).not.toContain('\r\r\n');
+  });
+
+  it('round-trips a clean CRLF file byte-for-byte', () => {
+    const file = writeFixture(dir, 'ledger.md');
+    const before = readFileSync(file);
+    const result = runTool(dir, file, [
+      { id: 'tidy', find: 'reason text here', replace: 'a verified reason' },
+    ]);
+    // Every byte accounted for, not just the invariants: BOM, the untouched
+    // lines, and CRLF on all of them. The replacement deliberately does not
+    // contain its own anchor, so the post-write anchor check is not what is
+    // being exercised here.
+    const expected = Buffer.from(before.toString('utf8').replace('reason text here', 'a verified reason'), 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('OK');
+    expect(readFileSync(file).equals(expected)).toBe(true);
+  });
+
+  it('round-trips a clean LF file byte-for-byte, which is the Linux form', () => {
+    // A repo checked out on LF has no CRLF at all, so `eol` resolves to `\n` and
+    // the write must add nothing. Asserting on the exact bytes is what keeps
+    // this from regressing the way the bare-LF veto once did.
+    const file = join(dir, 'lf.md');
+    writeFileSync(file, `\uFEFF${FIXTURE_LINES.join('\n')}`, 'utf8');
+    const before = readFileSync(file);
+    const result = runTool(dir, file, [
+      { id: 'tidy', find: 'reason text here', replace: 'a verified reason' },
+    ]);
+    const expected = Buffer.from(before.toString('utf8').replace('reason text here', 'a verified reason'), 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('OK');
+    expect(readFileSync(file).equals(expected)).toBe(true);
+    expect(readFileSync(file).toString('utf8')).not.toContain('\r');
+  });
+
+  it('catches a lone CR that reached the disk behind the pre-flight’s back', () => {
+    // The post-write audit exists for the write that was NOT the write we
+    // simulated, so the pre-flight has to be bypassed to reach it: a clean
+    // document is read, and then the file on disk is made to differ from what
+    // was simulated. If this stopped being refused, a tool change that
+    // introduced a lone CR on the way out would be invisible, which is the
+    // failure the whole tool exists to prevent.
+    //
+    // Driven through a child node process because vitest cannot import a CRLF
+    // `.mjs` (see the note at the top of this file).
+    const clean = join(dir, 'clean.md');
+    writeFileSync(clean, '\uFEFFone\r\ntwo\r\nthree\r\n', 'utf8');
+    const landed = join(dir, 'landed.md');
+    writeFileSync(landed, '\uFEFFone\r\r\nTWO\r\r\nthree\r\n', 'utf8');
+
+    // A Windows absolute path is not a valid ESM specifier, so the tool is
+    // imported by file URL, the same way its own entrypoint guard does it.
+    const script = `
+      const m = await import(pathToFileURL(${JSON.stringify(TOOL)}).href);
+      const doc = m.readDocument(${JSON.stringify(clean)});
+      try {
+        m.verifyOnDisk({ ...doc, file: ${JSON.stringify(landed)} }, [{ id: 'x', find: 'two', replace: 'TWO' }]);
+        console.log('NOT CAUGHT');
+      } catch (error) {
+        console.log(error.code + '|' + error.message);
+      }
+    `;
+    const output = execFileSync('node', ['--input-type=module', '-e', `import { pathToFileURL } from 'node:url';\n${script}`], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
+
+    expect(output).toContain('lone-cr|');
+    expect(output).toContain('lone CR');
+    expect(output).not.toContain('NOT CAUGHT');
+  });
+
   // ── against the real record ────────────────────────────────────────────────
 
   it("preserves the real ledger's pre-existing damage, neither growing nor shrinking it", () => {
@@ -324,6 +491,10 @@ describe('upstream-record-edit', () => {
     // it is what made this test fail on Linux while passing on Windows.
     expect(after.split('\n').length).toBe(before.split('\n').length);
     expect(after).not.toContain(String.fromCharCode(0xfffd));
+    // No lone CR in what landed, so git's binary detection still sees this file
+    // as text and the clean filter still applies. This is the invariant whose
+    // absence let 8 doubled CRs through the run that produced the defect.
+    expect(loneCr(after)).toBe(0);
     // The mojibake runs, the table shape and the four over-wide rows are all
     // reported unchanged, which is the same comparison the tool made itself.
     expect(result.output).toMatch(/table shape after: .*4cells:61/);
