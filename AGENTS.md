@@ -117,9 +117,11 @@ git is not a recovery mechanism in this repository.
 
 - **Four agent `SKILL.md` files are pure LF in the working tree and are one checkout away from the
   incident above.** `core.autocrlf=true` converts LF to CRLF on checkout, so a `git checkout` or
-  `git stash` would rewrite all four, and one of them carries a `\r`-strict parser. Do not run a
-  checkout or stash in this repository. Read the file if you need to know which ones, rather than
-  assuming it is safe.
+  `git stash` would rewrite all four. No parser lives in those files, which are frontmatter and
+  advisory prose; the one that reads them, `parseSkillFile` in `src/main/ai/skills.ts`, has split
+  on `/\r?\n/` since `c39e560`, so CRLF no longer drops a skill. The index is LF either way, so a
+  rewrite is diff noise rather than corruption. Do not run a checkout or stash in this repository
+  regardless, and keep `parseSkillFile` tolerant of both endings.
 
 - **Never use PowerShell text cmdlets to read or write source files.** On Windows, PowerShell 5.1 decodes a BOM-less UTF-8 file using the ANSI code page and writes it back in that code page, so every non-ASCII character is mangled: an em dash (U+2014) becomes the three characters â€". A second round trip nests the damage (Ã¢â‚¬â€), and one of the bytes involved has no code-page mapping at all, so the original text is then unrecoverable. This silently corrupted comments in 23 source files. Use the read/write/edit tools, or Node with an explicit 'utf8' encoding. Reserve PowerShell for process work — running tests, git, builds — never for file content.
 
