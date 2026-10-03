@@ -9,7 +9,7 @@ description = "GPU-accelerated video compositor engine for Palmier Pro Windows"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "2", features = ["napi8"] }
+napi = { version = "3", features = ["napi8"] }
 napi-derive = "2"
 wgpu = "24"
 bytemuck = { version = "1", features = ["derive"] }
@@ -33,7 +33,7 @@ napi-build = "2"
 # unifies the two into one build; dev-only, so a real `cargo build` links the
 # .node exactly as before.
 [dev-dependencies]
-napi = { version = "2", features = ["dyn-symbols", "noop"] }
+napi = { version = "3", features = ["dyn-symbols", "noop"] }
 
 [profile.release]
 opt-level = 3
