@@ -88,10 +88,43 @@ git is not a recovery mechanism in this repository.
   modified, no backup is needed.
 - Copy a file to a temp directory before editing it when the change is risky or the file is large.
 - Do not commit unless explicitly asked, and stage only the intended files.
-- This repository has no `.gitattributes` and `core.autocrlf=true`, so working-tree files are CRLF
-  while git stores LF. That is expected, not damage, and `git add` normalizes it back. Do not
-  "fix" working-tree line endings, and do not read a CRLF working tree as evidence that a
-  `git stash` or `git checkout` round-trip occurred.
+- Line endings are pinned by `.gitattributes` (`* text=auto eol=lf`), so git stores LF and checks
+  out LF. That is expected, not damage. Do not "fix" working-tree line endings, and do not read a
+  line-ending difference as evidence that a `git stash` or `git checkout` round-trip occurred.
+  Note that `.gitattributes` normalizes nothing retroactively — a file keeps its current bytes
+  until git touches it — so a working-tree file may still be CRLF while the index and every
+  future checkout are LF.
+
+- **`git add` does not always normalize, and the exception is invisible.** It is true for 569 of the
+  571 tracked files. The two that are not had been classified by git as *binary*, and a binary file
+  skips the clean filter, so their CRLF was stored verbatim. Git 2.47 decides binary-ness from the
+  whole file, not an 8000-byte window, and the trigger is any of: a NUL byte anywhere, or a single
+  **lone CR** (a 0x0D not followed by 0x0A) anywhere. One lone CR is enough. When that happens git
+  shows you a plausible whole-file text diff and emits **no** `CRLF will be replaced by LF`
+  warning, because it believes the file is not text.
+
+  Two real cases, both now fixed: `docs/UPSTREAM_ISSUES.md` accumulated 8 lone CRs from doubled-CR
+  paragraph breaks, and `src/main/ipc/project.recent.test.ts` carried a raw NUL byte inside a
+  template literal. **When writing a replacement string for `scripts/upstream-record-edit.mjs`,
+  use bare `\n` and never a literal `\r\n`.** The guard expands `\n` to the file EOL on write, so a
+  literal `\r\n` gets a second CR prefixed and becomes a doubled CR. That is how the 8 got there,
+  and the old guard counted a lone CR as neither CRLF nor bare LF, so it certified the file as
+  byte-safe. It now refuses with code `lone-cr` on the file as read, on the simulated plan text,
+  and on the bytes re-read after the write.
+
+  Check with `git ls-files --eol <path>`: `i/lf w/lf` is the healthy state, `i/-text` means git has
+  classified the file as binary and is storing your bytes unchanged, and `w/mixed` means the
+  working-tree file is inconsistent and will be rewritten on the next checkout. Measured on a
+  throwaway clone: `text=auto` ALONE would NOT have prevented any of this, because it still routes
+  through the binary check, and forcing a rewrite converted 156 files to CRLF including every
+  pure-LF agent skill file. The `eol=lf` is what fixes the working-tree side.
+
+- **Four agent `SKILL.md` files are pure LF, and `.gitattributes` now keeps them that way.** They were
+  one `core.autocrlf=true` checkout away from the incident above, which is precisely why `eol=lf`
+  was added rather than `text=auto` alone. No parser lives in those files, which are frontmatter
+  and advisory prose; the one that reads them, `parseSkillFile` in `src/main/ai/skills.ts`, has
+  split on `/\r?\n/` since `c39e560`, so CRLF would no longer drop a skill either way. Keep
+  `parseSkillFile` tolerant of both endings regardless, and still never run a `git stash` here.
 
 - **Never use PowerShell text cmdlets to read or write source files.** On Windows, PowerShell 5.1 decodes a BOM-less UTF-8 file using the ANSI code page and writes it back in that code page, so every non-ASCII character is mangled: an em dash (U+2014) becomes the three characters â€". A second round trip nests the damage (Ã¢â‚¬â€), and one of the bytes involved has no code-page mapping at all, so the original text is then unrecoverable. This silently corrupted comments in 23 source files. Use the read/write/edit tools, or Node with an explicit 'utf8' encoding. Reserve PowerShell for process work — running tests, git, builds — never for file content.
 

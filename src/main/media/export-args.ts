@@ -37,6 +37,7 @@ import { colorGradeOf, toFfmpegColorChain, toFfmpegPostLutChain, toFfmpegPreLutC
 import {
   effectsOf,
   toFfmpegBlurFilter,
+  toFfmpegClarityFilters,
   toFfmpegGlowBlendFilter,
   toFfmpegGlowScaleFilter,
   toFfmpegGlowThresholdFilter,
@@ -985,15 +986,18 @@ function buildFilterGraph(
       ];
       const transformChain = `,${transformFilters.join(',')}`;
       // Effects subgroups (#157): blur, grain and vignette are linear
-      // single-input filters behind invert; glow needs a split/blend graph
-      // (screen needs two frames), like a partial LUT does.
+      // single-input filters behind invert; clarity and glow need a two-frame
+      // graph (clarity reads the source beside its own blur, glow screens two
+      // frames), like a partial LUT does. Both therefore force the graph path
+      // below, which is the same branch glow already took.
       const fx = effectsOf(clip);
       const fxFilters: string[] = [];
+      const glow = fx?.glow;
+      const clarity = fx?.clarity;
       if (fx?.blurRadius !== undefined) fxFilters.push(toFfmpegBlurFilter(fx.blurRadius));
       if (fx?.grain) fxFilters.push(toFfmpegGrainFilter(fx.grain));
       if (fx?.vignette) fxFilters.push(toFfmpegVignetteFilter(fx.vignette));
-      const glow = fx?.glow;
-      if (grade && partialLut && !glow) {
+      if (grade && partialLut && !glow && !clarity) {
         const pre = toFfmpegPreLutChain(grade);
         const post = toFfmpegPostLutChain(grade);
         const preLut = `v${i}prelut`;
@@ -1021,10 +1025,11 @@ function buildFilterGraph(
             ? `[${blended}]${postSuffix.join(',')}[${scaledLabel}]`
             : `[${blended}]null[${scaledLabel}]`,
         );
-      } else if (glow || (grade && partialLut)) {
+      } else if (glow || clarity || (grade && partialLut)) {
         // Graph path: an optional LUT blend first, then the linear
-        // post-LUT stages, then the glow split/threshold/blur/scale/screen
-        // graph at its canonical slot (after vignette, before edge/fades).
+        // post-LUT stages, then the clarity and glow graphs at their canonical
+        // slots (clarity before blur as upstream orders it, glow after
+        // vignette), then edge/fades.
         let current: string;
         if (grade && partialLut) {
           const pre = toFfmpegPreLutChain(grade);
@@ -1041,7 +1046,7 @@ function buildFilterGraph(
           filters.push(
             `[${lutOut}][${preB}]blend=all_mode='normal':all_opacity=${String(partialLut.intensity)}[${blended}]`,
           );
-          const mid = [...post, ...fxFilters];
+          const mid = [...post, ...(clarity ? [] : fxFilters)];
           if (mid.length > 0) {
             const midLabel = `v${i}mid`;
             filters.push(`[${blended}]${mid.join(',')}[${midLabel}]`);
@@ -1050,11 +1055,29 @@ function buildFilterGraph(
             current = blended;
           }
         } else {
-          const mid = [...(grade && !partialLut ? toFfmpegColorChain(grade) : []), ...fxFilters];
+          const mid = [...(grade && !partialLut ? toFfmpegColorChain(grade) : []), ...(clarity ? [] : fxFilters)];
           const midSuffix = mid.length > 0 ? `,${mid.join(',')}` : '';
           const midLabel = `v${i}mid`;
           filters.push(`[${trimmedLabel}]${processingBase}${midSuffix}[${midLabel}]`);
           current = midLabel;
+        }
+        if (clarity) {
+          // Upstream's canonicalOrder puts detail.clarity ahead of blur.*, so
+          // the linear fx filters are held back out of `mid` above and applied
+          // here, after the graph. edgeWidth/edgeHeight are the post-crop frame
+          // size, which is the frame this stage actually sees and the size the
+          // preview blurs at.
+          const clarified = `v${i}clarified`;
+          filters.push(...toFfmpegClarityFilters(
+            clarity, current, clarified, edgeWidth, edgeHeight, i,
+          ));
+          if (fxFilters.length > 0) {
+            const afterFx = `v${i}afterFx`;
+            filters.push(`[${clarified}]${fxFilters.join(',')}[${afterFx}]`);
+            current = afterFx;
+          } else {
+            current = clarified;
+          }
         }
         if (glow) {
           const glowA = `v${i}glowA`;

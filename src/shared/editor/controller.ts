@@ -83,7 +83,7 @@ import { placeCaptionCue } from '../captions/apply';
 import { colorGradeOf, gradeCurvesEqual, gradeWheelsEqual, hueCurvesEqual, sanitizeGradeCurve, sanitizeGradeWheels, sanitizeHueCurves } from './color-grade';
 import { normalizeEasing, sanitizeMotion, type MotionTrack } from '../media/motion';
 import { narrowProjectGradePresetLinks } from './grade-preset-store';
-import { clipEffectsEqual, effectsOf, sanitizeBlurRadius, sanitizeGlow, sanitizeGrain, sanitizeVignette } from './effects';
+import { clipEffectsEqual, effectsOf, sanitizeBlurRadius, sanitizeClarity, sanitizeGlow, sanitizeGrain, sanitizeVignette } from './effects';
 import { lutRefsEqual, sanitizeLutRef } from './lut';
 import { migrateProject, CURRENT_SCHEMA_VERSION } from './migrations';
 import { folderNamesMatch, narrowMediaFolders, sanitizeFolderName } from '../media/folders';
@@ -2700,6 +2700,7 @@ export class EditorController {  private project: Project;
                       // overwrites the target's with undefined, and each
                       // sanitizer clones, so clips never share objects.
                       blurRadius: sanitizeBlurRadius(source.blurRadius),
+                      clarity: sanitizeClarity(source.clarity),
                       vignette: sanitizeVignette(source.vignette),
                       grain: sanitizeGrain(source.grain),
                       glow: sanitizeGlow(source.glow),
@@ -2754,8 +2755,8 @@ export class EditorController {  private project: Project;
         || !hueCurvesEqual(a.hueCurves, b.hueCurves)
         || !lutRefsEqual(a.lut, b.lut)
         || !clipEffectsEqual(
-          { blurRadius: a.blurRadius, vignette: a.vignette, grain: a.grain, glow: a.glow },
-          { blurRadius: b.blurRadius, vignette: b.vignette, grain: b.grain, glow: b.glow },
+          { blurRadius: a.blurRadius, clarity: a.clarity, vignette: a.vignette, grain: a.grain, glow: a.glow },
+          { blurRadius: b.blurRadius, clarity: b.clarity, vignette: b.vignette, grain: b.grain, glow: b.glow },
         )
       );
     };

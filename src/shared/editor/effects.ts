@@ -7,6 +7,22 @@
  * counterpart is left out rather than faked (see the per-effect notes).
  *
  * Shipped (all verified against FFmpeg 8.1.2, see the tests):
+ * - Clarity / Dehaze (`detail.clarity`, upstream's only Detail entry): the
+ *   `Metal/Clarity.metal` kernel verbatim — unsharp against a Gaussian of
+ *   radius `max(W,H)/40`, then the dark-channel-prior dehaze trio (local
+ *   contrast, a contrast mix about 0.45, a re-saturation about luma). Every
+ *   term is a closed form of the pixel and the blurred pixel, so it ports
+ *   exactly; what it is NOT is one `geq`, because `dark` and `yy` are
+ *   cross-channel and a `blend` expression slot is channel-local: `A`/`B`
+ *   name only the slot's OWN component, and `r(X,Y)`/`g(X,Y)` are literally
+ *   unknown functions there (verified: "Unknown function in 'r(X,Y)'"). The
+ *   export therefore `hstack`s the source and its own blur into one frame and
+ *   evaluates the whole kernel in a single `geq` reading the second half at
+ *   `X+W/2`, then crops back. The blur half follows the SAME shared
+ *   convention as Gaussian Blur below — `gblur`'s IIR against a closed
+ *   `CIGaussianBlur` — so both backends agree with each other but neither is
+ *   bit-exact with upstream. That is a documented convention, not exact
+ *   upstream math, and it is the one place this slice knowingly differs.
  * - Gaussian Blur (`blurRadius` 0..100): upstream `blur.gaussian`
  *   (CIGaussianBlur radius) renders through FFmpeg `gblur` (Getreuer IIR,
  *   `sigma = radius`) while the preview runs the same recurrence in
@@ -26,20 +42,21 @@
  *   mode, whose exact math is `255 - (255-A)(255-B)//255` — verified).
  *
  * Left out, with reasons:
- * - Clarity / Dehaze (`detail.clarity`): unsharp-against-gaussian-radius-
- *   max(W,H)/40 plus a dark-channel-prior dehaze trio. FFmpeg `unsharp`
- *   uses a fixed binomial/16 kernel (probed), caps its matrix at 63
- *   (a 4K frame needs ~109), and forces a YUV roundtrip on RGB input;
- *   nothing composes the dehaze math. No exact recipe exists.
  * - Sharpen (`blur.sharpen`, CISharpenLuminance): closed Apple kernel;
  *   `unsharp` is the wrong kernel on a YUV detour (same probe).
  * - Noise Reduction (`blur.noiseReduction`, CINoiseReduction): closed
  *   Apple algorithm; hqdn3d/nlmeans/atadenoise are different algorithms.
- * - Motion Blur (`blur.motion`): temporal accumulation; single-frame
- *   preview/export cannot produce it without faking.
+ * - Motion Blur (`blur.motion`, CIMotionBlur): closed Apple kernel, same
+ *   category as Sharpen — but NOT temporal. Upstream applies it to a single
+ *   image with two scalars (radius, angle), and a Core Image filter takes one
+ *   image, so no second frame or motion vector can enter it. It is a
+ *   directional single-frame blur, so this is a parity-and-convention
+ *   question, not a capability one.
  *
- * Pipeline slot (upstream `EffectRegistry.canonicalOrder`): blurs run after
- * the grade and before invert, grain/vignette/glow after invert. Both
+ * Pipeline slot (upstream `EffectRegistry.canonicalOrder`): `detail.clarity`
+ * sits after every `color.*` stage and BEFORE `key.chroma` and `blur.*`, so it
+ * runs after the grade and the LUT and ahead of the blur; the remaining blurs
+ * run after the grade and before invert, grain/vignette/glow after invert. Both
  * backends apply all four effects after the full color chain including
  * invert: blur-then-invert vs invert-then-blur differ only by float
  * rounding (the IIR blur is linear and DC-preserving, invert is affine, and
@@ -51,6 +68,17 @@
 import type { Clip } from '../types/project';
 
 // ─── Model ───────────────────────────────────────────────────────────────────
+
+/**
+ * Clarity & Dehaze (upstream `detail.clarity` params verbatim) — upstream's
+ * only entry in the Detail subgroup, one kernel driving both sliders.
+ */
+export interface Clarity {
+  /** Local-contrast unsharp against the blur, -1..+1. 0 = identity. */
+  clarity: number;
+  /** Dark-channel-prior dehaze strength, -1..+1. 0 = off. */
+  dehaze: number;
+}
 
 /** Vignette (upstream `stylize.vignette` params verbatim). */
 export interface Vignette {
@@ -85,6 +113,7 @@ export interface Grain {
 }
 
 /** Registry defaults (upstream `EffectRegistry` defaultValue verbatim). */
+export const DEFAULT_CLARITY: Clarity = { clarity: 0, dehaze: 0 };
 export const DEFAULT_VIGNETTE: Vignette = { amount: 0, midpoint: 0.5, roundness: 0, feather: 0.5 };
 export const DEFAULT_GLOW: Glow = { intensity: 0, radius: 20, threshold: 0.6, warmth: 0 };
 export const DEFAULT_GRAIN: Grain = { amount: 0, size: 1.5 };
@@ -92,6 +121,10 @@ export const DEFAULT_GRAIN: Grain = { amount: 0, size: 1.5 };
 /** Validation bounds (upstream `EffectRegistry` ranges verbatim, exported for UI + agent). */
 export const EFFECT_LIMITS = {
   blurRadius: { min: 0, max: 100 },
+  clarity: {
+    clarity: { min: -1, max: 1 },
+    dehaze: { min: -1, max: 1 },
+  },
   vignette: {
     amount: { min: -1, max: 1 },
     midpoint: { min: 0, max: 1 },
@@ -113,6 +146,24 @@ export const EFFECT_LIMITS = {
 function inRange(value: unknown, min: number, max: number): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return value >= min && value <= max ? value : undefined;
+}
+
+/**
+ * Narrow an untrusted clarity: invalid components fall back to their default
+ * (the wheels sanitizer's rule), and BOTH components at 0 is identity —
+ * upstream's kernel guard `clarity != 0 || dehaze != 0` — so the whole field
+ * drops. One non-zero component is enough to keep it, which is why this cannot
+ * reuse the vignette rule.
+ */
+export function sanitizeClarity(input: unknown): Clarity | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined;
+  const c = input as Record<string, unknown>;
+  const L = EFFECT_LIMITS.clarity;
+  const clarity: Clarity = {
+    clarity: inRange(c.clarity, L.clarity.min, L.clarity.max) ?? DEFAULT_CLARITY.clarity,
+    dehaze: inRange(c.dehaze, L.dehaze.min, L.dehaze.max) ?? DEFAULT_CLARITY.dehaze,
+  };
+  return clarity.clarity === 0 && clarity.dehaze === 0 ? undefined : clarity;
 }
 
 /**
@@ -178,6 +229,13 @@ export function sanitizeBlurRadius(input: unknown): number | undefined {
 }
 
 /** Structural equality on sanitized values (undefined = identity). */
+export function claritiesEqual(a: Clarity | undefined, b: Clarity | undefined): boolean {
+  const x = sanitizeClarity(a);
+  const y = sanitizeClarity(b);
+  if (x === undefined || y === undefined) return x === y;
+  return x.clarity === y.clarity && x.dehaze === y.dehaze;
+}
+
 export function vignettesEqual(a: Vignette | undefined, b: Vignette | undefined): boolean {
   const x = sanitizeVignette(a);
   const y = sanitizeVignette(b);
@@ -204,6 +262,7 @@ export function grainsEqual(a: Grain | undefined, b: Grain | undefined): boolean
 /** The clip's active effects: every sanitized non-identity stage. */
 export interface ClipEffects {
   blurRadius?: number;
+  clarity?: Clarity;
   vignette?: Vignette;
   grain?: Grain;
   glow?: Glow;
@@ -216,14 +275,17 @@ export interface ClipEffects {
  */
 export function effectsOf(clip: Clip): ClipEffects | null {
   const blurRadius = sanitizeBlurRadius(clip.blurRadius);
+  const clarity = sanitizeClarity(clip.clarity);
   const vignette = sanitizeVignette(clip.vignette);
   const grain = sanitizeGrain(clip.grain);
   const glow = sanitizeGlow(clip.glow);
-  if (blurRadius === undefined && vignette === undefined && grain === undefined && glow === undefined) {
+  if (blurRadius === undefined && clarity === undefined
+    && vignette === undefined && grain === undefined && glow === undefined) {
     return null;
   }
   return {
     ...(blurRadius !== undefined ? { blurRadius } : {}),
+    ...(clarity ? { clarity } : {}),
     ...(vignette ? { vignette } : {}),
     ...(grain ? { grain } : {}),
     ...(glow ? { glow } : {}),
@@ -242,10 +304,14 @@ export function hasEffects(clip: Clip): boolean {
  */
 export function sanitizeClipEffects(input: unknown): ClipEffects {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return {};
-  const c = input as { blurRadius?: unknown; vignette?: unknown; grain?: unknown; glow?: unknown };
+  const c = input as {
+    blurRadius?: unknown; clarity?: unknown; vignette?: unknown; grain?: unknown; glow?: unknown;
+  };
   const out: ClipEffects = {};
   const blurRadius = sanitizeBlurRadius(c.blurRadius);
   if (blurRadius !== undefined) out.blurRadius = blurRadius;
+  const clarity = sanitizeClarity(c.clarity);
+  if (clarity) out.clarity = clarity;
   const vignette = sanitizeVignette(c.vignette);
   if (vignette) out.vignette = vignette;
   const grain = sanitizeGrain(c.grain);
@@ -261,6 +327,7 @@ export function clipEffectsEqual(a: ClipEffects | undefined, b: ClipEffects | un
   const y = Object.keys(sanitizeClipEffects(b)).length === 0 ? undefined : sanitizeClipEffects(b);
   if (x === undefined || y === undefined) return x === y;
   return (x.blurRadius ?? null) === (y.blurRadius ?? null)
+    && claritiesEqual(x.clarity, y.clarity)
     && vignettesEqual(x.vignette, y.vignette)
     && grainsEqual(x.grain, y.grain)
     && glowsEqual(x.glow, y.glow);
@@ -268,6 +335,7 @@ export function clipEffectsEqual(a: ClipEffects | undefined, b: ClipEffects | un
 
 // ─── Strict agent patches (refuse, don't reshape) ────────────────────────────
 
+export type ClarityPatch = Partial<Clarity>;
 export type VignettePatch = Partial<Vignette>;
 export type GlowPatch = Partial<Glow>;
 export type GrainPatch = Partial<Grain>;
@@ -276,6 +344,31 @@ type PatchResult<T> = { ok: true; patch: T } | { ok: false; error: string };
 
 function patchError(type: string, field: string, range: string): string {
   return `${type}.${field} must be between ${range}.`;
+}
+
+/**
+ * Strict parse of the agent's `clarity` argument (same contract as vignette).
+ * Both components are refused out of range rather than reshaped, and an empty
+ * object yields an empty patch.
+ */
+export function parseClarityPatch(input: unknown): PatchResult<ClarityPatch> {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return { ok: false, error: 'clarity must be an {clarity, dehaze} object.' };
+  }
+  const c = input as Record<string, unknown>;
+  const L = EFFECT_LIMITS.clarity;
+  const patch: ClarityPatch = {};
+  if (c.clarity !== undefined) {
+    const v = inRange(c.clarity, L.clarity.min, L.clarity.max);
+    if (v === undefined) return { ok: false, error: patchError('clarity', 'clarity', '-1 and 1') };
+    patch.clarity = v;
+  }
+  if (c.dehaze !== undefined) {
+    const v = inRange(c.dehaze, L.dehaze.min, L.dehaze.max);
+    if (v === undefined) return { ok: false, error: patchError('clarity', 'dehaze', '-1 and 1') };
+    patch.dehaze = v;
+  }
+  return { ok: true, patch };
 }
 
 /**
@@ -390,6 +483,57 @@ function clampByteRint(value: number): number {
   if (value <= 0) return 0;
   if (value >= 255) return 255;
   return roundHalfEven(value);
+}
+
+/**
+ * The blur radius `ClarityKernel.apply` uses: `max(extent.width,
+ * extent.height) / 40`, upstream's "low-frequency local-contrast scale". It
+ * scales with the frame, so the same slider means the same spatial frequency
+ * at any resolution — which is why it is NOT a pixel value a slider exposes.
+ */
+export function clarityRadius(width: number, height: number): number {
+  return Math.max(Math.max(width, 1), Math.max(height, 1)) / 40;
+}
+
+/**
+ * Clarity & Dehaze on one RGB pixel — a port of `Metal/Clarity.metal`.
+ *
+ * `br`/`bg`/`bb` are the blurred pixel at the same coordinate, already stored
+ * as BYTE values, because the export's blur stage is 8-bit and the `geq` reads
+ * those bytes: rounding the blur before it is used is what makes the two
+ * backends agree bit for bit (verified against FFmpeg 8.1.2).
+ *
+ * The kernel works in normalized 0..1, so every absolute constant is carried in
+ * byte space: `mix(float3(0.45), …)` becomes 114.75, and `smoothstep(0.05,
+ * 0.5, dark)` becomes the same ramp over bytes 12.75..127.5. The relative
+ * terms (`s + (s-b)*k`, the luma mix) are homogeneous, so they are unchanged.
+ *
+ * `dark` is the minimum channel of the ORIGINAL pixel, not of the
+ * clarity-adjusted one — that ordering is upstream's and it matters.
+ */
+export function clarityPixel(
+  r: number,
+  g: number,
+  b: number,
+  br: number,
+  bg: number,
+  bb: number,
+  clarity: Clarity,
+): [number, number, number] {
+  const s = [r, g, b];
+  const blur = [br, bg, bb];
+  const rgb = [0, 1, 2].map((k) => s[k] + (s[k] - blur[k]) * clarity.clarity);
+  if (clarity.dehaze !== 0) {
+    const dark = Math.min(s[0], s[1], s[2]);
+    const t = Math.min(1, Math.max(0, (dark - 12.75) / 114.75));
+    const s2 = t * t * (3 - 2 * t);
+    const w = clarity.dehaze * (0.5 + 0.5 * s2);
+    for (let k = 0; k < 3; k += 1) rgb[k] += (s[k] - blur[k]) * (w * 0.6);
+    for (let k = 0; k < 3; k += 1) rgb[k] = 114.75 + (rgb[k] - 114.75) * (1 + w * 0.45);
+    const yy = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    for (let k = 0; k < 3; k += 1) rgb[k] = yy + (rgb[k] - yy) * (1 + w * 0.5);
+  }
+  return [truncByte(rgb[0]), truncByte(rgb[1]), truncByte(rgb[2])];
 }
 
 /**
@@ -518,7 +662,7 @@ export function screenBlend(a: number, b: number): number {
 
 /**
  * Apply the clip's effects to an RGBA buffer in place, in canonical order
- * (blur, grain, vignette, glow). Alpha is carried through untouched: every
+ * (clarity, blur, grain, vignette, glow). Alpha is carried through untouched: every
  * upstream kernel preserves source alpha, and effects run ahead of edge
  * rounding, so frames are opaque here exactly like the export chain.
  *
@@ -533,6 +677,9 @@ export function applyEffectsToRgba(
   frameOffset: number,
 ): void {
   if (!effects || width <= 0 || height <= 0) return;
+  // Upstream's canonicalOrder puts detail.clarity after every color.* stage and
+  // before key.chroma and blur.*, so clarity runs ahead of the blur here too.
+  if (effects.clarity !== undefined) applyClarityToRgba(data, width, height, effects.clarity);
   if (effects.blurRadius !== undefined) applyBlurToRgba(data, width, height, effects.blurRadius);
   if (effects.grain !== undefined) {
     const { amount, size } = effects.grain;
@@ -574,6 +721,49 @@ export function applyBlurToRgba(
     for (let i = 0; i < width * height; i += 1) plane[i] = data[i * 4 + channel];
     const blurred = iirBlurPlane(plane, width, height, radius);
     for (let i = 0; i < width * height; i += 1) data[i * 4 + channel] = clampByteRint(blurred[i]);
+  }
+}
+
+/**
+ * Clarity & Dehaze on an RGBA buffer — the `detail.clarity` stage.
+ *
+ * This is the one effect that needs its input and a blurred copy of it AT THE
+ * SAME TIME, which is why it cannot reuse `applyBlurToRgba`: that overwrites the
+ * buffer per channel as it goes, so by the time the blue plane was blurred the
+ * red plane's source pixels were already gone. So the blurred planes are built
+ * into RETAINED float arrays first, each rounded to a byte value in place (the
+ * export's blur stage is 8-bit, and the combine must read the same bytes), and
+ * only then does the per-pixel loop read the still-untouched source.
+ *
+ * Alpha is carried through untouched, like every other stage here: upstream's
+ * kernel returns `s.a` unchanged, and effects run ahead of edge rounding.
+ */
+export function applyClarityToRgba(
+  data: Uint8Array | Uint8ClampedArray,
+  width: number,
+  height: number,
+  clarity: Clarity,
+): void {
+  if (width <= 0 || height <= 0) return;
+  if (clarity.clarity === 0 && clarity.dehaze === 0) return;
+  const count = width * height;
+  const radius = clarityRadius(width, height);
+  const blurred = [0, 1, 2].map((channel) => {
+    const plane = new Float64Array(count);
+    for (let i = 0; i < count; i += 1) plane[i] = data[i * 4 + channel];
+    const out = iirBlurPlane(plane, width, height, radius);
+    for (let i = 0; i < count; i += 1) out[i] = clampByteRint(out[i]);
+    return out;
+  });
+  for (let i = 0; i < count; i += 1) {
+    const [r, g, b] = clarityPixel(
+      data[i * 4], data[i * 4 + 1], data[i * 4 + 2],
+      blurred[0][i], blurred[1][i], blurred[2][i],
+      clarity,
+    );
+    data[i * 4] = r;
+    data[i * 4 + 1] = g;
+    data[i * 4 + 2] = b;
   }
 }
 
@@ -637,6 +827,89 @@ function filterLiteral(value: number): string {
  */
 export function toFfmpegBlurFilter(radius: number): string {
   return `gblur=sigma=${filterLiteral(radius)}:planes=7`;
+}
+
+/**
+ * Clarity & Dehaze as a two-input graph, not a single `geq`.
+ *
+ * WHY a graph, and why this shape. The kernel needs, per pixel, the source and
+ * a blurred copy of it, and two of its terms are CROSS-CHANNEL: `dark` is the
+ * minimum of the source's three channels, and `yy` is the luma of the
+ * clarity-adjusted RGB. `blend` cannot carry either — inside a `blend`
+ * expression `r(X,Y)`/`g(X,Y)` are *unknown functions* (verified: "Unknown
+ * function in 'r(X,Y)'"), and `A`/`B` name only the slot's OWN component, so
+ * `c0_expr` provably cannot see green or blue. `geq` has the functions but
+ * reads only its own single stream.
+ *
+ * So the two frames are put side by side: `hstack` gives a frame twice as wide
+ * whose left half is the source and whose right half is its own blur, and one
+ * `geq` then reads the second half at `X+W/2` and evaluates the entire kernel
+ * with full cross-channel arithmetic. `crop` returns the left half.
+ *
+ * The cost is real and deliberate: the frame is doubled in width for the
+ * duration of this stage, plus one crop pass, and it runs only when the effect
+ * is active. The alternative — materialising `w` and `yy` through a chain of
+ * `blend`/`geq` stages — needs roughly eight intermediate streams to give the
+ * same two inputs to the same expression, and `blend` also WRAPS rather than
+ * clamps (`all_expr='A+B'` over 33+303 stored 80 on rgb24, not 255), which is
+ * wrong for a kernel
+ * whose intermediates are deliberately out of range before `saturate`. One
+ * `geq` that clamps explicitly avoids both problems; this was measured
+ * bit-exact against the preview recurrence on a 64x64 fixture.
+ *
+ * The blur half is the shared convention already accepted for `blurRadius`:
+ * `gblur`'s IIR in place of a closed `CIGaussianBlur`. Both backends share it,
+ * so preview and export agree with each other, but neither is bit-exact with
+ * upstream. Everything downstream of the blur IS the upstream math verbatim.
+ */
+export function toFfmpegClarityFilters(
+  clarity: Clarity,
+  srcLabel: string,
+  outLabel: string,
+  width: number,
+  height: number,
+  index: number,
+): string[] {
+  const C = filterLiteral(clarity.clarity);
+  const D = filterLiteral(clarity.dehaze);
+  const S = { r: 'r(X,Y)', g: 'g(X,Y)', b: 'b(X,Y)' };
+  const Bp = { r: 'r(X+W/2,Y)', g: 'g(X+W/2,Y)', b: 'b(X+W/2,Y)' };
+  const localContrast = (k: 'r' | 'g' | 'b'): string =>
+    `(${S[k]}+(${S[k]}-${Bp[k]})*${C}+(${S[k]}-${Bp[k]})*(${dehazeWeight(S, D)})*0.6)`;
+  // av_expr has no smoothstep, so the ramp is the same T^2(3-2T) recipe the
+  // vignette and glow filters already use, over bytes 12.75..127.5.
+  const dehazeWeight = (src: Record<string, string>, d: string): string => {
+    const t = `min(max((min(${src.r},min(${src.g},${src.b}))-12.75)/114.75,0),1)`;
+    return `${d}*(0.5+0.5*((${t})*(${t})*(3-2*(${t}))))`;
+  };
+  const w = dehazeWeight(S, D);
+  const contrastMix = (k: 'r' | 'g' | 'b'): string =>
+    `(114.75+(${localContrast(k)}-114.75)*(1+(${w})*0.45))`;
+  const channel = (k: 'r' | 'g' | 'b'): string => {
+    const rgb = contrastMix(k);
+    const yy = `(0.2126*${contrastMix('r')}+0.7152*${contrastMix('g')}+0.0722*${contrastMix('b')})`;
+    return `min(max((${yy}+(${rgb}-${yy})*(1+(${w})*0.5)),0),255)`;
+  };
+  const geq = clarity.dehaze !== 0
+    ? `geq=r='${channel('r')}':g='${channel('g')}':b='${channel('b')}':a='alpha(X+W/2,Y)'`
+    // Upstream guards the whole dehaze block on `dehaze != 0`, so with dehaze
+    // off the kernel is exactly the clarity unsharp and nothing else.
+    : `geq=r='min(max(${S.r}+(${S.r}-${Bp.r})*${C},0),255)'`
+      + `:g='min(max(${S.g}+(${S.g}-${Bp.g})*${C},0),255)'`
+      + `:b='min(max(${S.b}+(${S.b}-${Bp.b})*${C},0),255)'`
+      + `:a='alpha(X+W/2,Y)'`;
+  const src = `v${index}claritySrc`;
+  const blurIn = `v${index}clarityBlurIn`;
+  const blur = `v${index}clarityBlur`;
+  const stacked = `v${index}clarityStack`;
+  const cropped = `v${index}clarityCrop`;
+  return [
+    `[${srcLabel}]split[${src}][${blurIn}]`,
+    `[${blurIn}]${toFfmpegBlurFilter(clarityRadius(width, height))}[${blur}]`,
+    `[${src}][${blur}]hstack=inputs=2[${stacked}]`,
+    `[${stacked}]${geq}[${cropped}]`,
+    `[${cropped}]crop=${width}:${height}:0:0[${outLabel}]`,
+  ];
 }
 
 /**

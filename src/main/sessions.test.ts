@@ -1,9 +1,11 @@
 /**
  * Session registry coverage (upstream #137, Slice 1): mint, sender lookup,
- * remove-on-close, detached windows joining their parent session, and
- * session-scoped broadcast.
+ * remove-on-close, detached windows joining their parent session,
+ * session-scoped broadcast, and the reverse lookup from a controller to the
+ * session that minted it.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { EditorController } from '../shared/editor/controller';
 import {
   addWindow,
   broadcastToSession,
@@ -16,6 +18,7 @@ import {
   removeSession,
   removeWindow,
   resetSessions,
+  sessionForController,
   type SessionWindow,
 } from './sessions';
 
@@ -178,5 +181,29 @@ describe('session-scoped broadcast (#137)', () => {
 
   it('is a no-op for an unknown session', () => {
     expect(() => broadcastToSession('gone', 'editor:apply-from-main', 1)).not.toThrow();
+  });
+});
+
+describe('a controller names its session', () => {
+  it('resolves the session that minted it, and nothing else', () => {
+    const a = createSession();
+    const b = createSession();
+
+    // What the AI layer holds is a controller, never a session id. One is
+    // minted per session, so this is the whole identity a tool call needs to
+    // record which .vproj the session behind it is working on.
+    expect(sessionForController(a.controller)).toBe(a);
+    expect(sessionForController(b.controller)).toBe(b);
+
+    // A controller no session owns is every unit test's executor, and a
+    // windowless run has no window to keep a document path for.
+    expect(sessionForController(new EditorController())).toBeNull();
+    expect(sessionForController(null)).toBeNull();
+
+    // The lookup is a WeakMap, so a removed session's entry goes with the
+    // controller it can no longer be reached through — and the live one is
+    // untouched.
+    removeSession(a.id);
+    expect(sessionForController(b.controller)).toBe(b);
   });
 });
