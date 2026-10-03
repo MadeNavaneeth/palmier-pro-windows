@@ -7,7 +7,7 @@ import type { BlendMode } from './blend-mode';
 import type { ClipTransition } from '../editor/transition';
 import type { TimelineMarker } from '../editor/markers';
 import type { GradeCurve, GradeWheels, HueCurves, LutRef } from '../editor/color-grade';
-import type { Glow, Grain, Vignette } from '../editor/effects';
+import type { Clarity, Glow, Grain, Vignette } from '../editor/effects';
 import type { MotionTrack } from '../media/motion';
 
 // ─── Core time type ──────────────────────────────────────────────────────────
@@ -413,6 +413,14 @@ export interface Clip {
    * shared/editor/effects.ts.
    */
   blurRadius?: number;
+  /**
+   * Clarity & Dehaze (upstream #157 `detail.clarity`, upstream's only Detail
+   * entry): local-contrast unsharp against a blur of max(W,H)/40 plus a
+   * dark-channel-prior dehaze. Runs after the color grade and ahead of the
+   * blur, per upstream's canonical order. Sanitized via
+   * shared/editor/effects.ts; absent or both components 0 = off.
+   */
+  clarity?: Clarity;
   /**
    * Vignette (upstream #157 `stylize.vignette`): edge gain plus shape,
    * applied after the color grade. Sanitized via shared/editor/effects.ts;
