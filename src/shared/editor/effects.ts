@@ -29,14 +29,26 @@
  * - Clarity / Dehaze (`detail.clarity`): unsharp-against-gaussian-radius-
  *   max(W,H)/40 plus a dark-channel-prior dehaze trio. FFmpeg `unsharp`
  *   uses a fixed binomial/16 kernel (probed), caps its matrix at 63
- *   (a 4K frame needs ~109), and forces a YUV roundtrip on RGB input;
- *   nothing composes the dehaze math. No exact recipe exists.
+ *   (a 4K frame needs ~109), and forces a YUV roundtrip on RGB input.
+ *   Every one of those is an objection to `unsharp`, not to the recipe:
+ *   upstream ships the kernel in full at `Metal/Clarity.metal` plus 18 lines
+ *   of Swift, so the math is fully known. This project already emits `gblur`
+ *   and `blend`, which compose the whole operation as a graph, so the real
+ *   blocker is a missing filter graph rather than an unknown recipe. It is
+ *   neighbourhood-dependent and single-frame, so it belongs beside the point-
+ *   wise grade core, not inside it. The blur half would follow the same
+ *   shared-convention trade already accepted for `blurRadius` rather than
+ *   being bit-exact with `CIGaussianBlur`.
  * - Sharpen (`blur.sharpen`, CISharpenLuminance): closed Apple kernel;
  *   `unsharp` is the wrong kernel on a YUV detour (same probe).
  * - Noise Reduction (`blur.noiseReduction`, CINoiseReduction): closed
  *   Apple algorithm; hqdn3d/nlmeans/atadenoise are different algorithms.
- * - Motion Blur (`blur.motion`): temporal accumulation; single-frame
- *   preview/export cannot produce it without faking.
+ * - Motion Blur (`blur.motion`, CIMotionBlur): closed Apple kernel, same
+ *   category as Sharpen — but NOT temporal. Upstream applies it to a single
+ *   image with two scalars (radius, angle), and a Core Image filter takes one
+ *   image, so no second frame or motion vector can enter it. It is a
+ *   directional single-frame blur, so this is a parity-and-convention
+ *   question, not a capability one.
  *
  * Pipeline slot (upstream `EffectRegistry.canonicalOrder`): blurs run after
  * the grade and before invert, grain/vignette/glow after invert. Both
