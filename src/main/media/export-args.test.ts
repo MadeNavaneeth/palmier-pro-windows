@@ -489,6 +489,49 @@ describe('variable-font title export end to end (real ffmpeg, #50)', { timeout: 
   });
 });
 
+describe('clarity export end to end (real ffmpeg)', { timeout: REAL_PROCESS_TIMEOUT_MS }, () => {
+  let tmpDir = '';
+  let sourcePath = '';
+  let outputPath = '';
+
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'palmier-clarity-export-'));
+    sourcePath = path.join(tmpDir, 'source.mp4');
+    outputPath = path.join(tmpDir, 'clarity.mp4');
+    // A vertical edge, so clarity has real local contrast to work on.
+    await execFileAsync('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', 'color=c=gray:s=64x64:d=2:r=30',
+      '-f', 'lavfi', '-i', 'color=c=white:s=32x64:d=2:r=30',
+      '-filter_complex', '[0:v][1:v]hstack=inputs=2[o]', '-map', '[o]',
+      '-pix_fmt', 'yuv420p', sourcePath,
+    ]);
+  }, REAL_PROCESS_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  });
+
+  it('runs the emitted clarity graph and writes a frame', async () => {
+    const project = projectWithMedia(
+      [{ id: 'v', path: sourcePath, type: 'video', duration: 60, width: 96, height: 64 }],
+      [{
+        id: 'clarity-clip', type: 'video', assetId: 'v', startFrame: 0, durationFrames: 30,
+        clarity: { clarity: 0.8, dehaze: 0.5 },
+      }],
+    );
+    project.settings.width = 96;
+    project.settings.height = 64;
+    const args = buildFfmpegArgs(project, { outputPath, format: 'mp4', quality: 'draft' }, 96, 64, 30, 60);
+    const graph = args.find((arg) => arg.includes('hstack=inputs=2'));
+    expect(graph).toBeDefined();
+    // The real ffmpeg run is the point: it proves the graph is valid syntax and
+    // that hstack -> geq -> crop actually executes, not just that we emit it.
+    await execFileAsync('ffmpeg', args);
+    const stat = await fs.stat(outputPath);
+    expect(stat.size).toBeGreaterThan(0);
+  }, REAL_PROCESS_TIMEOUT_MS);
+});
+
 describe('opacityTrack export end to end (real ffmpeg)', { timeout: REAL_PROCESS_TIMEOUT_MS }, () => {
   let tmpDir = '';
   let sourcePath = '';
@@ -1412,6 +1455,33 @@ describe('Effects export (#157 subgroups)', () => {
     expect(negateAt).toBeLessThan(blurAt);
     expect(blurAt).toBeLessThan(grainAt);
     expect(grainAt).toBeLessThan(vigAt);
+  });
+
+  it('expands clarity into its split/blur/hstack/geq/crop graph at its slot', () => {
+    const graph = fxGraph({ clarity: { clarity: 0.5, dehaze: 0 } });
+    // Upstream's canonicalOrder puts detail.clarity after the grade and BEFORE
+    // blur.*, and the graph must therefore precede any linear fx stage.
+    expect(graph).toContain('[v0mid]split[v0claritySrc][v0clarityBlurIn]');
+    expect(graph).toContain('hstack=inputs=2');
+    expect(graph).toContain('r(X+W/2,Y)');
+    expect(graph).toMatch(/crop=\d+:\d+:0:0\[v0clarified\]/);
+    const clarityAt = graph.indexOf('hstack=inputs=2');
+    expect(clarityAt).toBeGreaterThan(graph.indexOf('negate') - 1);
+    // A clarity-only clip still reaches the graph branch rather than the
+    // single-input chain, because the geq needs two frames.
+    expect(graph).toContain('[v0clarified]');
+  });
+
+  it('runs clarity before the blur stage', () => {
+    const graph = fxGraph({
+      clarity: { clarity: 0.5, dehaze: 0 },
+      blurRadius: 8,
+    });
+    const clarityAt = graph.indexOf('hstack=inputs=2');
+    const blurAt = graph.indexOf('gblur=sigma=8:planes=7');
+    expect(clarityAt).toBeGreaterThan(-1);
+    expect(blurAt).toBeGreaterThan(-1);
+    expect(clarityAt).toBeLessThan(blurAt);
   });
 
   it('omits identity effects and keeps ungraded clips clean', () => {
