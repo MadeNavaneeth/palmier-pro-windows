@@ -92,21 +92,26 @@ import {
 } from '../../shared/editor/color-grade';
 import { lutRefsEqual, sanitizeLutRef, type LutRef } from '../../shared/editor/lut';
 import {
+  DEFAULT_CLARITY,
   DEFAULT_GLOW,
   DEFAULT_GRAIN,
   DEFAULT_VIGNETTE,
   EFFECT_LIMITS,
+  claritiesEqual,
   glowsEqual,
   grainsEqual,
   hasEffects,
+  parseClarityPatch,
   parseGlowPatch,
   parseGrainPatch,
   parseVignettePatch,
   sanitizeBlurRadius,
+  sanitizeClarity,
   sanitizeGlow,
   sanitizeGrain,
   sanitizeVignette,
   vignettesEqual,
+  type ClarityPatch,
   type GlowPatch,
   type GrainPatch,
   type VignettePatch,
@@ -2619,6 +2624,12 @@ export class ToolExecutor {
         // Effect stages (#157 subgroups) are validated strictly like the
         // wheels: a malformed component refuses the call rather than
         // silently rendering a different look.
+        let clarityPatch: ClarityPatch | undefined;
+        if (args.clarity !== undefined) {
+          const parsed = parseClarityPatch(args.clarity);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          clarityPatch = parsed.patch;
+        }
         let vignettePatch: VignettePatch | undefined;
         if (args.vignette !== undefined) {
           const parsed = parseVignettePatch(args.vignette);
@@ -2710,6 +2721,7 @@ export class ToolExecutor {
               delete draft.hueCurves;
               delete draft.lut;
               delete draft.blurRadius;
+              delete draft.clarity;
               delete draft.vignette;
               delete draft.grain;
               delete draft.glow;
@@ -2800,6 +2812,14 @@ export class ToolExecutor {
                 else draft.blurRadius = clean;
               }
             }
+            if (clarityPatch && Object.keys(clarityPatch).length > 0) {
+              const merged = { ...(sanitizeClarity(draft.clarity) ?? { ...DEFAULT_CLARITY }), ...clarityPatch };
+              const next = sanitizeClarity(merged);
+              if (!claritiesEqual(next, draft.clarity)) {
+                if (next) draft.clarity = next;
+                else delete draft.clarity;
+              }
+            }
             if (vignettePatch && Object.keys(vignettePatch).length > 0) {
               // Per-component merge like the wheels: a provided component
               // replaces, an omitted one stays. All-default drops the field
@@ -2855,6 +2875,7 @@ export class ToolExecutor {
             hueCurves: sanitizeHueCurves(updated?.hueCurves) ?? null,
             lut: sanitizeLutRef(updated?.lut) ?? null,
             blurRadius: sanitizeBlurRadius(updated?.blurRadius) ?? 0,
+            clarity: sanitizeClarity(updated?.clarity) ?? null,
             vignette: sanitizeVignette(updated?.vignette) ?? null,
             grain: sanitizeGrain(updated?.grain) ?? null,
             glow: sanitizeGlow(updated?.glow) ?? null,
