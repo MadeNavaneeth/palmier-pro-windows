@@ -9,7 +9,8 @@
  *                      project
  *   renderer change -> push serialized project to main (debounced)
  *   main push       -> an `edit` tag is one undoable UI step; a `playhead` tag
- *                      is the cursor, adopted as a view update
+ *                      is the cursor, adopted as a view update; a tagged path
+ *                      moves the store onto the document that push belongs to
  *   sibling change  -> setProjectSilent + store refresh (no history, no push)
  *   path change     -> report the store's path to the session, so the session
  *                      still knows the file when this window reloads
@@ -49,10 +50,16 @@ interface RendererSyncMetadata {
  * only moved the cursor, and a snapshot comparison could not tell an agent
  * `set_playhead` from an agent call that changed nothing — two states the
  * undo contract treats differently.
+ *
+ * `filePath` is present only when the session's record of the file it holds has
+ * not been announced to its windows yet — the agent's `open_project` /
+ * `new_project` switching documents. The project itself cannot carry the path,
+ * so without it the window's store keeps naming the file the agent replaced.
  */
 interface MainSyncMetadata {
   source: 'main';
   kind: 'edit' | 'playhead';
+  filePath?: string | null;
 }
 
 interface PendingLocalSync {
@@ -71,9 +78,50 @@ function isRendererSyncMetadata(value: unknown): value is RendererSyncMetadata {
 
 function isMainSyncMetadata(value: unknown): value is MainSyncMetadata {
   if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as { source?: unknown; kind?: unknown };
+  const candidate = value as { source?: unknown; kind?: unknown; filePath?: unknown };
+  // A filePath that is neither a path nor absent is not a tag this window can
+  // act on, so the whole tag is refused and the push falls back to the
+  // conservative untagged default rather than adopting half of it.
+  if (candidate.filePath !== undefined
+    && candidate.filePath !== null
+    && typeof candidate.filePath !== 'string') {
+    return false;
+  }
   return candidate.source === 'main'
     && (candidate.kind === 'edit' || candidate.kind === 'playhead');
+}
+
+/**
+ * Point this window's store at the document the session just switched to.
+ *
+ * The store owns the path and the name together — `save` stamps the name into
+ * the file it writes — so a switch moves both, and it moves both here rather
+ * than in the adoption of the project, because the project arrives first. A
+ * null path is a switch to a document that owns no file, which is what the
+ * agent's `new_project` makes and what the store's own report then confirms.
+ *
+ * Only a window holding a project of its own follows the session: a window that
+ * has none is between a reload and the pull that fills it in, and it pulls the
+ * record itself. Nothing is lost by waiting, and a window that unlinked the
+ * session's document on its way through would take the record with it.
+ */
+function adoptSessionDocument(
+  project: unknown,
+  filePath: string | null,
+  confirmApplied: (filePath: string | null) => void,
+): void {
+  const store = useProjectStore.getState();
+  if (!store.isLoaded) return;
+  const name = (project as Project).name || 'Untitled Project';
+  if (store.filePath === filePath && store.name === name) {
+    // Already on this document, so the store does not change and its own
+    // report never fires. This push is still the window APPLYING the path, and
+    // applying it is what spends the announcement — otherwise a path this window
+    // already holds rides every later push for the life of the session.
+    confirmApplied(filePath);
+    return;
+  }
+  useProjectStore.setState({ name, filePath });
 }
 
 function rendererSyncSequenceFromResponse(value: unknown): number | null {
@@ -116,8 +164,16 @@ export interface EditorSyncOptions {
   controller: EditorController;
   /** Pull the session's project and the file it is held in. */
   pullSessionState: () => Promise<SessionProjectState>;
-  /** Send one serialized snapshot to main and resolve its reply. */
-  pushSnapshot: (payload: string) => Promise<unknown>;
+  /**
+   * Send one serialized snapshot to main and resolve its reply.
+   *
+   * The window's own path rides with it. The project document cannot carry its
+   * own path, and the store only REPORTS a path when that path changes, so a push
+   * is the one moment main learns which file the project it is being handed lives
+   * in. Without it, a window whose snapshot won the session back from an agent
+   * switch left main naming the agent's file over the window's project.
+   */
+  pushSnapshot: (payload: string, filePath: string | null) => Promise<unknown>;
   /** Listen for main -> renderer pushes; returns an unsubscribe. */
   onApply: (listener: (payload: unknown, metadata?: unknown) => void) => () => void;
   /** Report the renderer's project path to the session that owns the window. */
@@ -262,7 +318,7 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
    */
   async function pushToMain(json: string, pending: PendingLocalSync): Promise<void> {
     const result = await mirror.push(json, async (payload) => {
-      const response = await pushSnapshot(payload);
+      const response = await pushSnapshot(payload, useProjectStore.getState().filePath);
       if (rendererSyncWasRejected(response)) {
         throw new Error('The main process rejected the renderer editor sync.');
       }
@@ -367,7 +423,17 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
       // else is outstanding. Reordering only decides which of two returns
       // happens — both return, and nothing is applied, marked, or recorded
       // either way, so which push wins is untouched.
-      if (mirror.isEcho(incoming)) return;
+      // An echo returns early, but a path tag on it is not redundant: the payload
+      // is the state this window already had, while the tag says which FILE that
+      // state lives in. A window that already holds that path spends the
+      // announcement on applying the push, and skipping it here left the path
+      // riding every later push for the life of the session.
+      if (mirror.isEcho(incoming)) {
+        if (isMainSyncMetadata(metadata) && metadata.filePath !== undefined) {
+          adoptSessionDocument(project, metadata.filePath, confirmSessionPath);
+        }
+        return;
+      }
 
       // A local write is outstanding, so this inbound state is dropped, and
       // main's reply already told the sender it landed. The local write wins
@@ -404,6 +470,16 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
       // This window has just taken another editor's state, so it is back in step
       // and whatever it refused earlier is no longer the live question.
       useProjectStore.getState().clearDroppedSync();
+
+      // The document this state belongs to, when the session says it changed.
+      // Taken with the project, never separately: a window is never left naming
+      // a file whose project it does not hold, and the store's own report below
+      // then hands the path back to the session it came from. `undefined` is
+      // absent — the path did not change — while null is a change: the agent's
+      // `new_project` left the session holding no file at all.
+      if (isMainSyncMetadata(metadata) && metadata.filePath !== undefined) {
+        adoptSessionDocument(project, metadata.filePath, confirmSessionPath);
+      }
 
       if (isMainSyncMetadata(metadata) && metadata.kind === 'playhead') {
         // The agent moved the playhead. That is the cursor and nothing else —
@@ -463,6 +539,27 @@ function reportDroppedSync(kind: DroppedSyncConflict['kind']): void {
     return false;
   }
 
+  /**
+   * Tell main this window applied the path a push carried, whether or not that
+   * changed the store.
+   *
+   * The same channel the store's own report uses, and deliberately: main cannot
+   * tell a confirmation from a window choosing a path for itself, and it does not
+   * need to — a report of a value that is not the one pending is a write, and a
+   * report of the pending one spends it. Failures are the same warning the
+   * report already logs, because the cost is identical: main keeps offering a
+   * path this window has already applied.
+   */
+  function confirmSessionPath(filePath: string | null): void {
+    void options.reportSessionPath(filePath).catch((error: unknown) => {
+      console.warn(
+        '[useEditorSync] Could not confirm the project path to the main process; '
+        + 'the next push will carry it again, which is harmless.',
+        error,
+      );
+    });
+  }
+
   //  4. The session remembers the file. The project store owns the path, and
   //     every transition to a new one lands there — an open, a Save As, a New,
   //     a recovery restore — but only two of them reach a main-owned channel, so
@@ -518,7 +615,7 @@ export function useEditorSync() {
   useEffect(() => createEditorSync({
     controller,
     pullSessionState,
-    pushSnapshot: (payload) => window.palmier.editor.syncState(payload),
+    pushSnapshot: (payload, filePath) => window.palmier.editor.syncState(payload, filePath),
     onApply: (listener) => window.palmier.on('editor:apply-from-main', listener),
     reportSessionPath: (filePath) => window.palmier.project.setSessionPath(filePath),
   }).dispose, [controller]);

@@ -174,7 +174,8 @@ function mountWindow(): EditorSync {
         filePath: typeof response.filePath === 'string' ? response.filePath : null,
       };
     },
-    pushSnapshot: async (payload) => invoke('editor:sync-from-renderer', target.id, payload),
+    pushSnapshot: async (payload, filePath) =>
+      invoke('editor:sync-from-renderer', target.id, payload, filePath),
     onApply: (listener) => {
       target.onSend = listener;
       return () => {
@@ -306,10 +307,17 @@ describe('an agent turn in the undo stack', () => {
     await settle();
 
     expect(panelPush).not.toBeNull();
-    expect((panelPush as unknown as { metadata: unknown }).metadata).toEqual({
-      source: 'main',
-      kind: 'playhead',
-    });
+    expect((panelPush as unknown as { metadata: { kind: unknown } }).metadata.kind)
+      .toBe('playhead');
+
+    // Once the window has applied the path the first push carried, the path is
+    // spent and the cursor moves after it carry no path at all — a panel that
+    // joined late was not handed a path it already had on every push since.
+    await delay(MIRROR_SETTLE_MS);
+    await agent('set_playhead', { frame: 61 });
+    await settle();
+    expect((panelPush as unknown as { metadata: { filePath?: unknown } }).metadata)
+      .not.toHaveProperty('filePath');
     mirror.dispose();
   });
 });

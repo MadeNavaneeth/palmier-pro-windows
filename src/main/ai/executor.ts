@@ -92,21 +92,26 @@ import {
 } from '../../shared/editor/color-grade';
 import { lutRefsEqual, sanitizeLutRef, type LutRef } from '../../shared/editor/lut';
 import {
+  DEFAULT_CLARITY,
   DEFAULT_GLOW,
   DEFAULT_GRAIN,
   DEFAULT_VIGNETTE,
   EFFECT_LIMITS,
+  claritiesEqual,
   glowsEqual,
   grainsEqual,
   hasEffects,
+  parseClarityPatch,
   parseGlowPatch,
   parseGrainPatch,
   parseVignettePatch,
   sanitizeBlurRadius,
+  sanitizeClarity,
   sanitizeGlow,
   sanitizeGrain,
   sanitizeVignette,
   vignettesEqual,
+  type ClarityPatch,
   type GlowPatch,
   type GrainPatch,
   type VignettePatch,
@@ -148,6 +153,8 @@ import { createEmptyProject } from '../../shared/types/project';
 import type { ProjectSettings } from '../../shared/types/project';
 import type { ExportEventSink, ExportOptions } from '../media/exporter';
 import { EditorController } from '../../shared/editor/controller';
+import { recordSessionProjectPath } from '../session-project-path';
+import { sessionForController } from '../sessions';
 
 export interface ToolResult {
   success: boolean;
@@ -434,6 +441,22 @@ export class ToolExecutor {
   constructor(private editor: EditorController, deps: ToolExecutorDeps = {}) {
     this.deps = deps;
     this.gradePresets = deps.gradePresets ?? getGradePresetRepository();
+  }
+
+  /**
+   * Record which .vproj the session behind this controller now holds.
+   *
+   * Every surface builds an executor from a controller — this session's for the
+   * in-app agent and for `editor:execute`, a freshly resolved one per MCP
+   * request — and the controller names its session exactly once, in
+   * `createSession`. So the identity is main's own and no caller supplies it.
+   * An executor over a controller no session owns (a unit test, the windowless
+   * `--mcp-server` mode that has no window at all) has no record to keep and
+   * says nothing.
+   */
+  private rememberSessionPath(filePath: string | null): void {
+    const session = sessionForController(this.editor);
+    if (session) recordSessionProjectPath(session, filePath);
   }
 
   async execute(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -1894,6 +1917,10 @@ export class ToolExecutor {
               ? args.name.trim()
               : 'Untitled Project',
           );
+          // A new document owns no file, and the one it replaces must stop
+          // being the session's: leaving it there is how the next Save
+          // overwrites the project the agent just discarded.
+          this.rememberSessionPath(null);
           this.editor.adoptProject(project, 'New project');
           return {
             success: true,
@@ -1911,6 +1938,13 @@ export class ToolExecutor {
         try {
           const json = await fs.readFile(args.path, 'utf8');
           const project = EditorController.deserialize(json).getProject();
+          // Recorded here rather than by `project:save`: this read never
+          // reaches a main-owned file handler, and the window that receives the
+          // project by push cannot learn the path any other way — the project
+          // document does not carry one. `ToolExecutor` holds a controller, not
+          // a session, so the session comes from the registry rather than from
+          // a caller passing an id it could get wrong.
+          this.rememberSessionPath(args.path);
           this.editor.adoptProject(project, 'Open project');
           return {
             success: true,
@@ -2590,6 +2624,12 @@ export class ToolExecutor {
         // Effect stages (#157 subgroups) are validated strictly like the
         // wheels: a malformed component refuses the call rather than
         // silently rendering a different look.
+        let clarityPatch: ClarityPatch | undefined;
+        if (args.clarity !== undefined) {
+          const parsed = parseClarityPatch(args.clarity);
+          if (!parsed.ok) return { success: false, error: parsed.error };
+          clarityPatch = parsed.patch;
+        }
         let vignettePatch: VignettePatch | undefined;
         if (args.vignette !== undefined) {
           const parsed = parseVignettePatch(args.vignette);
@@ -2681,6 +2721,7 @@ export class ToolExecutor {
               delete draft.hueCurves;
               delete draft.lut;
               delete draft.blurRadius;
+              delete draft.clarity;
               delete draft.vignette;
               delete draft.grain;
               delete draft.glow;
@@ -2771,6 +2812,14 @@ export class ToolExecutor {
                 else draft.blurRadius = clean;
               }
             }
+            if (clarityPatch && Object.keys(clarityPatch).length > 0) {
+              const merged = { ...(sanitizeClarity(draft.clarity) ?? { ...DEFAULT_CLARITY }), ...clarityPatch };
+              const next = sanitizeClarity(merged);
+              if (!claritiesEqual(next, draft.clarity)) {
+                if (next) draft.clarity = next;
+                else delete draft.clarity;
+              }
+            }
             if (vignettePatch && Object.keys(vignettePatch).length > 0) {
               // Per-component merge like the wheels: a provided component
               // replaces, an omitted one stays. All-default drops the field
@@ -2826,6 +2875,7 @@ export class ToolExecutor {
             hueCurves: sanitizeHueCurves(updated?.hueCurves) ?? null,
             lut: sanitizeLutRef(updated?.lut) ?? null,
             blurRadius: sanitizeBlurRadius(updated?.blurRadius) ?? 0,
+            clarity: sanitizeClarity(updated?.clarity) ?? null,
             vignette: sanitizeVignette(updated?.vignette) ?? null,
             grain: sanitizeGrain(updated?.grain) ?? null,
             glow: sanitizeGlow(updated?.glow) ?? null,

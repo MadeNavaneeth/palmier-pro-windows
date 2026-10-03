@@ -951,7 +951,7 @@ export const tools = {
       + '`wheels` adds lift/gamma/gain color wheels (shadows/midtones/highlights): each zone is a pad position (x, y in -1..1) plus a master (m). '
       + '`hueCurves` adds hue-vs-hue/saturation/luminance curves: each channel is a list of {x, y} points in 0-1 with strictly ascending x, sampled at the pixel hue. '
       + '`lutPath` applies a .cube LUT file (validated at the boundary — missing or invalid files refuse the call); `lutIntensity` blends it 0..1 (default 1). '
-      + 'An empty lutPath clears the LUT. `blurRadius` (0-100px gaussian blur), `vignette` ({amount -1..1, midpoint, roundness, feather}), '
+      + 'An empty lutPath clears the LUT. `blurRadius` (0-100px gaussian blur), `clarity` ({clarity -1..1, dehaze -1..1}, applied after the grade and before the blur), `vignette` ({amount -1..1, midpoint, roundness, feather}), '
       + '`grain` ({amount 0..1, size 0.5..4px, animated per frame}) and `glow` ({intensity, radius, threshold, warmth}) add the #157 effect stages after the grade. '
       + 'Effect components merge per component (omitted stays); an all-identity effect clears it.',
     parameters: z.object({
@@ -1031,13 +1031,23 @@ export const tools = {
         + '[{x:0,y:0.8},{x:0.15,y:0.5}] } boosts red saturation.',
       ),
       clear: z.boolean().optional()
-        .describe('Reset the whole grade — brightness, contrast, saturation, hue, exposure, temperature, tint, vibrance, highlights, shadows, blacks, whites, curves, wheels, hue curves, LUT, blur, vignette, grain, glow, and invert — to neutral.'),
+        .describe('Reset the whole grade — brightness, contrast, saturation, hue, exposure, temperature, tint, vibrance, highlights, shadows, blacks, whites, curves, wheels, hue curves, LUT, blur, clarity, vignette, grain, glow, and invert — to neutral.'),
       lutPath: z.string().max(MAX_LUT_PATH_CHARS).optional()
         .describe('Absolute path to a .cube LUT file (1D or 3D). The file is validated when set — missing or invalid files refuse the call. An empty string clears the LUT.'),
       lutIntensity: z.number().finite().min(0).max(1).optional()
         .describe('LUT blend strength 0 to 1. 1 = full LUT, 0 = original frame. Defaults to 1 when a LUT is set.'),
       blurRadius: z.number().finite().min(0).max(100).optional()
         .describe('Gaussian blur radius in px, 0 to 100. 0 = sharp (clears the blur). Applied after the grade.'),
+      clarity: z.object({
+        clarity: z.number().finite().min(-1).max(1).optional()
+          .describe('Local-contrast unsharp against a blur, -1 to 1. Positive sharpens, negative softens.'),
+        dehaze: z.number().finite().min(-1).max(1).optional()
+          .describe('Dark-channel-prior dehaze, -1 to 1. Clears the veil on washed-out footage.'),
+      }).optional().describe(
+        'Clarity & Dehaze (upstream #157 detail.clarity, applied after the grade '
+        + 'and before the blur). Components merge like vignette, and an '
+        + 'all-default (both 0) clarity clears the field.',
+      ),
       vignette: z.object({
         amount: z.number().finite().min(-1).max(1).optional()
           .describe('Edge gain -1 (darken) to 1 (lighten). 0 = no vignette and clears it.'),
@@ -1082,6 +1092,7 @@ export const tools = {
         || op.invertColors !== undefined
         || op.lutPath !== undefined || op.lutIntensity !== undefined
         || op.blurRadius !== undefined
+        || (op.clarity !== undefined && Object.keys(op.clarity).length > 0)
         || (op.vignette !== undefined && Object.keys(op.vignette).length > 0)
         || (op.grain !== undefined && Object.keys(op.grain).length > 0)
         || (op.glow !== undefined && Object.keys(op.glow).length > 0)
