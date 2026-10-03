@@ -40,7 +40,7 @@ function mount(): Mounted {
   const sync = createEditorSync({
     controller: useTimelineStore.getState().controller,
     pullSessionState: async () => ({ project: null, filePath: null }),
-    pushSnapshot: async (payload) => {
+    pushSnapshot: async (payload, _filePath) => {
       pushes.push(payload);
       return { success: true, sequence: ++sessionSequence };
     },

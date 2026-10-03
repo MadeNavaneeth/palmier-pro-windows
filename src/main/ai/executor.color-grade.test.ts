@@ -12,7 +12,7 @@ import { EditorController } from '../../shared/editor/controller';
 import { ToolExecutor } from './executor';
 import type { GradeCurve, GradeWheels, HueCurves } from '../../shared/editor/color-grade';
 import type { LutRef } from '../../shared/editor/lut';
-import type { Glow, Grain, Vignette } from '../../shared/editor/effects';
+import type { Clarity, Glow, Grain, Vignette } from '../../shared/editor/effects';
 
 function harness() {
   const editor = new EditorController();
@@ -51,6 +51,7 @@ interface GradeData {
   hueCurves?: HueCurves | null;
   lut?: LutRef | null;
   blurRadius?: number;
+  clarity?: Clarity | null;
   vignette?: Vignette | null;
   grain?: Grain | null;
   glow?: Glow | null;
@@ -728,8 +729,50 @@ describe('set_clip_color_grade effects (#157 subgroups)', () => {
     expect(data.cleared).toBe(false);
   });
 
-  it('merges effect components and clears a stage at identity', async () => {
+  it('sets and merges clarity, clearing it only when BOTH components are 0', async () => {
     const { editor, executor, clipId } = harness();
+
+    const set = await executor.execute('set_clip_color_grade', {
+      clipId,
+      clarity: { clarity: 0.5 },
+    });
+    expect(set.success).toBe(true);
+    const data = set.data as GradeData;
+    // An omitted component takes the registry default, exactly like vignette.
+    expect(data.clarity).toEqual({ clarity: 0.5, dehaze: 0 });
+    expect(editor.getClips()[0].clarity).toEqual({ clarity: 0.5, dehaze: 0 });
+
+    // Per-component merge: setting dehaze leaves clarity alone.
+    await executor.execute('set_clip_color_grade', { clipId, clarity: { dehaze: -0.25 } });
+    expect(editor.getClips()[0].clarity).toEqual({ clarity: 0.5, dehaze: -0.25 });
+
+    // Steering ONE component back to 0 must NOT clear the field: upstream's
+    // guard is `clarity != 0 || dehaze != 0`, so the other one keeps it alive.
+    await executor.execute('set_clip_color_grade', { clipId, clarity: { clarity: 0 } });
+    expect(editor.getClips()[0].clarity).toEqual({ clarity: 0, dehaze: -0.25 });
+
+    // Both at zero is identity, so the field drops.
+    const cleared = await executor.execute('set_clip_color_grade', {
+      clipId,
+      clarity: { clarity: 0, dehaze: 0 },
+    });
+    expect(cleared.success).toBe(true);
+    expect((cleared.data as GradeData).clarity).toBeNull();
+    expect(editor.getClips()[0].clarity).toBeUndefined();
+
+    // Out of range is refused, not reshaped.
+    expect((await executor.execute('set_clip_color_grade', { clipId, clarity: { clarity: 2 } })).success).toBe(false);
+    expect((await executor.execute('set_clip_color_grade', { clipId, clarity: { dehaze: -3 } })).success).toBe(false);
+
+    // A clear resets grade AND effects together, clarity included.
+    await executor.execute('set_clip_color_grade', { clipId, clarity: { clarity: 0.5, dehaze: 0.25 } });
+    const clearedAll = await executor.execute('set_clip_color_grade', { clipId, clear: true });
+    expect(clearedAll.success).toBe(true);
+    expect(editor.getClips()[0].clarity).toBeUndefined();
+    expect((clearedAll.data as GradeData).cleared).toBe(true);
+  });
+
+  it('merges effect components and clears a stage at identity', async () => {    const { editor, executor, clipId } = harness();
     await executor.execute('set_clip_color_grade', { clipId, vignette: { amount: -0.5 } });
     await executor.execute('set_clip_color_grade', { clipId, vignette: { midpoint: 0.8 } });
     expect(editor.getClips()[0].vignette).toEqual({ amount: -0.5, midpoint: 0.8, roundness: 0, feather: 0.5 });

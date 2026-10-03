@@ -53,7 +53,7 @@ function mount(options: MountOptions = {}): Mounted {
       project: options.pull ? await options.pull() : null,
       filePath: options.filePath ?? null,
     }),
-    pushSnapshot: async (payload) => {
+    pushSnapshot: async (payload, _filePath) => {
       pushes.push(payload);
       return options.reply ? options.reply(payload) : { success: true, sequence: pushes.length };
     },
