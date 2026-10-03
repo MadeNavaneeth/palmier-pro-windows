@@ -646,18 +646,35 @@ export function planFlatten(
   }
 
   const restoredClips = nested.clips.map((clip) => {
-    const next: Clip = rebaseKeyframeTracks(
-      {
-        ...clip,
-        id: remapped.get(clip.id) ?? clip.id,
-        // `renderFrameOf`'s exact rounding, so a restored clip's placement is
-        // the same integer the renderer used for it.
-        startFrame: Math.round(frameScale * clip.startFrame + frameOffset),
-      },
-      frameOffset,
-      frameScale,
-    );
-    return next;
+    // Both endpoints of the restored clip go through the SAME map, the same two
+    // evaluations `emitLeaf` makes for this clip — so the restored clip occupies
+    // the parent frames it rendered in rather than starting there and running to
+    // wherever the nested length ends. `renderFrameOf`'s exact rounding, so a
+    // restored clip's placement is the same integer the renderer used for it.
+    const restoredStart = nestFrame(frameScale, frameOffset, clip.startFrame);
+    const restoredLength = nestFrame(frameScale, frameOffset, clip.startFrame + clip.durationFrames) - restoredStart;
+    const restored: Clip = {
+      ...clip,
+      id: remapped.get(clip.id) ?? clip.id,
+      startFrame: restoredStart,
+      // A restored COMPOUND keeps its nested length, deliberately. Its
+      // `inPoint`/`outPoint` are frames of ITS nested timeline while its length
+      // is frames of this one, and the model cannot carry both unless every level
+      // runs at `speed: 1` — so re-timing it here could only satisfy
+      // `durationFrames === outPoint - inPoint` by shrinking the inner nest's own
+      // window and silently cropping its content. Depth 2 therefore stays as it is
+      // today: open, and the shape below will carry it once the model can.
+      ...(clip.type === 'compound' ? {} : {
+        durationFrames: restoredLength,
+        // `emitLeaf`'s own window arithmetic, with its head cut at zero: the WHOLE
+        // nested clip is restored, not the slice the compound's window showed, so
+        // nothing is cut off the front and `inPoint` is the child's own. The
+        // child's OWN speed is what turns a parent-frame length back into the
+        // source frames it plays, which is why this factor is not optional.
+        outPoint: clip.inPoint + Math.round(restoredLength * effectiveSpeed(clip.speed)),
+      }),
+    };
+    return rebaseKeyframeTracks(restored, frameOffset, frameScale);
   });
 
   const updatedSource: Timeline = {
@@ -851,6 +868,22 @@ function nestedGateLength(clip: Clip, length: number): number {
 // ─── The same model, inverted: nested frames → render frames ─────────────────
 
 /**
+ * The composed nest map applied to ONE frame: `round(scale * frame + offset)`.
+ *
+ * The single place that arithmetic exists. `renderFrameOf` is this over a
+ * `NestContext`, and `planFlatten` is this over the one level's own pair — both
+ * are asking the same question of the same affine, and the two endpoints of a
+ * clip's SPAN have to be evaluated by it the way the renderer evaluates them or
+ * a restored clip is one frame off where it rendered. A span must go through
+ * this twice (once per endpoint), not once as `round(scale * length)`: rounding
+ * the sum and summing the roundings disagree, and on the measured speed ×
+ * start × length matrix they disagree on 32 of 382 cells.
+ */
+function nestFrame(frameScale: number, frameOffset: number, frame: number): number {
+  return Math.round(frameScale * frame + frameOffset);
+}
+
+/**
  * Render frame for a frame of the CURRENT timeline, through the nest so far.
  *
  * The inverse of `sourceFrameAtBoundary` and of the `childWindow` it feeds: a
@@ -862,7 +895,7 @@ function nestedGateLength(clip: Clip, length: number): number {
  * what a `speed: 1` nest gives and what made the sum look sufficient.
  */
 function renderFrameOf(ctx: NestContext, frame: number): number {
-  return Math.round(ctx.frameScale * frame + ctx.frameOffset);
+  return nestFrame(ctx.frameScale, ctx.frameOffset, frame);
 }
 
 /**

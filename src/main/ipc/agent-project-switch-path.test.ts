@@ -184,7 +184,8 @@ function mountWindow(): EditorSync {
         filePath: typeof response.filePath === 'string' ? response.filePath : null,
       };
     },
-    pushSnapshot: async (payload) => invoke('editor:sync-from-renderer', target.id, payload),
+    pushSnapshot: async (payload, filePath) =>
+      invoke('editor:sync-from-renderer', target.id, payload, filePath),
     onApply: (listener) => {
       target.onSend = listener;
       return () => {
