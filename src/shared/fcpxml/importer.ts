@@ -256,11 +256,12 @@ function numAttr(tag: string, name: string): number | null {
  *
  * A UNC `file://server/share/x` has no drive and no POSIX root, so it yields
  * `/server/share/x` — a rooted path on the current drive, NOT the `\\server\share`
- * it names. That is the one form this does not recover, and it is a limitation of
- * the WRITER too: `exporter.ts`'s `fileUrl` collapses a leading `\\` for the same
- * reason, so a UNC path does not survive our own round trip either. See
- * `docs/UPSTREAM_ISSUES.md`; fixing it is a writer change and a product decision
- * about network media, not a reader fix.
+ * it names. That is the one form this does not recover, and it is now a READER
+ * limit alone: `exporter.ts`'s `fileUrl` emits the authority correctly, so a UNC
+ * path this app writes is right on the wire and only the import side mangles it.
+ * See `docs/UPSTREAM_ISSUES.md`; whether this application supports network media
+ * as a first-class source is a product decision, and recovering the authority
+ * here would be a reader change rather than a writer one.
  */
 function fileUrlToPath(src: string): string {
   let decoded = src;

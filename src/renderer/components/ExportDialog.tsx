@@ -76,6 +76,21 @@ const RESOLUTIONS = [
 ] as const;
 
 /**
+ * The message to put on the panel's error channel when a reveal did not reveal
+ * anything, or `null` when it did.
+ *
+ * `export:reveal` used to answer `{ success: true }` for every path and the
+ * panel never read the answer, so a failed reveal was indistinguishable from a
+ * successful one. Only an explicit `success: false` counts as a failure: the
+ * handler answers success for a non-path without calling the shell at all.
+ */
+export function revealFailureMessage(result: unknown): string | null {
+  const res = result as { success?: boolean; error?: string } | null;
+  if (res?.success) return null;
+  return res?.error ?? 'Could not reveal the file in Explorer.';
+}
+
+/**
  * Does the render actually put caption text on screen? The panel gates the
  * sidecar on this so a project with no titles never writes an empty `.vtt`.
  *
@@ -390,6 +405,15 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
     setIsExporting(false);
   }, []);
 
+  // A reveal used to be fired and forgotten, so a failed one was reported as a
+  // completed one. Await the answer and put any failure on the panel's error
+  // channel, which the completion view renders too.
+  const handleReveal = useCallback(async (target: string) => {
+    setError(null);
+    const failure = revealFailureMessage(await window.palmier.export.reveal(target));
+    if (failure) setError(failure);
+  }, []);
+
   // ─── Interchange XML (#154) ──────────────────────────────────────────────
   const [xmlNote, setXmlNote] = useState('');
   const [xmlOmissions, setXmlOmissions] = useState<XmlOmissionSummary | null>(null);
@@ -429,6 +453,14 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
+
+        {/* Error message — shared by every view, so a failed reveal in the
+            completion view is as visible as a failed export in the setup one. */}
+        {error && (
+          <div className="mb-4 rounded bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-400">
+            {error}
+          </div>
+        )}
 
         {!isExporting && !outputPath ? (
           <>
@@ -619,13 +651,6 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
               </div>
             </div>
 
-            {/* Error message */}
-            {error && (
-              <div className="mb-4 rounded bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-400">
-                {error}
-              </div>
-            )}
-
             {/* Buttons */}
             <div className="flex justify-end gap-3">
               <button
@@ -696,7 +721,7 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
                 {recentExports.slice(0, 5).map((r, i) => (
                   <div key={i} className="flex items-center gap-2 rounded px-1 py-0.5 text-[9px] text-text-muted hover:bg-white/[0.04]">
                     <button
-                      onClick={() => void window.palmier.export.reveal(r.outputPath)}
+                      onClick={() => void handleReveal(r.outputPath)}
                       className="min-w-0 flex-1 truncate text-left hover:text-text-secondary"
                       title={`Reveal ${r.outputPath}`}
                     >
@@ -721,7 +746,7 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => {
-                  if (outputPath) void window.palmier.export.reveal(outputPath);
+                  if (outputPath) void handleReveal(outputPath);
                 }}
                 className="rounded border border-surface-3 px-4 py-2 text-sm text-text-secondary hover:bg-surface-3 transition"
               >

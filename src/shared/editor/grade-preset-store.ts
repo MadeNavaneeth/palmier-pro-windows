@@ -274,7 +274,7 @@ export function gradeFromClip(clip: Clip): GradePresetGrade {
   return {
     ...grade,
     ...sanitizeColorGrade({ curves: clip.curves, wheels: clip.wheels, hueCurves: clip.hueCurves, lut: clip.lut }),
-    ...sanitizeClipEffects({ blurRadius: clip.blurRadius, vignette: clip.vignette, grain: clip.grain, glow: clip.glow }),
+    ...sanitizeClipEffects({ blurRadius: clip.blurRadius, clarity: clip.clarity, vignette: clip.vignette, grain: clip.grain, glow: clip.glow }),
   };
 }
 
@@ -346,6 +346,8 @@ export function applyGradePatch(draft: Clip, patch: GradePresetPatch): void {
   else delete draft.lut;
   if (effects.blurRadius !== undefined) draft.blurRadius = effects.blurRadius;
   else delete draft.blurRadius;
+  if (effects.clarity) draft.clarity = effects.clarity;
+  else delete draft.clarity;
   if (effects.vignette) draft.vignette = effects.vignette;
   else delete draft.vignette;
   if (effects.grain) draft.grain = effects.grain;

@@ -25,7 +25,15 @@
 //     followed by that record);
 //   - the edit leaves the table-shape histogram, the bare-LF count, the U+FFFD
 //     count, the BOM, the line-ending style and the mojibake-run count exactly
-//     as it found them.
+//     as it found them;
+//   - the file carries no lone CR, before or after the write.
+//
+// That last one is not a formatting preference. Git's `convert_is_binary` reads
+// a lone CR as proof the file is binary, and a binary file skips the clean
+// filter, so one lone CR is enough to let CRLF into the index for good. The
+// round trip here is an exact identity even on `\r\r\n`, so this tool never
+// caused that defect; it failed to notice it, and certified the same 8 bytes as
+// safe on every later run.
 //
 // Usage:
 //   node scripts/upstream-record-edit.mjs --plan <plan.json> [--dry-run]
@@ -70,6 +78,29 @@ export function countOccurrences(haystack, needle) {
 // ── the file as a byte-preserving object ──────────────────────────────────────
 
 /**
+ * Count CR characters that are not part of a CRLF pair: a lone CR.
+ *
+ * A lone CR is the third line-ending state, and the one that matters most.
+ * Git's `convert_is_binary` treats a CR that is not followed by an LF as
+ * proof that a file is binary, and a binary file bypasses the clean filter
+ * entirely. So one lone CR is enough to make `git add` store the working tree's
+ * CRLF verbatim, silently, and for the index to keep those bytes from then on.
+ *
+ * This tool counted CRLF and bare LF and counted a lone CR as NEITHER, so a
+ * `\r\r\n` paragraph break read as clean CRLF and the file was certified safe.
+ * That is how 8 lone CRs reached `docs/UPSTREAM_ISSUES.md` and took the clean
+ * filter out of play for it. The defect is invisible to a count that only asks
+ * "is every LF preceded by a CR", so it asks this question separately.
+ */
+export function countLoneCr(text) {
+  let lone = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\r' && text[i + 1] !== '\n') lone += 1;
+  }
+  return lone;
+}
+
+/**
  * Read a file into a form that can be written back byte-for-byte. The BOM and
  * the line-ending style are carried, not normalised away, because this file has
  * a BOM in git and CRLF in the working tree and both are load-bearing for the
@@ -82,6 +113,20 @@ export function readDocument(file) {
   const body = bom ? text.slice(1) : text;
   const crlf = (body.match(/\r\n/g) ?? []).length;
   const lf = (body.match(/\n/g) ?? []).length - crlf;
+  // Checked BEFORE the mixed-line-ending refusal, because a lone CR breaks git's
+  // normalisation outright whereas mixing is only unreadable, and a file can
+  // carry both. This refuses rather than repairs: stripping the CR would be a
+  // silent content change to the one file whose whole purpose is that no
+  // silent change reaches it, and it would destroy the evidence of the writer
+  // that produced the doubled CR in the first place.
+  const loneCr = countLoneCr(body);
+  if (loneCr > 0) {
+    throw new Refusal(
+      'lone-cr',
+      `${file} contains ${loneCr} lone CR character(s), which git would read as binary and leave un-normalised, so a rewrite could not be proven byte-preserving`,
+      { loneCr, crlf, lf },
+    );
+  }
   if (crlf > 0 && lf > 0) {
     throw new Refusal(
       'mixed-line-endings',
@@ -94,6 +139,12 @@ export function readDocument(file) {
     bytes,
     bom,
     eol: crlf > 0 ? '\r\n' : '\n',
+    // Normalising `\r\n` to `\n` and expanding it back is an exact identity for
+    // every input this function accepts, because acceptance means every CR is
+    // part of a CRLF pair. It was already an identity on `\r\r\n` too: the
+    // orphan CR survives normalisation untouched, and encodeDocument only ever
+    // prefixes a CR to an LF, so `\r\r\n` in is `\r\r\n` out. The round trip
+    // was never lossy. What was wrong was accepting a file it should refuse.
     text: body.replace(/\r\n/g, '\n'),
     raw: body,
   };
@@ -130,13 +181,15 @@ export function contentConditions(text) {
 export function encodingConditions(raw) {
   let bareLf = 0;
   let crlf = 0;
+  let loneCr = 0;
   for (let i = 0; i < raw.length; i += 1) {
+    if (raw[i] === '\r' && raw[i + 1] !== '\n') loneCr += 1;
     if (raw[i] === '\n') {
       if (i > 0 && raw[i - 1] === '\r') crlf += 1;
       else bareLf += 1;
     }
   }
-  return { bareLf, crlf, uFFFD: (raw.match(/\uFFFD/g) ?? []).length };
+  return { bareLf, crlf, loneCr, uFFFD: (raw.match(/\uFFFD/g) ?? []).length };
 }
 
 function compareConditions(before, after) {
@@ -321,6 +374,13 @@ function preview(text, max = 90) {
 /**
  * P4. Re-read what actually landed on disk. Cheap, and it is the only check that
  * sees a write that was not the write we simulated.
+ *
+ * The readDocument call below is not just a way to get the bytes. It re-applies
+ * every encoding refusal in readDocument to the file as it now stands, so the
+ * post-write audit covers the BOM, the line-ending style, mixed line endings and
+ * lone CRs without duplicating any of those checks here. A lone CR that the
+ * pre-flight never saw -- a write that was not the write we simulated -- is
+ * refused there, and `runPlan` puts the original bytes back.
  */
 export function verifyOnDisk(doc, edits) {
   const after = readDocument(doc.file);
@@ -389,7 +449,7 @@ export function runPlan(plan, { dryRun = false, log = () => {} } = {}) {
   log(`file: ${plan.file}`);
   log(
     `  bom=${doc.bom} eol=${JSON.stringify(doc.eol)} chars=${doc.text.length} ` +
-      `bareLF=${encodingBefore.bareLf} uFFFD=${before.uFFFD} ` +
+      `bareLF=${encodingBefore.bareLf} loneCR=${encodingBefore.loneCr} uFFFD=${before.uFFFD} ` +
       `mojibake=${before.mojibake.runs}r/${before.mojibake.chars}c`,
   );
   log(`  table shape: ${before.tableShape}`);
@@ -398,6 +458,17 @@ export function runPlan(plan, { dryRun = false, log = () => {} } = {}) {
   checkAnchorsDoNotOverlap(plan.edits);
   const simulated = simulate(doc.text, plan.edits);
   checkProbes(simulated.text, plan.edits);
+  // A clean file is not sufficient on its own: a plan can introduce the defect
+  // itself, by carrying a lone CR in a replacement. Checked on the text that
+  // would be written, so the veto lands before anything reaches the disk.
+  const simulatedLoneCr = countLoneCr(simulated.text);
+  if (simulatedLoneCr > 0) {
+    throw new Refusal(
+      'lone-cr',
+      `the edit would leave ${simulatedLoneCr} lone CR character(s) in ${plan.file}, which git would read as binary and leave un-normalised`,
+      { loneCr: simulatedLoneCr },
+    );
+  }
   const problems = compareConditions(before, contentConditions(simulated.text));
   if (problems.length > 0) {
     throw new Refusal('post-condition-failed', `the edit would change: ${problems.join('; ')}`, { problems });

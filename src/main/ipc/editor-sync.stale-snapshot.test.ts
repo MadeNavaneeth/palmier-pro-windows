@@ -152,7 +152,7 @@ async function mountWindow(): Promise<Wired> {
   sync = createEditorSync({
     controller: renderer(),
     pullSessionState: async () => ({ project: null, filePath: null }),
-    pushSnapshot: async (payload) => {
+    pushSnapshot: async (payload, _filePath) => {
       pushes.push(payload);
       return syncFromRenderer(JSON.parse(payload));
     },

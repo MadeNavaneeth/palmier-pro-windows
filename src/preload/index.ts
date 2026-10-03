@@ -181,7 +181,8 @@ const api = {
     undo: () => ipcRenderer.invoke('editor:undo'),
     redo: () => ipcRenderer.invoke('editor:redo'),
     getState: () => ipcRenderer.invoke('editor:get-state'),
-    syncState: (projectJson: string) => ipcRenderer.invoke('editor:sync-from-renderer', projectJson),
+    syncState: (projectJson: string, filePath?: string | null) =>
+      ipcRenderer.invoke('editor:sync-from-renderer', projectJson, filePath),
   },
 
   // ── Timeline markers (upstream PR #560: rippleTimelineMarkers preference) ──

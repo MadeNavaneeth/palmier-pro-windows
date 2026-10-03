@@ -560,8 +560,22 @@ export function registerExportHandlers(
     return { success: true };
   });
 
-  ipcMain.handle('export:reveal', (_event, outputPath: string) => {
+  ipcMain.handle('export:reveal', async (_event, outputPath: string) => {
     if (typeof outputPath === 'string' && outputPath.length > 0) {
+      // `showItemInFolder` is fire-and-forget in Electron: it posts to a
+      // worker thread and returns nothing, so a failure inside the shell is
+      // dropped before it can reach us and this handler cannot observe one.
+      // What we CAN know is whether the shell could resolve the containing
+      // directory. Node stats it through the same filesystem Explorer reads,
+      // so a directory we cannot open is one the shell cannot parse either.
+      // Report that rather than a success nothing backs.
+      const dir = path.dirname(outputPath);
+      try {
+        await fs.stat(dir);
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return { success: false, error: `Could not open ${dir}: ${reason}` };
+      }
       shell.showItemInFolder(outputPath);
     }
     return { success: true };
