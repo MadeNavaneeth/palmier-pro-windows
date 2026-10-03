@@ -7,12 +7,18 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_CLARITY,
   DEFAULT_GLOW,
   DEFAULT_GRAIN,
-  DEFAULT_VIGNETTE,
+DEFAULT_VIGNETTE,
+  EFFECT_LIMITS,
   applyBlurToRgba,
+  applyClarityToRgba,
   applyEffectsToRgba,
   applyGlowToRgba,
+  clarityPixel,
+  clarityRadius,
+  claritiesEqual,
   clipEffectsEqual,
   effectsOf,
   gblurParams,
@@ -22,17 +28,20 @@ import {
   glowsEqual,
   hasEffects,
   iirBlurPlane,
+  parseClarityPatch,
   parseGlowPatch,
   parseGrainPatch,
   parseVignettePatch,
   roundHalfEven,
   sanitizeBlurRadius,
+  sanitizeClarity,
   sanitizeClipEffects,
   sanitizeGlow,
   sanitizeGrain,
   sanitizeVignette,
   screenBlend,
   toFfmpegBlurFilter,
+  toFfmpegClarityFilters,
   toFfmpegGlowBlendFilter,
   toFfmpegGlowScaleFilter,
   toFfmpegGlowThresholdFilter,
@@ -41,8 +50,7 @@ import {
   vignettePixel,
   vignettesEqual,
   type ClipEffects,
-} from './effects';
-import type { Clip } from '../types/project';
+} from './effects';import type { Clip } from '../types/project';
 
 function clip(fields: Partial<Clip> = {}): Clip {
   return {
@@ -97,6 +105,38 @@ describe('model and sanitize', () => {
     expect(sanitizeClipEffects(null)).toEqual({});
   });
 
+  it('models clarity with upstream ranges and an all-zero identity drop', () => {
+    expect(EFFECT_LIMITS.clarity.clarity).toEqual({ min: -1, max: 1 });
+    expect(EFFECT_LIMITS.clarity.dehaze).toEqual({ min: -1, max: 1 });
+    expect(DEFAULT_CLARITY).toEqual({ clarity: 0, dehaze: 0 });
+    // One non-zero component is enough to keep the field: upstream's guard is
+    // `clarity != 0 || dehaze != 0`, not "amount must be non-zero".
+    expect(sanitizeClarity({ clarity: 0, dehaze: 0 })).toBeUndefined();
+    expect(sanitizeClarity({ clarity: 0.5, dehaze: 0 })).toEqual({ clarity: 0.5, dehaze: 0 });
+    expect(sanitizeClarity({ clarity: 0, dehaze: -0.5 })).toEqual({ clarity: 0, dehaze: -0.5 });
+    // Invalid components fall back to the default rather than refusing.
+    expect(sanitizeClarity({ clarity: 9, dehaze: 0.25 })).toEqual({ clarity: 0, dehaze: 0.25 });
+    expect(sanitizeClarity(null)).toBeUndefined();
+    expect(sanitizeClarity([])).toBeUndefined();
+    expect(claritiesEqual({ clarity: 0.5, dehaze: 0 }, { clarity: 0.5, dehaze: 0 })).toBe(true);
+    expect(claritiesEqual({ clarity: 0.5, dehaze: 0 }, { clarity: 0.5, dehaze: 0.5 })).toBe(false);
+    expect(claritiesEqual(undefined, undefined)).toBe(true);
+    expect(claritiesEqual({ clarity: 0.5, dehaze: 0 }, undefined)).toBe(false);
+    const fx: ClipEffects = { clarity: { clarity: 0.5, dehaze: 0 } };
+    expect(effectsOf(clip(fx))).toEqual(fx);
+    expect(clipEffectsEqual(fx, { clarity: { clarity: 0.5, dehaze: 0 } })).toBe(true);
+  });
+
+  it('parses the agent clarity patch strictly', () => {
+    expect(parseClarityPatch({ clarity: 0.5 })).toEqual({ ok: true, patch: { clarity: 0.5 } });
+    expect(parseClarityPatch({ dehaze: -1 })).toEqual({ ok: true, patch: { dehaze: -1 } });
+    expect(parseClarityPatch({ clarity: 1.5 }).ok).toBe(false);
+    expect(parseClarityPatch({ dehaze: -2 }).ok).toBe(false);
+    expect(parseClarityPatch('nope').ok).toBe(false);
+    expect(parseClarityPatch([]).ok).toBe(false);
+    expect(parseClarityPatch({}).ok).toBe(true);
+  });
+
   it('refuses malformed agent patches with the reason', () => {
     expect(parseVignettePatch({ amount: -0.5 })).toEqual({ ok: true, patch: { amount: -0.5 } });
     expect(parseVignettePatch({ amount: 2 }).ok).toBe(false);
@@ -106,6 +146,139 @@ describe('model and sanitize', () => {
     expect(parseGlowPatch({ intensity: 1 }).ok).toBe(true);
     expect(parseGlowPatch({ warmth: -1 }).ok).toBe(false);
     expect(parseGlowPatch([]).ok).toBe(false);
+  });
+});
+
+describe('clarity & dehaze math (upstream detail.clarity)', () => {
+  // Upstream ships three tests in ClarityKernelTests.swift; they are the
+  // behavioural spec for this kernel, so they are ported here rather than
+  // invented. Every expected number below was produced by the REAL emitted
+  // graph through ffmpeg 8.1.2 on the same fixtures, and the preview matched it
+  // to the byte (max |diff| 0) in all four cases.
+  const N = 64;
+  const at = (data: Uint8Array, x: number, y: number, ch = 0): number => data[(y * N + x) * 4 + ch];
+  const saturation = (r: number, g: number, b: number): number => {
+    const mx = Math.max(r, g, b);
+    const mn = Math.min(r, g, b);
+    return mx <= 1e-5 ? 0 : (mx - mn) / mx;
+  };
+  /** Upstream's edgeImage: left half 77, right half 178, opaque. */
+  function edgeFrame(): Uint8Array {
+    const data = new Uint8Array(N * N * 4);
+    for (let y = 0; y < N; y += 1) {
+      for (let x = 0; x < N; x += 1) {
+        const i = (y * N + x) * 4;
+        const v = x < N / 2 ? 77 : 178;
+        data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255;
+      }
+    }
+    return data;
+  }
+
+  it('scales the blur radius with the frame, not a fixed pixel count', () => {
+    // Upstream: max(extent.width, extent.height) / 40.
+    expect(clarityRadius(64, 64)).toBe(1.6);
+    expect(clarityRadius(1920, 1080)).toBe(48);
+    // Degenerate frames still yield a positive radius rather than dividing by 0.
+    expect(clarityRadius(0, 0)).toBeCloseTo(1 / 40, 12);
+  });
+
+  it('unsharp is per channel, hue preserving, and saturating', () => {
+    // clarity 1 doubles the local difference: 200 against a blurred 150 -> 250.
+    expect(clarityPixel(200, 100, 50, 150, 100, 50, { clarity: 1, dehaze: 0 }))
+      .toEqual([250, 100, 50]);
+    // Channels whose blur equals their source do not move at all, which is what
+    // keeps the operation a gain on the high-pass rather than a hue shift.
+    expect(clarityPixel(200, 100, 50, 150, 100, 50, { clarity: 0.5, dehaze: 0 }))
+      .toEqual([225, 100, 50]);
+    // Out-of-range results clamp at the store, like every geq in the chain.
+    expect(clarityPixel(200, 100, 50, 100, 100, 50, { clarity: 1, dehaze: 0 }))
+      .toEqual([255, 100, 50]);
+    expect(clarityPixel(200, 100, 50, 250, 100, 50, { clarity: 1, dehaze: 0 }))
+      .toEqual([150, 100, 50]);
+  });
+
+  it('dehaze lifts contrast about the 0.45 pivot even with no local detail', () => {
+    // A flat pixel has no high-pass at all, so the whole dehaze effect is the
+    // contrast mix: 114.75 + (179-114.75) * 1.45 = 207.91, truncated to 207.
+    // Hand-computed, and the saturation is unchanged because it is grey.
+    expect(clarityPixel(179, 179, 179, 179, 179, 179, { clarity: 0, dehaze: 1 }))
+      .toEqual([207, 207, 207]);
+    // A darker pixel moves less, and not only because it sits nearer the pivot:
+    // its dark channel is lower, so the smoothstep has not saturated and w is
+    // ~0.93 rather than 1. Hand-computed: t = 87.25/114.75 = 0.76035,
+    // ss = 0.85517, w = 0.927585, giving 114.75 - 14.75*1.41741 = 93.84.
+    expect(clarityPixel(100, 100, 100, 100, 100, 100, { clarity: 0, dehaze: 1 }))
+      .toEqual([93, 93, 93]);
+  });
+
+  it('upstream test 1: neutral is a no-op', () => {
+    // clarityHaze guards on `clarity != 0 || dehaze != 0`, and the sanitizer
+    // drops an all-zero field, so both backends leave the frame alone.
+    const data = edgeFrame();
+    const before = Uint8Array.from(data);
+    applyClarityToRgba(data, N, N, { clarity: 0, dehaze: 0 });
+    expect(Array.from(data)).toEqual(Array.from(before));
+    expect(effectsOf({ clarity: { clarity: 0, dehaze: 0 } } as never)).toBeNull();
+  });
+
+  it('upstream test 2: dehaze re-saturates a washed patch', () => {
+    // A bright, low-saturation (hazy) patch comes back with more contrast and
+    // saturation. Upstream asserts after > before + 0.02.
+    const data = new Uint8Array(N * N * 4);
+    for (let i = 0; i < N * N; i += 1) {
+      data[i * 4] = 179; data[i * 4 + 1] = 186; data[i * 4 + 2] = 199; data[i * 4 + 3] = 255;
+    }
+    const before = saturation(179, 186, 199);
+    applyClarityToRgba(data, N, N, { clarity: 0, dehaze: 1 });
+    const after = saturation(data[0], data[1], data[2]);
+    expect(after).toBeGreaterThan(before + 0.02);
+    // Pinned against the real ffmpeg graph: rgb 179,186,199 -> 203,218,246.
+    expect([data[0], data[1], data[2]]).toEqual([203, 218, 246]);
+    expect(after).toBeCloseTo(0.174797, 6);
+  });
+
+  it('upstream test 3: clarity boosts the edge and leaves flat regions alone', () => {
+    const data = edgeFrame();
+    const base = at(data, 4, 32);
+    applyClarityToRgba(data, N, N, { clarity: 1, dehaze: 0 });
+    // Deep in the flat region there is no local contrast, so nothing moves.
+    expect(Math.abs(at(data, 4, 32) - base)).toBeLessThan(0.01);
+    // Immediately left of the edge, the unsharp overshoots darker.
+    expect(at(data, 31, 32) - base).toBeLessThan(-0.02);
+    // Pinned against the real ffmpeg graph, row 32 red channel.
+    expect([at(data, 4, 32), at(data, 31, 32), at(data, 32, 32), at(data, 40, 32)])
+      .toEqual([77, 47, 208, 178]);
+  });
+
+  it('pins clarity and dehaze together (FFmpeg geq graph row 32 red)', () => {
+    const data = edgeFrame();
+    applyClarityToRgba(data, N, N, { clarity: 0.8, dehaze: 0.6 });
+    expect([at(data, 4, 32), at(data, 31, 32), at(data, 32, 32), at(data, 40, 32)])
+      .toEqual([68, 29, 239, 195]);
+  });
+
+  it('keeps the blurred copy it needs instead of overwriting the source', () => {
+    // The reason this cannot reuse applyBlurToRgba: that destroys each channel
+    // as it goes, so the combine would read a blurred red against an untouched
+    // green. A frame with a lopsided blur must therefore not shift hue.
+    const data = new Uint8Array(8 * 8 * 4);
+    for (let i = 0; i < 8 * 8; i += 1) {
+      data[i * 4] = 200; data[i * 4 + 1] = 100; data[i * 4 + 2] = 50; data[i * 4 + 3] = 255;
+    }
+    const before = Array.from(data.subarray(0, 4));
+    applyClarityToRgba(data, 8, 8, { clarity: 1, dehaze: 0 });
+    // A perfectly flat frame has no local contrast at any radius, so the
+    // unsharp is exactly identity: which it can only be if both the source and
+    // the blur were available at the same time.
+    expect(Array.from(data.subarray(0, 4))).toEqual(before);
+  });
+
+  it('carries alpha through untouched, like every upstream kernel here', () => {
+    const data = edgeFrame();
+    for (let i = 3; i < data.length; i += 4) data[i] = 128;
+    applyClarityToRgba(data, N, N, { clarity: 1, dehaze: 1 });
+    for (let i = 3; i < data.length; i += 4) expect(data[i]).toBe(128);
   });
 });
 
@@ -251,6 +424,45 @@ describe('filter emission', () => {
     expect(toFfmpegBlurFilter(8)).toBe('gblur=sigma=8:planes=7');
   });
 
+  it('emits the clarity graph: split, blur at max(W,H)/40, hstack, one geq, crop', () => {
+    const lines = toFfmpegClarityFilters({ clarity: 0.5, dehaze: 0 }, 'v0mid', 'v0clar', 64, 64, 0);
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toBe('[v0mid]split[v0claritySrc][v0clarityBlurIn]');
+    // radius = max(W,H)/40 = 1.6 on a 64x64 frame
+    expect(lines[1]).toBe('[v0clarityBlurIn]gblur=sigma=1.6:planes=7[v0clarityBlur]');
+    // The two frames go side by side so one geq can read both.
+    expect(lines[2]).toBe('[v0claritySrc][v0clarityBlur]hstack=inputs=2[v0clarityStack]');
+    expect(lines[3]).toContain('geq=');
+    // The blurred half is read at X+W/2, which is the only reason the graph
+    // works: inside a blend expression there is no r(X,Y)/g(X,Y) at all.
+    expect(lines[3]).toContain('r(X+W/2,Y)');
+    expect(lines[4]).toBe('[v0clarityCrop]crop=64:64:0:0[v0clar]');
+  });
+
+  it('emits only the clarity unsharp when dehaze is off, matching upstream’s guard', () => {
+    const lines = toFfmpegClarityFilters({ clarity: 1, dehaze: 0 }, 'in', 'out', 8, 8, 0);
+    const geq = lines[3]!;
+    expect(geq).toContain('+(');
+    // No dark channel, no luma, no dehaze constants at all.
+    expect(geq).not.toContain('min(r(X,Y)');
+    expect(geq).not.toContain('0.2126');
+    expect(geq).not.toContain('114.75');
+  });
+
+  it('emits the full dehaze trio with the cross-channel terms when dehaze is on', () => {
+    const lines = toFfmpegClarityFilters({ clarity: 0, dehaze: 1 }, 'in', 'out', 8, 8, 0);
+    const geq = lines[3]!;
+    // dark = min(r,g,b) of the SOURCE, and the smoothstep over bytes 12.75..127.5
+    expect(geq).toContain('min(r(X,Y),min(g(X,Y),b(X,Y)))');
+    expect(geq).toContain('-12.75)/114.75');
+    expect(geq).toContain('*(3-2*(');
+    // mix(float3(0.45), rgb, t) in byte space, and the luma re-saturation.
+    expect(geq).toContain('114.75+');
+    expect(geq).toContain('0.2126*');
+    expect(geq).toContain('*0.45)');
+    expect(geq).toContain('*0.5)');
+  });
+
   it('emits the vignette geq with frame constants and the smoothstep recipe', () => {
     const filter = toFfmpegVignetteFilter({ amount: -1, midpoint: 0.5, roundness: 0, feather: 0.5 });
     expect(filter.startsWith('geq=')).toBe(true);
@@ -299,6 +511,33 @@ describe('buffer orchestration', () => {
     applyEffectsToRgba(data, 8, 8, null, 0);
     applyEffectsToRgba(data, 0, 0, fx, 0);
     expect(Array.from(data)).toEqual(before);
+  });
+
+  it('runs clarity ahead of the blur, per upstream canonicalOrder', () => {
+    // detail.clarity sits after every color.* stage and BEFORE blur.* upstream,
+    // so the preview must blur an already-clarified frame, not the other way
+    // round. On a frame where clarity lifts a flat region and the blur would
+    // pull it back toward the neighbourhood, the order is observable.
+    const n = 16;
+    const make = (): Uint8Array => {
+      const d = new Uint8Array(n * n * 4);
+      for (let y = 0; y < n; y += 1) {
+        for (let x = 0; x < n; x += 1) {
+          const i = (y * n + x) * 4;
+          const v = x < n / 2 ? 60 : 200;
+          d[i] = v; d[i + 1] = v; d[i + 2] = v; d[i + 3] = 255;
+        }
+      }
+      return d;
+    };
+    const clarity: ClipEffects = { clarity: { clarity: 0.8, dehaze: 0 }, blurRadius: 4 };
+    const inOrder = make();
+    applyEffectsToRgba(inOrder, n, n, clarity, 0);
+    // The same two stages the other way round, spelled out.
+    const reversed = make();
+    applyBlurToRgba(reversed, n, n, 4);
+    applyClarityToRgba(reversed, n, n, { clarity: 0.8, dehaze: 0 });
+    expect(Array.from(inOrder)).not.toEqual(Array.from(reversed));
   });
 
   it('pins that vignette and invert do not commute (order matters)', () => {

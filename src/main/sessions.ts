@@ -56,6 +56,20 @@ const sessions = new Map<string, Session>();
 const windowToSession = new Map<number, string>();
 
 /**
+ * The session that owns a controller.
+ *
+ * The reverse of `Session.controller`, and the answer the AI tool layer needs:
+ * a `ToolExecutor` is built from a controller — one per session for the
+ * in-app agent and for `editor:execute`, a fresh one per MCP request — so it
+ * can name the session it is running against without any caller passing an id.
+ * One controller is minted per session in `createSession` and the session owns
+ * it for life, so this is one-way and cannot go stale; a controller no session
+ * owns (every unit test builds its own) resolves to nothing, which is the
+ * honest answer: there is no window to keep a document path for.
+ */
+const sessionsByController = new WeakMap<EditorController, Session>();
+
+/**
  * The session MCP tools target when a request carries no explicit id: the
  * most recently focused main window (application.ts marks focus on it),
  * falling back to the first live session when the marked one is gone.
@@ -70,6 +84,7 @@ export function createSession(): Session {
     windows: new Map(),
   };
   sessions.set(session.id, session);
+  sessionsByController.set(session.controller, session);
   markSessionActive(session.id);
   return session;
 }
@@ -126,6 +141,14 @@ export function getSessionForSender(sender: SessionSender | null | undefined): S
   if (!sender) return null;
   const sessionId = windowToSession.get(sender.id);
   return sessionId ? sessions.get(sessionId) ?? null : null;
+}
+
+/** The session that owns this controller, or null when none does. */
+export function sessionForController(
+  controller: EditorController | null | undefined,
+): Session | null {
+  if (!controller) return null;
+  return sessionsByController.get(controller) ?? null;
 }
 
 export function listSessions(): Session[] {
