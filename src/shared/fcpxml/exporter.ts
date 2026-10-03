@@ -148,9 +148,32 @@ function escapeAttr(value: string): string {
  * reach an attribute unescaped by going through a function.
  */
 
-/** file:// URL for an absolute Windows/POSIX path. */
+/**
+ * file:// URL for an absolute Windows/POSIX path.
+ *
+ * A UNC path's leading `\\` is an AUTHORITY, not a root, and the old code
+ * collapsed it into the scheme's slash — `\\server\share\x.mp4` came out as
+ * `file:///server/share/x.mp4`, byte-indistinguishable from a POSIX path and
+ * naming a different file than the media. That is corrupt output rather than a
+ * cosmetic spelling, because FCPXML is an interchange format and the consuming
+ * NLE is frequently not us: Resolve, Premiere or anything else reading the
+ * document resolves that `src` against its own filesystem and gets a path that
+ * does not exist. Per RFC 8089 the share is the first path segment and only the
+ * server is the host, hence `file://server/share/x.mp4`.
+ *
+ * This stops the writer emitting a lie and nothing more. It adds no UNC
+ * support: the reader still collapses the authority on the way back in
+ * (`fileUrlToPath`), so our own round trip is exactly as limited as it was.
+ * Whether this application should support network media as a first-class source
+ * is a separate, still-open product question — a correct URL on the wire is
+ * right independently of the answer, because the wire is not read by us.
+ */
 function fileUrl(path: string): string {
   const normalized = path.replace(/\\/g, '/');
+  // After normalization a UNC path is the one shape starting `//` with a
+  // non-empty first segment: authority, then the share and the rest as path.
+  const unc = /^\/\/([^/]+)(\/.*)?$/.exec(normalized);
+  if (unc) return encodeURI(`file://${unc[1]}${unc[2] ?? ''}`).replace(/#/g, '%23');
   return encodeURI(`file:///${normalized.replace(/^\/+/, '')}`).replace(/#/g, '%23');
 }
 
