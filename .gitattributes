@@ -1,0 +1,21 @@
+# Line endings are pinned here rather than left to core.autocrlf.
+#
+# `core.autocrlf=true` alone was not enough, and the failure was invisible: git
+# classifies a file as binary if it contains a NUL byte or a single lone CR
+# (0x0D not followed by 0x0A) anywhere in it, and a binary file skips the clean
+# filter entirely. One lone CR was enough to make `git add` store CRLF verbatim,
+# with a plausible whole-file diff and no "CRLF will be replaced by LF" warning.
+# That happened to docs/UPSTREAM_ISSUES.md (8 lone CRs from doubled-CR paragraph
+# breaks) and to a raw NUL in src/main/ipc/project.recent.test.ts.
+#
+# `eol=lf` is load-bearing rather than cosmetic. Measured on a throwaway clone:
+# `text=auto` ALONE still routes through the binary check, and forced 156 files
+# to CRLF including every pure-LF agent SKILL.md file — reproducing exactly the
+# incident AGENTS.md records. Pinning the EOL on the worktree side is what
+# actually fixes it.
+* text=auto eol=lf
+
+# The NUL is gone from this file on main, but 16 of 24 remote branches still
+# carry it in their committed blob, and a checkout will bring it back to those.
+# `-text` declares the status quo rather than repairing an existing blob.
+src/main/ipc/project.recent.test.ts -text

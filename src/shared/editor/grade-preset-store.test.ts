@@ -64,6 +64,7 @@ describe('shared grade-preset store contract', () => {
       hueCurves: false,
       lut: { path: 123, intensity: 99, kind: '3d', size: 999 },
       blurRadius: 999,
+      clarity: { clarity: 99, dehaze: 'hazy' },
       vignette: 'not-an-effect',
       grain: { amount: 99, size: 'tiny' },
       glow: { intensity: 'bright', radius: 999, threshold: 99, warmth: -1 },

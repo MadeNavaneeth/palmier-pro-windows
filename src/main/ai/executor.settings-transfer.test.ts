@@ -378,6 +378,7 @@ describe('copy_clip_settings tool (#515)', () => {
     const { editor, executor, source, t1 } = executorWithClips();
     editor.applyClipProperties([source], 'Set', (d) => {
       d.blurRadius = 8;
+      d.clarity = { clarity: 0.5, dehaze: 0.25 };
       d.vignette = { amount: -0.5, midpoint: 0.5, roundness: 0, feather: 0.5 };
       d.grain = { amount: 0.5, size: 2 };
       return true;
@@ -390,8 +391,54 @@ describe('copy_clip_settings tool (#515)', () => {
 
     const target = editor.getClips().find((c) => c.id === t1)!;
     expect(target.blurRadius).toBe(8);
+    expect(target.clarity).toEqual({ clarity: 0.5, dehaze: 0.25 });
     expect(target.vignette?.amount).toBe(-0.5);
     expect(target.grain).toEqual({ amount: 0.5, size: 2 });
+  });
+
+  it('carries clarity without leaving the target sharing a mutable object', async () => {
+    const { editor, executor, source, t1 } = executorWithClips();
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.clarity = { clarity: 0.5, dehaze: 0 };
+      return true;
+    });
+    await executor.execute('copy_clip_settings', { sourceClipId: source, targetClipIds: [t1] });
+
+    const copied = editor.getClips().find((c) => c.id === t1)!.clarity!;
+    const original = editor.getClips().find((c) => c.id === source)!.clarity!;
+    expect(copied).toEqual(original);
+    // The transfer clones, so editing one clip's clarity cannot mutate the other.
+    expect(copied).not.toBe(original);
+  });
+
+  it('clears a target clarity when the source draws effects but has no clarity', async () => {
+    // Effect stages travel wholesale once the source has ANY grade or effect:
+    // each key is explicit, so a stage the source lacks overwrites the target's
+    // with undefined rather than leaving it behind.
+    const { editor, executor, source, t1 } = executorWithClips();
+    editor.applyClipProperties([t1], 'Set', (d) => {
+      d.clarity = { clarity: 0.5, dehaze: 0 };
+      return true;
+    });
+    editor.applyClipProperties([source], 'Set', (d) => {
+      d.blurRadius = 4;
+      return true;
+    });
+    await executor.execute('copy_clip_settings', { sourceClipId: source, targetClipIds: [t1] });
+    expect(editor.getClips().find((c) => c.id === t1)!.clarity).toBeUndefined();
+    expect(editor.getClips().find((c) => c.id === t1)!.blurRadius).toBe(4);
+  });
+
+  it('leaves a target clarity alone when the source has no grade or effects at all', async () => {
+    // The complementary half of the same rule: a source that draws nothing
+    // transfers nothing, so an ungraded source does not wipe the target.
+    const { editor, executor, source, t1 } = executorWithClips();
+    editor.applyClipProperties([t1], 'Set', (d) => {
+      d.clarity = { clarity: 0.5, dehaze: 0 };
+      return true;
+    });
+    await executor.execute('copy_clip_settings', { sourceClipId: source, targetClipIds: [t1] });
+    expect(editor.getClips().find((c) => c.id === t1)!.clarity).toEqual({ clarity: 0.5, dehaze: 0 });
   });
 
   it('refuses cross-kind targets with the domain message', async () => {
