@@ -51,17 +51,21 @@ import {
 } from '../../shared/editor/grade-preset-store';
 import { LUT_INTENSITY_LIMITS, lutRefsEqual, sanitizeLutRef } from '../../shared/editor/lut';
 import {
+  DEFAULT_CLARITY,
   DEFAULT_GLOW,
   DEFAULT_GRAIN,
   DEFAULT_VIGNETTE,
   EFFECT_LIMITS,
+  claritiesEqual,
   effectsOf,
   grainsEqual,
   glowsEqual,
+  sanitizeClarity,
   sanitizeGlow,
   sanitizeGrain,
   sanitizeVignette,
   vignettesEqual,
+  type Clarity,
   type Glow,
   type Grain,
   type Vignette,
@@ -1221,6 +1225,17 @@ function EffectsControls({
     });
   };
 
+  const setClarity = (patch: Partial<Clarity>) => {
+    controller.applyClipProperties([clipId], 'Clarity', (draft) => {
+      const merged = { ...(sanitizeClarity(draft.clarity) ?? { ...DEFAULT_CLARITY }), ...patch };
+      const next = sanitizeClarity(merged);
+      if (claritiesEqual(next, draft.clarity)) return true;
+      if (next) draft.clarity = next;
+      else delete draft.clarity;
+      return true;
+    });
+  };
+
   const setVignette = (patch: Partial<Vignette>) => {
     controller.applyClipProperties([clipId], 'Vignette', (draft) => {
       const merged = { ...(sanitizeVignette(draft.vignette) ?? { ...DEFAULT_VIGNETTE }), ...patch };
@@ -1257,6 +1272,7 @@ function EffectsControls({
   const reset = () => {
     controller.applyClipProperties([clipId], 'Reset effects', (draft) => {
       delete draft.blurRadius;
+      delete draft.clarity;
       delete draft.vignette;
       delete draft.grain;
       delete draft.glow;
@@ -1264,6 +1280,7 @@ function EffectsControls({
     });
   };
 
+  const clarity = sanitizeClarity(clip.clarity) ?? { ...DEFAULT_CLARITY };
   const vignette = sanitizeVignette(clip.vignette) ?? { ...DEFAULT_VIGNETTE };
   const grain = sanitizeGrain(clip.grain) ?? { ...DEFAULT_GRAIN };
   const glow = sanitizeGlow(clip.glow) ?? { ...DEFAULT_GLOW };
@@ -1292,6 +1309,24 @@ function EffectsControls({
         step={1}
         format={px}
         onChange={setBlur}
+      />
+      <GradeSlider
+        label="Clarity"
+        value={clarity.clarity}
+        min={EFFECT_LIMITS.clarity.clarity.min}
+        max={EFFECT_LIMITS.clarity.clarity.max}
+        step={0.05}
+        format={signedPercent}
+        onChange={(value) => setClarity({ clarity: value })}
+      />
+      <GradeSlider
+        label="Dehaze"
+        value={clarity.dehaze}
+        min={EFFECT_LIMITS.clarity.dehaze.min}
+        max={EFFECT_LIMITS.clarity.dehaze.max}
+        step={0.05}
+        format={signedPercent}
+        onChange={(value) => setClarity({ dehaze: value })}
       />
       <GradeSlider
         label="Vignette amount"

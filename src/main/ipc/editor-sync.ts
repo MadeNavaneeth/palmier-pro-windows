@@ -44,7 +44,12 @@
 
 import { ipcMain, BrowserWindow } from 'electron';
 import { ToolExecutor } from '../ai/executor';
-import { sessionProjectPathOf, takeSessionProjectPathAnnouncement } from '../session-project-path';
+import {
+  sessionProjectPathOf,
+  takeSessionProjectPathAnnouncement,
+  consumeSessionProjectPathAnnouncement,
+  isSessionFilePath,
+} from '../session-project-path';
 import type { EditorController, StateChangeKind } from '../../shared/editor/controller';
 import type { Project } from '../../shared/types/project';
 import {
@@ -159,11 +164,26 @@ export function registerEditorSyncHandlers(
   // setProjectFromMirror, not setProjectSilent: this direction is a FOREIGN
   // change to the session's agent history, so the commands on it go stale and
   // undo refuses rather than rolling the mirror back past the user's own work.
-  ipcMain.handle('editor:sync-from-renderer', async (event, projectJson: string) => {
+  ipcMain.handle('editor:sync-from-renderer', async (
+    event,
+    projectJson: string,
+    filePath?: string | null,
+  ) => {
     const session = getSessionForSender(event.sender);
     if (!session) return { success: false, error: NO_SESSION_ERROR };
     try {
       session.controller.setProjectFromMirror(JSON.parse(projectJson));
+      // The window that just replaced the session's project also says which file
+      // that project lives in, and a push carries no path of its own when the
+      // store's value did not change. Recording it here is what keeps the record
+      // describing the project main actually holds: without it, a window whose
+      // own snapshot won the session back from an agent switch left main naming
+      // the agent's file over the window's project, and a reload then paired the
+      // two. A push that carries no path says nothing about the file and leaves
+      // the record alone.
+      if (filePath !== undefined && (filePath === null || isSessionFilePath(filePath))) {
+        consumeSessionProjectPathAnnouncement(session, filePath);
+      }
       const project = session.controller.getProject();
       // Explicitly propagate renderer edits without notifying the controller;
       // siblings adopt this tagged snapshot through setProjectSilent as well.
@@ -213,6 +233,14 @@ export function registerEditorSyncHandlers(
  * the session record rather than compared against the last push: the record
  * knows whether its value has been announced, so a window that chose a path
  * and reported it is never handed it back as if it were news.
+ *
+ * Reading it does not spend it. A window refuses this push whenever a local
+ * write is still outstanding, and clearing the flag here would consume the
+ * announcement for a window that never read it — with nothing to re-arm it,
+ * so no later push could correct that window and a reload would pair its
+ * project with this one. The window spends it by reporting the path it holds
+ * (`project:set-session-path`), which only a window that applied the push can
+ * do.
  */
 export function attachSessionEditorPush(session: Session): void {
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
